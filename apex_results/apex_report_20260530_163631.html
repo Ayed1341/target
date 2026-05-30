@@ -1,0 +1,119 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<title>APEX_HUNTER Report — 2026-05-30</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',monospace;font-size:14px}
+h1,h2{color:#58a6ff} h3{color:#79c0ff;margin:12px 0 6px}
+.wrap{max-width:1400px;margin:0 auto;padding:20px}
+.hdr{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:20px;margin-bottom:20px}
+.stats{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}
+.stat{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 22px;text-align:center}
+.stat .num{font-size:2em;font-weight:bold}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;margin:12px 0;overflow:hidden}
+.card-hdr{padding:10px 14px;background:#1c2128;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.card-body{padding:14px}
+.badge{padding:2px 8px;border-radius:4px;color:#fff;font-size:11px;font-weight:bold}
+pre{background:#0d1117;border:1px solid #30363d;padding:8px;border-radius:4px;overflow-x:auto;margin:6px 0}
+code{font-size:12px}
+.meta{color:#8b949e;margin-bottom:8px}
+.fix{background:#162032;border-left:3px solid #17a2b8;padding:6px;border-radius:2px;margin-top:8px}
+table{width:100%;border-collapse:collapse;margin:12px 0}
+th{background:#1c2128;padding:8px;text-align:left;border:1px solid #30363d;color:#79c0ff}
+td{padding:8px;border:1px solid #30363d}
+.filters{margin:12px 0}
+.btn{padding:5px 12px;border-radius:4px;border:1px solid #30363d;background:#161b22;color:#c9d1d9;cursor:pointer;margin:2px}
+.btn:hover,.btn.active{background:#58a6ff;color:#000}
+</style></head><body><div class="wrap">
+<div class="hdr"><h1>&#x1F6E1; APEX_HUNTER v1.0 — Red Team Report</h1>
+<p style="color:#8b949e;margin-top:8px">Generated: 2026-05-30 16:37:05 &nbsp;|&nbsp; 35 Tools &nbsp;|&nbsp; 45 Skills &nbsp;|&nbsp; Targets: help.flynas.com</p></div>
+<div class="stats"><div class="stat"><div class="num" style="color:#dc3545">0</div>CRITICAL</div><div class="stat"><div class="num" style="color:#fd7e14">1</div>HIGH</div><div class="stat"><div class="num" style="color:#ffc107">1</div>MEDIUM</div><div class="stat"><div class="num" style="color:#17a2b8">0</div>LOW</div><div class="stat"><div class="num" style="color:#6c757d">2</div>INFO</div><div class="stat"><div class="num" style="color:#58a6ff">4</div>TOTAL</div></div>
+<h2>Infrastructure</h2>
+<table><tr><th>Host</th><th>IP</th><th>Provider</th><th>TLS</th><th>WAF/CDN</th><th>Headers</th><th>Findings</th></tr><tr><td>help.flynas.com</td><td>20.105.216.45</td><td>Microsoft Azure (AS8075)</td><td>TLSv1.3</td><td>None</td><td>0/100</td><td>4</td></tr></table>
+<h2>Findings (4)</h2>
+<div class="filters">
+<button class="btn" onclick="filter('ALL')">ALL</button><button class="btn" onclick="filter('CRITICAL')">CRITICAL</button><button class="btn" onclick="filter('HIGH')">HIGH</button><button class="btn" onclick="filter('MEDIUM')">MEDIUM</button><button class="btn" onclick="filter('LOW')">LOW</button><button class="btn" onclick="filter('INFO')">INFO</button>
+</div>
+<div id="fc">
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>F-HDR-001</b> — Critical Security Headers Missing
+    <small style="color:#aaa"> | help.flynas.com</small>
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-693 &nbsp;|&nbsp; CVSS: 5.4 &nbsp;|&nbsp; Security Headers</div>
+    <p>Header score 0/100 — multiple critical headers absent.</p>
+    <b>Evidence:</b><pre><code>{
+  &quot;strict-transport-security&quot;: &quot;MISSING&quot;,
+  &quot;content-security-policy&quot;: &quot;MISSING&quot;,
+  &quot;x-content-type-options&quot;: &quot;MISSING&quot;,
+  &quot;x-frame-options&quot;: &quot;MISSING&quot;,
+  &quot;referrer-policy&quot;: &quot;MISSING&quot;,
+  &quot;permissions-policy&quot;: &quot;MISSING&quot;,
+  &quot;x-xss-protection&quot;: &quot;MISSING&quot;,
+  &quot;cache-control&quot;: &quot;MISSING&quot;,
+  &quot;cross-origin-opener-policy&quot;: &quot;MISSING&quot;,
+  &quot;cross-origin-resource-policy&quot;: &quot;MISSING&quot;
+}</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sI &#x27;https://help.flynas.com&#x27;</code></pre>
+    <div class="fix">Fix: Implement HSTS, CSP, X-Frame-Options, X-Content-Type-Options.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>F-CJ-001</b> — Clickjacking Vulnerability
+    <small style="color:#aaa"> | help.flynas.com</small>
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-1021 &nbsp;|&nbsp; CVSS: 5.4 &nbsp;|&nbsp; Clickjacking</div>
+    <p>Page can be embedded in an iframe — clickjacking possible.</p>
+    <b>Evidence:</b><pre><code>X-Frame-Options: &#x27;&#x27; | CSP frame-ancestors: False</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sI &#x27;https://help.flynas.com&#x27; | grep -i &#x27;x-frame\|frame-ancestors&#x27;</code></pre>
+    <div class="fix">Fix: Set X-Frame-Options: DENY or CSP frame-ancestors &#x27;self&#x27;.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>F-BSSRF-001</b> — Blind SSRF Attack Surface — OOB Payloads Generated
+    <small style="color:#aaa"> | help.flynas.com</small>
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; SSRF</div>
+    <p>Generated 10 OOB SSRF payloads for manual verification.</p>
+    <b>Evidence:</b><pre><code>fetch: https://help.flynas.com?fetch=http%3A//fetch.help.flynas.com.YOUR_OOB_DOMAIN.bur
+href: https://help.flynas.com?href=http%3A//href.help.flynas.com.YOUR_OOB_DOMAIN.burpc
+proxy: https://help.flynas.com?proxy=http%3A//proxy.help.flynas.com.YOUR_OOB_DOMAIN.bur
+feed: https://help.flynas.com?feed=http%3A//feed.help.flynas.com.YOUR_OOB_DOMAIN.burpc
+target: https://help.flynas.com?target=http%3A//target.help.flynas.com.YOUR_OOB_DOMAIN.b
+url: https://help.flynas.com?url=http%3A//url.help.flynas.com</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk &#x27;https://help.flynas.com?fetch=http%3A//fetch.help.flynas.com.YOUR_OOB_DOMAIN.burpcollaborator.net/&#x27;</code></pre>
+    <div class="fix">Fix: Use Burp Collaborator or https://app.interactsh.com to detect DNS callbacks.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>F-VDP-001</b> — No security.txt / Vulnerability Disclosure Policy
+    <small style="color:#aaa"> | help.flynas.com</small>
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-200 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; VDP</div>
+    <p>No security.txt file found. Researchers have no official contact for vulnerability reports.</p>
+    <b>Evidence:</b><pre><code>Checked: [&#x27;/.well-known/security.txt&#x27;, &#x27;/security.txt&#x27;, &#x27;/.well-known/change-password&#x27;, &#x27;/bugbounty&#x27;, &#x27;/responsible-disclosure&#x27;, &#x27;/vulnerability-disclosure&#x27;]</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk &#x27;https://help.flynas.com/.well-known/security.txt&#x27;</code></pre>
+    <div class="fix">Fix: Create /.well-known/security.txt per RFC 9116 with Contact: and Policy: fields.</div>
+  </div>
+</div></div>
+</div>
+<script>
+function filter(s){
+  document.querySelectorAll('.btn').forEach(b=>b.classList.remove('active'));
+  event.target.classList.add('active');
+  document.querySelectorAll('.card').forEach(c=>{
+    c.style.display=(s==='ALL'||c.dataset.sev===s)?'':'none';
+  });
+}
+document.querySelector('.btn').classList.add('active');
+</script></body></html>

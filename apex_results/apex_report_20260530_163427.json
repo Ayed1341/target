@@ -1,0 +1,207 @@
+{
+  "generated": "20260530_163427",
+  "tool": "APEX_HUNTER v1.0",
+  "targets": [
+    {
+      "url": "https://help.flynas.com",
+      "apex": "flynas.com",
+      "host": "help.flynas.com",
+      "scheme": "https",
+      "ip": "20.105.216.45",
+      "asn": "",
+      "provider": "Microsoft Azure (AS8075)",
+      "tls_version": "TLSv1.3",
+      "tls_cipher": "TLS_AES_256_GCM_SHA384",
+      "cert_cn": "",
+      "cert_sans": [],
+      "cert_issuer": "",
+      "cert_expires": "",
+      "waf": [],
+      "technologies": [],
+      "subdomains": [
+        "www.flynas.com",
+        "dev.flynas.com",
+        "test.flynas.com",
+        "portal.flynas.com",
+        "dashboard.flynas.com",
+        "help.flynas.com",
+        "ftp.flynas.com",
+        "static.flynas.com",
+        "jenkins.flynas.com"
+      ],
+      "ct_subdomains": [],
+      "wayback_urls": [],
+      "js_files": [],
+      "api_endpoints": [],
+      "graphql_endpoints": [],
+      "sensitive_paths": [],
+      "s3_buckets": [],
+      "findings": [
+        {
+          "id": "F-HDR-001",
+          "title": "Critical Security Headers Missing",
+          "severity": "HIGH",
+          "cwe": "CWE-693",
+          "cvss": 5.4,
+          "description": "Header score 0/100 \u2014 multiple critical headers absent.",
+          "evidence": "{\n  \"strict-transport-security\": \"MISSING\",\n  \"content-security-policy\": \"MISSING\",\n  \"x-content-type-options\": \"MISSING\",\n  \"x-frame-options\": \"MISSING\",\n  \"referrer-policy\": \"MISSING\",\n  \"permissions-policy\": \"MISSING\",\n  \"x-xss-protection\": \"MISSING\",\n  \"cache-control\": \"MISSING\",\n  \"cross-origin-opener-policy\": \"MISSING\",\n  \"cross-origin-resource-policy\": \"MISSING\"\n}",
+          "reproduction": "curl -sI 'https://help.flynas.com'",
+          "poc_curl": "curl -sI 'https://help.flynas.com'",
+          "burp_request": "",
+          "category": "Security Headers",
+          "remediation": "Implement HSTS, CSP, X-Frame-Options, X-Content-Type-Options."
+        },
+        {
+          "id": "F-CJ-001",
+          "title": "Clickjacking Vulnerability",
+          "severity": "MEDIUM",
+          "cwe": "CWE-1021",
+          "cvss": 5.4,
+          "description": "Page can be embedded in an iframe \u2014 clickjacking possible.",
+          "evidence": "X-Frame-Options: '' | CSP frame-ancestors: False",
+          "reproduction": "<html><body><iframe src='https://help.flynas.com' width='800' height='600'></iframe></body></html>",
+          "poc_curl": "curl -sI 'https://help.flynas.com' | grep -i 'x-frame\\|frame-ancestors'",
+          "burp_request": "",
+          "category": "Clickjacking",
+          "remediation": "Set X-Frame-Options: DENY or CSP frame-ancestors 'self'."
+        },
+        {
+          "id": "F-BSSRF-001",
+          "title": "Blind SSRF Attack Surface \u2014 OOB Payloads Generated",
+          "severity": "INFO",
+          "cwe": "CWE-918",
+          "cvss": 0.0,
+          "description": "Generated 10 OOB SSRF payloads for manual verification.",
+          "evidence": "link: https://help.flynas.com?link=http%3A//link.help.flynas.com.YOUR_OOB_DOMAIN.burpc\nresource: https://help.flynas.com?resource=http%3A//resource.help.flynas.com.YOUR_OOB_DOMA\nproxy: https://help.flynas.com?proxy=http%3A//proxy.help.flynas.com.YOUR_OOB_DOMAIN.bur\nwebhook: https://help.flynas.com?webhook=http%3A//webhook.help.flynas.com.YOUR_OOB_DOMAIN\nendpoint: https://help.flynas.com?endpoint=http%3A//endpoint.help.flynas.com.YOUR_OOB_DOMA\nfetch: https://help.flynas.com?fetch=http%3A//fetch.help.flynas.com.YOUR_OOB_DOMAIN.bur\nimg_url: https://help.flynas.com?img_url=http%3A//img_url.help.flynas.com.YOUR_OOB_DOMAIN\ncallback: https://help.flynas.com?callback=http%3A//callback.help.flynas.com.YOUR_OOB_DOMA\nhref: https://help.flynas.com?href=http%3A//href.help.flynas.com.YOUR_OOB_DOMAIN.burpc\nimage_url: https://help.flynas.com?image_url=http%3A//image_url.help.flynas.com.YOUR_OOB_DO",
+          "reproduction": "# Replace YOUR_OOB_DOMAIN.burpcollaborator.net with your Burp Collaborator/interactsh domain:\ncurl -sk 'https://help.flynas.com?link=http%3A//link.help.flynas.com.YOUR_OOB_DOMAIN.burpcollaborator.net/'\ncurl -sk 'https://help.flynas.com?resource=http%3A//resource.help.flynas.com.YOUR_OOB_DOMAIN.burpcollaborator.net/'\ncurl -sk 'https://help.flynas.com?proxy=http%3A//proxy.help.flynas.com.YOUR_OOB_DOMAIN.burpcollaborator.net/'\ncurl -sk 'https://help.flynas.com?webhook=http%3A//webhook.help.flynas.com.YOUR_OOB_DOMAIN.burpcollaborator.net/'\ncurl -sk 'https://help.flynas.com?endpoint=http%3A//endpoint.help.flynas.com.YOUR_OOB_DOMAIN.burpcollaborator.net/'\ncurl -sk 'https://help.flynas.com?fetch=http%3A//fetch.help.flynas.com.YOUR_OOB_DOMAIN.burpcollaborator.net/'\ncurl -sk 'https://help.flynas.com?img_url=http%3A//img_url.help.flynas.com.YOUR_OOB_DOMAIN.burpcollaborator.net/'\ncurl -sk 'https://help.flynas.com?callback=http%3A//callback.help.flynas.com.YOUR_OOB_DOMAIN.burpcollaborator.net/'\ncurl -sk 'https://help.flynas.com?href=http%3A//href.help.flynas.com.YOUR_OOB_DOMAIN.burpcollaborator.net/'\ncurl -sk 'https://help.flynas.com?image_url=http%3A//image_url.help.flynas.com.YOUR_OOB_DOMAIN.burpcollaborator.net/'",
+          "poc_curl": "curl -sk 'https://help.flynas.com?link=http%3A//link.help.flynas.com.YOUR_OOB_DOMAIN.burpcollaborator.net/'",
+          "burp_request": "",
+          "category": "SSRF",
+          "remediation": "Use Burp Collaborator or https://app.interactsh.com to detect DNS callbacks."
+        },
+        {
+          "id": "F-VDP-001",
+          "title": "No security.txt / Vulnerability Disclosure Policy",
+          "severity": "INFO",
+          "cwe": "CWE-200",
+          "cvss": 0.0,
+          "description": "No security.txt file found. Researchers have no official contact for vulnerability reports.",
+          "evidence": "Checked: ['/.well-known/security.txt', '/security.txt', '/.well-known/change-password', '/bugbounty', '/responsible-disclosure', '/vulnerability-disclosure']",
+          "reproduction": "curl -sk 'https://help.flynas.com/.well-known/security.txt'",
+          "poc_curl": "curl -sk 'https://help.flynas.com/.well-known/security.txt'",
+          "burp_request": "",
+          "category": "VDP",
+          "remediation": "Create /.well-known/security.txt per RFC 9116 with Contact: and Policy: fields."
+        }
+      ],
+      "security_headers": {
+        "score": 0,
+        "max": 100,
+        "headers": {
+          "strict-transport-security": {
+            "status": "MISSING",
+            "value": ""
+          },
+          "content-security-policy": {
+            "status": "MISSING",
+            "value": ""
+          },
+          "x-content-type-options": {
+            "status": "MISSING",
+            "value": ""
+          },
+          "x-frame-options": {
+            "status": "MISSING",
+            "value": ""
+          },
+          "referrer-policy": {
+            "status": "MISSING",
+            "value": ""
+          },
+          "permissions-policy": {
+            "status": "MISSING",
+            "value": ""
+          },
+          "x-xss-protection": {
+            "status": "MISSING",
+            "value": ""
+          },
+          "cache-control": {
+            "status": "MISSING",
+            "value": ""
+          },
+          "cross-origin-opener-policy": {
+            "status": "MISSING",
+            "value": ""
+          },
+          "cross-origin-resource-policy": {
+            "status": "MISSING",
+            "value": ""
+          }
+        }
+      },
+      "cors_results": [
+        {
+          "label": "REFLECTED",
+          "origin": "help.flynas.com",
+          "acao": "",
+          "acac": ""
+        },
+        {
+          "label": "NULL",
+          "origin": "null",
+          "acao": "",
+          "acac": ""
+        },
+        {
+          "label": "EVIL_SUB",
+          "origin": "evil.flynas.com",
+          "acao": "",
+          "acac": ""
+        },
+        {
+          "label": "APEX_SFX",
+          "origin": "flynas.com.evil.com",
+          "acao": "",
+          "acac": ""
+        },
+        {
+          "label": "ATTACKER",
+          "origin": "attacker.flynas.com",
+          "acao": "",
+          "acac": ""
+        },
+        {
+          "label": "HTTP_DOWN",
+          "origin": "http://help.flynas.com",
+          "acao": "",
+          "acac": ""
+        }
+      ],
+      "cookie_results": [],
+      "secrets": [],
+      "open_redirects": [],
+      "ssrf_params": [],
+      "parameters": [],
+      "forms": [],
+      "jwt_tokens": [],
+      "oauth_endpoints": [],
+      "websocket_endpoints": [],
+      "ssti_params": [],
+      "smuggling_results": [
+        {
+          "type": "CL.TE",
+          "code": 400,
+          "time": 1.05,
+          "hint": "HTTP 400"
+        },
+        {
+          "type": "TE.CL",
+          "code": 400,
+          "time": 1.05,
+          "hint": "HTTP 400"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+Target,ID,Title,Severity,CVSS,CWE,Category,Description,PoC
+help.flynas.com,F-HDR-001,Critical Security Headers Missing,HIGH,5.4,CWE-693,Security Headers,Header score 0/100 — multiple critical headers absent.,curl -sI 'https://help.flynas.com'
+help.flynas.com,F-CJ-001,Clickjacking Vulnerability,MEDIUM,5.4,CWE-1021,Clickjacking,Page can be embedded in an iframe — clickjacking possible.,curl -sI 'https://help.flynas.com' | grep -i 'x-frame\|frame-ancestors'
+help.flynas.com,F-BSSRF-001,Blind SSRF Attack Surface — OOB Payloads Generated,INFO,0.0,CWE-918,SSRF,Generated 10 OOB SSRF payloads for manual verification.,curl -sk 'https://help.flynas.com?fetch=http%3A//fetch.help.flynas.com.YOUR_OOB_
+help.flynas.com,F-VDP-001,No security.txt / Vulnerability Disclosure Policy,INFO,0.0,CWE-200,VDP,No security.txt file found. Researchers have no official contact for vulnerability reports.,curl -sk 'https://help.flynas.com/.well-known/security.txt'
