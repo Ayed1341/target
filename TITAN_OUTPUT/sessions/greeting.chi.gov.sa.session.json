@@ -1,0 +1,37 @@
+{
+  "saved_at": "2026-05-30T03:32:06Z",
+  "config": {
+    "target": "https://greeting.chi.gov.sa/",
+    "scope_file": "",
+    "base_dir": "./TITAN_OUTPUT",
+    "workers": 5,
+    "timeout": 20.0,
+    "retries": 2,
+    "rate_limit": 3.0,
+    "user_agent_profile": "default",
+    "crawl_depth": 3,
+    "max_pages": 300,
+    "report_formats": [
+      "json",
+      "markdown"
+    ],
+    "verify_tls": true,
+    "follow_subdomains": true,
+    "graphql_introspection": false,
+    "soft404_detection": true,
+    "resume": true,
+    "checkpoint_every": 25,
+    "passive_discovery": true,
+    "schema_discovery": true,
+    "anthropic_api_key": "",
+    "anthropic_model": "claude-opus-4-7"
+  },
+  "discovered_assets": [],
+  "api_endpoints": [],
+  "javascript_files": [],
+  "graphql_endpoints": [],
+  "technologies": [],
+  "parameters": [],
+  "forms": [],
+  "findings": []
+}

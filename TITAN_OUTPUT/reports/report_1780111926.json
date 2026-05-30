@@ -1,0 +1,48 @@
+{
+  "tool": "TITAN_HUNTER 1.0.0",
+  "target": "https://greeting.chi.gov.sa/",
+  "scope": "greeting.chi.gov.sa, *.gov.sa",
+  "scan_time": "2026-05-30T03:32:06Z",
+  "findings": [],
+  "evidence": [
+    {
+      "id": "ea4bbb57ba14",
+      "timestamp": "2026-05-30T03:32:06Z",
+      "url": "https://greeting.chi.gov.sa/",
+      "method": "GET",
+      "request_headers": {
+        "User-Agent": "TITAN_HUNTER/1.0.0 (+authorized-recon)",
+        "Accept": "*/*"
+      },
+      "request_body": null,
+      "status": 403,
+      "response_headers": {
+        "x-deny-reason": "host_not_allowed",
+        "content-length": "21",
+        "content-type": "text/plain",
+        "date": "Sat, 30 May 2026 03:32:06 GMT"
+      },
+      "response_snippet": "Host not in allowlist",
+      "elapsed_ms": 966.9,
+      "error": null
+    }
+  ],
+  "severity_summary": {},
+  "technologies": [],
+  "discovered_assets": [],
+  "api_endpoints": [],
+  "javascript_files": [],
+  "graphql_endpoints": [],
+  "parameters": {},
+  "forms": [],
+  "api_schemas": [],
+  "passive_hosts": [],
+  "passive_urls": [],
+  "owasp_top10_checklist": [],
+  "endpoint_types": {},
+  "parameter_types": {},
+  "js_callsites": [],
+  "recovered_sources": [],
+  "response_clusters": [],
+  "response_outliers": []
+}
