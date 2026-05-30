@@ -1,0 +1,37 @@
+{
+  "target": "https://greeting.chi.gov.sa/",
+  "scan_time": "2026-05-30T03:49:46Z",
+  "duration_s": 0.9,
+  "scope": "greeting.chi.gov.sa, *.gov.sa",
+  "waf_detected": [],
+  "technologies": [],
+  "ip_addresses": [],
+  "subdomains": [],
+  "assets": [],
+  "api_endpoints": [],
+  "graphql_endpoints": [],
+  "js_files": [],
+  "js_callsites": [],
+  "secret_hits": [],
+  "forms": [],
+  "parameters": {},
+  "cors_results": [],
+  "cookie_findings": [],
+  "passive_hosts": [],
+  "passive_urls": [],
+  "wayback_urls": [],
+  "open_paths": [],
+  "findings": [],
+  "headers_audit": {},
+  "csp_weaknesses": [],
+  "diagnostics": {
+    "seed_attempts": [
+      {
+        "url": "https://greeting.chi.gov.sa/",
+        "status": 403,
+        "error": null
+      }
+    ],
+    "reason": "seed unreachable"
+  }
+}

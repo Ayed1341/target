@@ -1,0 +1,1 @@
+id,title,severity,confidence,cwe,owasp,cvss_score,affected_url,endpoint,technical_detail,impact,remediation,poc_curl,detection_method,timestamp

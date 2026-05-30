@@ -1,0 +1,37 @@
+{
+  "target": "https://help.flynas.com/",
+  "scan_time": "2026-05-30T03:45:36Z",
+  "duration_s": 0.1,
+  "scope": "help.flynas.com, *.flynas.com",
+  "waf_detected": [],
+  "technologies": [],
+  "ip_addresses": [],
+  "subdomains": [],
+  "assets": [],
+  "api_endpoints": [],
+  "graphql_endpoints": [],
+  "js_files": [],
+  "js_callsites": [],
+  "secret_hits": [],
+  "forms": [],
+  "parameters": {},
+  "cors_results": [],
+  "cookie_findings": [],
+  "passive_hosts": [],
+  "passive_urls": [],
+  "wayback_urls": [],
+  "open_paths": [],
+  "findings": [],
+  "headers_audit": {},
+  "csp_weaknesses": [],
+  "diagnostics": {
+    "seed_attempts": [
+      {
+        "url": "https://help.flynas.com/",
+        "status": 403,
+        "error": null
+      }
+    ],
+    "reason": "seed unreachable"
+  }
+}
