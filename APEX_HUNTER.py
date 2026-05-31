@@ -14011,13 +14011,13 @@ class AIAnalyzer:
             warn(f"AI executive report error: {e}")
             return ""
 
-    def run_for_profile(self, profile: TargetProfile, cfg: Config, out_dir: Path, ts: str) -> None:
+    def run_for_profile(self, profile: TargetProfile, cfg: Config, target_dir: Path) -> None:
         if not self._available():
             return
         banner(f"AI Analysis (Claude claude-opus-4-8) — {profile.host}")
         analysis = self.analyze_target(profile)
         if analysis:
-            path = out_dir / f"ai_analysis_{profile.host.replace('.','_')}_{ts}.md"
+            path = target_dir / "ai_analysis.md"
             path.write_text(
                 f"# APEX_HUNTER AI Analysis — {profile.host}\n"
                 f"**Model:** {self.MODEL}  \n"
@@ -14029,20 +14029,20 @@ class AIAnalyzer:
                 id="AI-ANALYSIS-001",
                 title=f"AI-Powered Attack Chain Analysis — {profile.host}",
                 severity="INFO", cvss=0.0, cwe="CWE-693",
-                description=analysis[:500] + "... [see AI report file for full analysis]",
+                description=analysis[:500] + "... [see ai_analysis.md for full analysis]",
                 evidence=f"Claude claude-opus-4-8 analysis of {len(profile.findings)} findings",
                 poc_curl=f"# See: {path}",
                 category="AI Report",
                 remediation="Apply prioritized remediation plan from AI analysis report."
             ))
 
-    def run_executive(self, profiles: List[TargetProfile], out_dir: Path, ts: str) -> None:
+    def run_executive(self, profiles: List[TargetProfile], base_dir: Path, ts: str) -> None:
         if not self._available() or len(profiles) < 1:
             return
         banner("AI Executive Report (Claude claude-opus-4-8) — all targets")
         report = self.generate_executive_report(profiles)
         if report:
-            path = out_dir / f"ai_executive_report_{ts}.md"
+            path = base_dir / f"ai_executive_report_{ts}.md"
             path.write_text(
                 f"# APEX_HUNTER AI Executive Report\n"
                 f"**Model:** {self.MODEL}  \n"
@@ -14061,77 +14061,83 @@ class APEXReporter:
     SEV_COLOR = {"CRITICAL":"#dc3545","HIGH":"#fd7e14","MEDIUM":"#ffc107","LOW":"#17a2b8","INFO":"#6c757d"}
 
     def __init__(self, out_dir: str):
-        self.out = Path(out_dir); self.out.mkdir(parents=True, exist_ok=True)
+        self.base = Path(out_dir)
+        self.base.mkdir(parents=True, exist_ok=True)
         self.ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    def _all_findings(self, profiles):
-        return sorted(
-            [(p.host, f) for p in profiles for f in p.findings],
-            key=lambda x: self.SEV_ORDER.get(x[1].severity, 5))
+    def target_dir(self, profile: TargetProfile) -> Path:
+        """Return (creating if needed) per-target folder: {host}_{YYYYMMDD}_{HHMMSS}/"""
+        safe = re.sub(r"[^\w.-]", "_", profile.host)
+        d = self.base / f"{safe}_{self.ts}"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
 
-    def save_json(self, profiles):
-        path = self.out / f"apex_report_{self.ts}.json"
-        data = []
-        for p in profiles:
-            d = asdict(p); d["findings"] = [asdict(f) for f in p.findings]; data.append(d)
-        path.write_text(json.dumps({"generated":self.ts,"tool":"APEX_HUNTER v1.0","targets":data}, indent=2))
+    def _sorted_findings(self, profile: TargetProfile):
+        return sorted(profile.findings, key=lambda f: self.SEV_ORDER.get(f.severity, 5))
+
+    def save_json(self, profile: TargetProfile, out: Path):
+        path = out / "apex_report.json"
+        d = asdict(profile)
+        d["findings"] = [asdict(f) for f in profile.findings]
+        path.write_text(json.dumps(
+            {"generated": self.ts, "tool": "APEX_HUNTER v1.0",
+             "target": profile.host, "data": d}, indent=2))
         ok(f"  JSON  → {path}")
 
-    def save_csv(self, profiles):
-        path = self.out / f"findings_{self.ts}.csv"
-        with open(path,"w",newline="") as f:
+    def save_csv(self, profile: TargetProfile, out: Path):
+        path = out / "findings.csv"
+        with open(path, "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["Target","ID","Title","Severity","CVSS","CWE","Category","Description","PoC"])
-            for host, fnd in self._all_findings(profiles):
-                w.writerow([host, fnd.id, fnd.title, fnd.severity, fnd.cvss,
+            for fnd in self._sorted_findings(profile):
+                w.writerow([profile.host, fnd.id, fnd.title, fnd.severity, fnd.cvss,
                             fnd.cwe, fnd.category, fnd.description[:100], fnd.poc_curl[:80]])
         ok(f"  CSV   → {path}")
 
-    def save_markdown(self, profiles):
-        path = self.out / f"apex_report_{self.ts}.md"
-        sev_counts = Counter(f.severity for _, f in self._all_findings(profiles))
+    def save_markdown(self, profile: TargetProfile, out: Path):
+        path = out / "apex_report.md"
+        sev_counts = Counter(f.severity for f in profile.findings)
         lines = [
-            "# APEX_HUNTER v1.0 — Red Team Report",
+            f"# APEX_HUNTER v1.0 — Red Team Report: {profile.host}",
             f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ",
-            f"**Targets:** {', '.join(p.host for p in profiles)}",
+            f"**Target:** {profile.host}  ",
+            f"**Scan folder:** `{out.name}`",
             "","---","","## Executive Summary","",
             "|Severity|Count|","|-|-|",
         ] + [f"|{s}|{sev_counts.get(s,0)}|" for s in ["CRITICAL","HIGH","MEDIUM","LOW","INFO"]]
-        lines += ["","---",""]
-        for p in profiles:
-            lines += [f"## {p.host}","","### Infrastructure",
-                f"- IP: {p.ip} ({p.provider})",
-                f"- TLS: {p.tls_version} / {p.tls_cipher}",
-                f"- Cert: {p.cert_cn} (expires {p.cert_expires})",
-                f"- WAF/CDN: {', '.join(p.waf) or 'None detected'}",
-                f"- Technologies: {', '.join(p.technologies) or 'None'}",
-                f"- Header Score: {p.security_headers.get('score','?')}/100",
-                f"- Subdomains: {len(p.subdomains+p.ct_subdomains)} | JS files: {len(p.js_files)} | Secrets: {len(p.secrets)}",
-                "","### Findings",""]
-            for f in sorted(p.findings, key=lambda x: self.SEV_ORDER.get(x.severity,5)):
-                lines += [
-                    f"#### [{f.severity}] {f.id}: {f.title}",
-                    f"**CWE:** {f.cwe} | **CVSS:** {f.cvss} | **Category:** {f.category}","",
-                    f"{f.description}","",
-                    "**Evidence:**","```",f.evidence,"```","",
-                    "**PoC:**","```bash",f.poc_curl,"```","",
-                    f"**Fix:** {f.remediation}","","---",""]
+        lines += ["","---","",f"## {profile.host}","","### Infrastructure",
+            f"- IP: {profile.ip} ({profile.provider})",
+            f"- TLS: {profile.tls_version} / {profile.tls_cipher}",
+            f"- Cert: {profile.cert_cn} (expires {profile.cert_expires})",
+            f"- WAF/CDN: {', '.join(profile.waf) or 'None detected'}",
+            f"- Technologies: {', '.join(profile.technologies) or 'None'}",
+            f"- Header Score: {profile.security_headers.get('score','?')}/100",
+            f"- Subdomains: {len(profile.subdomains+profile.ct_subdomains)} | "
+            f"JS files: {len(profile.js_files)} | Secrets: {len(profile.secrets)}",
+            "","### Findings",""]
+        for f in self._sorted_findings(profile):
+            lines += [
+                f"#### [{f.severity}] {f.id}: {f.title}",
+                f"**CWE:** {f.cwe} | **CVSS:** {f.cvss} | **Category:** {f.category}","",
+                f"{f.description}","",
+                "**Evidence:**","```",f.evidence,"```","",
+                "**PoC:**","```bash",f.poc_curl,"```","",
+                f"**Fix:** {f.remediation}","","---",""]
         path.write_text("\n".join(lines))
         ok(f"  MD    → {path}")
 
-    def save_html(self, profiles):
-        path = self.out / f"apex_report_{self.ts}.html"
-        all_f = self._all_findings(profiles)
-        sev_counts = Counter(f.severity for _, f in all_f)
+    def save_html(self, profile: TargetProfile, out: Path):
+        path = out / "apex_report.html"
+        sorted_f = self._sorted_findings(profile)
+        sev_counts = Counter(f.severity for f in sorted_f)
         cards = ""
-        for host, f in all_f:
-            col = self.SEV_COLOR.get(f.severity,"#6c757d")
+        for f in sorted_f:
+            col = self.SEV_COLOR.get(f.severity, "#6c757d")
             cards += f"""
 <div class="card" data-sev="{f.severity}">
   <div class="card-hdr" style="border-left:4px solid {col}">
     <span class="badge" style="background:{col}">{f.severity}</span>
     <b>{f.id}</b> — {html.escape(f.title)}
-    <small style="color:#aaa"> | {host}</small>
   </div>
   <div class="card-body">
     <div class="meta">CWE: {f.cwe} &nbsp;|&nbsp; CVSS: {f.cvss} &nbsp;|&nbsp; {f.category}</div>
@@ -14141,18 +14147,21 @@ class APEXReporter:
     <div class="fix">Fix: {html.escape(f.remediation)}</div>
   </div>
 </div>"""
-        infra = ""
-        for p in profiles:
-            infra += f"<tr><td>{p.host}</td><td>{p.ip}</td><td>{p.provider}</td><td>{p.tls_version}</td><td>{', '.join(p.waf) or 'None'}</td><td>{p.security_headers.get('score','?')}/100</td><td>{len(p.findings)}</td></tr>"
+        infra = (f"<tr><td>{profile.host}</td><td>{profile.ip}</td><td>{profile.provider}</td>"
+                 f"<td>{profile.tls_version}</td><td>{', '.join(profile.waf) or 'None'}</td>"
+                 f"<td>{profile.security_headers.get('score','?')}/100</td>"
+                 f"<td>{len(profile.findings)}</td></tr>")
         stat_cards = "".join(
-            f'<div class="stat"><div class="num" style="color:{self.SEV_COLOR.get(s,"#fff")}">{sev_counts.get(s,0)}</div>{s}</div>'
+            f'<div class="stat"><div class="num" style="color:{self.SEV_COLOR.get(s,"#fff")}">'
+            f'{sev_counts.get(s,0)}</div>{s}</div>'
             for s in ["CRITICAL","HIGH","MEDIUM","LOW","INFO"])
-        stat_cards += f'<div class="stat"><div class="num" style="color:#58a6ff">{len(all_f)}</div>TOTAL</div>'
+        stat_cards += (f'<div class="stat"><div class="num" style="color:#58a6ff">'
+                       f'{len(sorted_f)}</div>TOTAL</div>')
         filter_btns = "".join(
             "<button class=\"btn\" onclick=\"filter('" + s + "')\">" + s + "</button>"
             for s in ["ALL","CRITICAL","HIGH","MEDIUM","LOW","INFO"])
         html_out = f"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
-<title>APEX_HUNTER Report — {datetime.now().strftime('%Y-%m-%d')}</title>
+<title>APEX_HUNTER — {profile.host} — {self.ts}</title>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
 body{{background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',monospace;font-size:14px}}
@@ -14177,15 +14186,13 @@ td{{padding:8px;border:1px solid #30363d}}
 .btn{{padding:5px 12px;border-radius:4px;border:1px solid #30363d;background:#161b22;color:#c9d1d9;cursor:pointer;margin:2px}}
 .btn:hover,.btn.active{{background:#58a6ff;color:#000}}
 </style></head><body><div class="wrap">
-<div class="hdr"><h1>&#x1F6E1; APEX_HUNTER v1.0 — Red Team Report</h1>
-<p style="color:#8b949e;margin-top:8px">Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} &nbsp;|&nbsp; 360 Tools &nbsp;|&nbsp; 370 Skills &nbsp;|&nbsp; Targets: {', '.join(p.host for p in profiles)}</p></div>
+<div class="hdr"><h1>&#x1F6E1; APEX_HUNTER v1.0 — {html.escape(profile.host)}</h1>
+<p style="color:#8b949e;margin-top:8px">Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} &nbsp;|&nbsp; 360 Tools &nbsp;|&nbsp; 370 Skills &nbsp;|&nbsp; Folder: {out.name}</p></div>
 <div class="stats">{stat_cards}</div>
 <h2>Infrastructure</h2>
 <table><tr><th>Host</th><th>IP</th><th>Provider</th><th>TLS</th><th>WAF/CDN</th><th>Headers</th><th>Findings</th></tr>{infra}</table>
-<h2>Findings ({len(all_f)})</h2>
-<div class="filters">
-{filter_btns}
-</div>
+<h2>Findings ({len(sorted_f)})</h2>
+<div class="filters">{filter_btns}</div>
 <div id="fc">{cards}</div>
 </div>
 <script>
@@ -14201,31 +14208,44 @@ document.querySelector('.btn').classList.add('active');
         path.write_text(html_out)
         ok(f"  HTML  → {path}")
 
-    def save_poc_script(self, profiles):
-        path = self.out / f"poc_{self.ts}.sh"
-        lines = ["#!/usr/bin/env bash","# APEX_HUNTER v1.0 — PoC Verification","# Run from authorized device with Saudi IP",""]
-        for host, f in self._all_findings(profiles):
-            lines += [f"","# [{f.severity}] {f.id}: {f.title} | {host}",
-                      f"# CWE: {f.cwe} | CVSS: {f.cvss}", f.poc_curl,""]
+    def save_poc_script(self, profile: TargetProfile, out: Path):
+        path = out / "poc_scripts.sh"
+        lines = ["#!/usr/bin/env bash",
+                 f"# APEX_HUNTER v1.0 — PoC Verification: {profile.host}",
+                 f"# Generated: {self.ts}", "# Authorized bug-bounty use only", ""]
+        for f in self._sorted_findings(profile):
+            lines += [f"", f"# [{f.severity}] {f.id}: {f.title}",
+                      f"# CWE: {f.cwe} | CVSS: {f.cvss}", f.poc_curl, ""]
         path.write_text("\n".join(lines))
         path.chmod(0o755)
         ok(f"  PoC   → {path}")
 
-    def save_burp_templates(self, profiles):
-        path = self.out / f"burp_requests_{self.ts}.txt"
-        lines = ["# APEX_HUNTER — Burp Suite Request Templates",""]
-        for host, f in self._all_findings(profiles):
+    def save_burp_templates(self, profile: TargetProfile, out: Path):
+        path = out / "burp_requests.txt"
+        lines = [f"# APEX_HUNTER — Burp Suite Requests: {profile.host}", ""]
+        for f in self._sorted_findings(profile):
             if f.burp_request:
-                lines += [f"# {f.id}: {f.title}",f.burp_request,"","---",""]
-        if len(lines) > 3:
+                lines += [f"# {f.id}: {f.title}", f.burp_request, "", "---", ""]
+        if len(lines) > 2:
             path.write_text("\n".join(lines))
             ok(f"  Burp  → {path}")
 
+    def save_target(self, profile: TargetProfile) -> Path:
+        """Save all per-target reports. Returns the target folder path."""
+        out = self.target_dir(profile)
+        banner(f"  Reports → {out}/")
+        self.save_json(profile, out)
+        self.save_csv(profile, out)
+        self.save_markdown(profile, out)
+        self.save_html(profile, out)
+        self.save_poc_script(profile, out)
+        self.save_burp_templates(profile, out)
+        return out
+
     def run(self, profiles):
         banner("Generating Reports")
-        self.save_json(profiles); self.save_csv(profiles)
-        self.save_markdown(profiles); self.save_html(profiles)
-        self.save_poc_script(profiles); self.save_burp_templates(profiles)
+        for p in profiles:
+            self.save_target(p)
 
 # ══════════════════════════════════════════════════════════════
 # ORCHESTRATOR — Auto-chain execution engine
@@ -14675,10 +14695,11 @@ class APEXOrchestrator:
             banner(f"Summary — {profile.host}")
             for sev, col in [("CRITICAL",C.RED),("HIGH",C.RED),("MEDIUM",C.YELLOW),("LOW",C.CYAN),("INFO",C.DIM)]:
                 if cnts.get(sev): print(f"  {col}{sev}: {cnts[sev]}{C.NC}")
-            # AI per-target analysis
-            self.ai.run_for_profile(profile, self.cfg, out_dir, self.reporter.ts)
-        self.reporter.run(profiles)
-        # AI executive report across all targets
+            # Save per-target reports → {host}_{YYYYMMDD}_{HHMMSS}/
+            target_out = self.reporter.save_target(profile)
+            # AI per-target analysis written into same folder
+            self.ai.run_for_profile(profile, self.cfg, target_out)
+        # AI executive report in base output dir
         self.ai.run_executive(profiles, out_dir, self.reporter.ts)
         banner("Complete")
         ok(f"Total findings: {sum(len(p.findings) for p in profiles)} across {len(profiles)} target(s)")
