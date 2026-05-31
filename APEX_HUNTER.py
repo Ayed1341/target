@@ -3,10 +3,10 @@
 """
 APEX_HUNTER v1.0 — Advanced Professional Exploitation & Recon Hunter
 ═════════════════════════════════════════════════════════════════════
-35 Integrated Tools | 45 Security Skills | Full Auto-Chain Execution
+360 Tools | 370 Skills | Full Auto-Chain Execution
 
 Merges: TITAN_HUNTER v1.0 + Advanced_Recon v2.0 + REDTEAM.PY v3.0
-New:    15 Advanced Techniques
+New:    15 Advanced Phases | AI-Powered Analysis via Claude claude-opus-4-8
 
 Usage:
   python APEX_HUNTER.py --target https://example.com --output ./out
@@ -37,6 +37,11 @@ try:
     import requests; HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False
+
+try:
+    import anthropic; HAS_ANTHROPIC = True
+except ImportError:
+    HAS_ANTHROPIC = False
 
 # ── Console colors ────────────────────────────────────────────
 class C:
@@ -219,6 +224,7 @@ class Config:
     phases: List[int] = field(default_factory=lambda: list(range(1, 8)))
     user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     ua_bot: str = "Googlebot/2.1 (+http://www.google.com/bot.html)"
+    ai_key: str = ""
 
     @property
     def ua(self) -> str:
@@ -13085,12 +13091,11 @@ class JWTSecretCracker:
         "development", "staging", "production", "mysecretkey",
         "HS256key", "jwt-key", "auth_secret", "api_secret",
         "", "null", "undefined", "none", "true", "false",
-        profile_host := None,  # placeholder — filled at runtime
     ]
 
     def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
         import base64, hmac, hashlib
-        secrets_to_try = [s for s in self.WEAK_SECRETS if s is not None]
+        secrets_to_try = list(self.WEAK_SECRETS)
         secrets_to_try += [profile.host, profile.apex, profile.host.split(".")[0]]
         jwts = [f.evidence for f in profile.findings if "JWT" in f.id or "jwt" in f.id.lower()]
         jwts += [s.get("value", "") for s in profile.secrets if "eyJ" in s.get("value", "")]
@@ -13902,6 +13907,153 @@ class FullChainReportGen:
         return profile
 
 # ══════════════════════════════════════════════════════════════
+# AI ANALYZER — Claude claude-opus-4-8 powered finding analysis
+# ══════════════════════════════════════════════════════════════
+class AIAnalyzer:
+    """Use Claude claude-opus-4-8 to generate AI-powered attack chains, executive summaries,
+    and prioritized remediation from raw scan findings."""
+    MODEL = "claude-opus-4-8"
+
+    def __init__(self, api_key: str):
+        self._key = api_key
+        self._client = None
+        if HAS_ANTHROPIC and api_key:
+            self._client = anthropic.Anthropic(api_key=api_key)
+
+    def _available(self) -> bool:
+        return self._client is not None
+
+    @staticmethod
+    def _format_findings_for_prompt(profile: TargetProfile) -> str:
+        lines = [f"Target: {profile.host} ({profile.ip})",
+                 f"WAF: {', '.join(profile.waf) or 'none'}",
+                 f"Technologies: {', '.join(profile.technologies[:10]) or 'unknown'}",
+                 f"Total findings: {len(profile.findings)}", ""]
+        sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+        for f in sorted(profile.findings, key=lambda x: sev_order.get(x.severity, 5)):
+            lines.append(
+                f"[{f.severity}] {f.id}: {f.title}\n"
+                f"  CWE={f.cwe} CVSS={f.cvss} Cat={f.category}\n"
+                f"  Desc: {f.description[:200]}\n"
+                f"  PoC: {f.poc_curl[:120]}\n"
+                f"  Fix: {f.remediation[:150]}"
+            )
+        return "\n".join(lines)
+
+    def analyze_target(self, profile: TargetProfile) -> str:
+        if not self._available():
+            return ""
+        findings_text = self._format_findings_for_prompt(profile)
+        prompt = (
+            "You are a senior red team / penetration testing expert analyzing bug bounty findings.\n"
+            "Given the findings below from an authorized security assessment, produce:\n\n"
+            "1. **EXECUTIVE SUMMARY** (3-5 sentences for a non-technical audience)\n"
+            "2. **TOP 5 ATTACK CHAINS** — realistic exploit chains combining multiple findings, "
+            "ordered by impact. For each: chain name, step-by-step attack path, business impact.\n"
+            "3. **PRIORITY REMEDIATION MATRIX** — group findings by: P1 (critical, fix in 24h), "
+            "P2 (high, fix in 7d), P3 (medium, fix in 30d). Include specific actionable fix for each.\n"
+            "4. **MOST DANGEROUS FINDING** — one paragraph deep-dive on the highest-risk finding "
+            "including realistic exploitation scenario and blast radius.\n\n"
+            f"--- FINDINGS ---\n{findings_text}"
+        )
+        try:
+            resp = self._client.messages.create(
+                model=self.MODEL,
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return resp.content[0].text if resp.content else ""
+        except Exception as e:
+            warn(f"AI analysis error: {e}")
+            return ""
+
+    def generate_executive_report(self, profiles: List[TargetProfile]) -> str:
+        if not self._available() or not profiles:
+            return ""
+        all_findings = [(p.host, f) for p in profiles for f in p.findings]
+        sev_counts: Dict[str, int] = {}
+        for _, f in all_findings:
+            sev_counts[f.severity] = sev_counts.get(f.severity, 0) + 1
+        summary_lines = [
+            f"Multi-target assessment across {len(profiles)} target(s): "
+            f"{', '.join(p.host for p in profiles)}.",
+            f"Total findings: {len(all_findings)} — "
+            f"CRITICAL={sev_counts.get('CRITICAL',0)}, "
+            f"HIGH={sev_counts.get('HIGH',0)}, "
+            f"MEDIUM={sev_counts.get('MEDIUM',0)}, "
+            f"LOW={sev_counts.get('LOW',0)}.",
+        ]
+        for p in profiles:
+            critical = [f for f in p.findings if f.severity == "CRITICAL"]
+            if critical:
+                summary_lines.append(
+                    f"{p.host}: {len(critical)} CRITICAL — "
+                    + ", ".join(f.id for f in critical[:5])
+                )
+        prompt = (
+            "You are a CISO-level security advisor writing a board-ready executive report.\n"
+            "Based on the multi-target security assessment summary below, write:\n\n"
+            "1. **BOARD EXECUTIVE SUMMARY** (one page max, plain language, business risk framing)\n"
+            "2. **RISK RATING PER TARGET** — overall risk score (Critical/High/Medium/Low) with rationale\n"
+            "3. **IMMEDIATE ACTION ITEMS** — top 5 actions the organization must take in the next 24-48 hours\n"
+            "4. **STRATEGIC RECOMMENDATIONS** — 3-5 structural/architectural fixes to prevent recurrence\n"
+            "5. **COMPLIANCE IMPLICATIONS** — flag findings that may breach GDPR, PCI-DSS, ISO27001, or SOC2\n\n"
+            f"--- ASSESSMENT SUMMARY ---\n" + "\n".join(summary_lines)
+        )
+        try:
+            resp = self._client.messages.create(
+                model=self.MODEL,
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return resp.content[0].text if resp.content else ""
+        except Exception as e:
+            warn(f"AI executive report error: {e}")
+            return ""
+
+    def run_for_profile(self, profile: TargetProfile, cfg: Config, out_dir: Path, ts: str) -> None:
+        if not self._available():
+            return
+        banner(f"AI Analysis (Claude claude-opus-4-8) — {profile.host}")
+        analysis = self.analyze_target(profile)
+        if analysis:
+            path = out_dir / f"ai_analysis_{profile.host.replace('.','_')}_{ts}.md"
+            path.write_text(
+                f"# APEX_HUNTER AI Analysis — {profile.host}\n"
+                f"**Model:** {self.MODEL}  \n"
+                f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                + analysis
+            )
+            ok(f"  AI    → {path}")
+            profile.findings.append(Finding(
+                id="AI-ANALYSIS-001",
+                title=f"AI-Powered Attack Chain Analysis — {profile.host}",
+                severity="INFO", cvss=0.0, cwe="CWE-693",
+                description=analysis[:500] + "... [see AI report file for full analysis]",
+                evidence=f"Claude claude-opus-4-8 analysis of {len(profile.findings)} findings",
+                poc_curl=f"# See: {path}",
+                category="AI Report",
+                remediation="Apply prioritized remediation plan from AI analysis report."
+            ))
+
+    def run_executive(self, profiles: List[TargetProfile], out_dir: Path, ts: str) -> None:
+        if not self._available() or len(profiles) < 1:
+            return
+        banner("AI Executive Report (Claude claude-opus-4-8) — all targets")
+        report = self.generate_executive_report(profiles)
+        if report:
+            path = out_dir / f"ai_executive_report_{ts}.md"
+            path.write_text(
+                f"# APEX_HUNTER AI Executive Report\n"
+                f"**Model:** {self.MODEL}  \n"
+                f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n"
+                f"**Targets:** {', '.join(p.host for p in profiles)}\n\n"
+                + report
+            )
+            ok(f"  AI Exec → {path}")
+
+
+# ══════════════════════════════════════════════════════════════
 # REPORTER  (SKILL-29, SKILL-30)
 # ══════════════════════════════════════════════════════════════
 class APEXReporter:
@@ -14026,7 +14178,7 @@ td{{padding:8px;border:1px solid #30363d}}
 .btn:hover,.btn.active{{background:#58a6ff;color:#000}}
 </style></head><body><div class="wrap">
 <div class="hdr"><h1>&#x1F6E1; APEX_HUNTER v1.0 — Red Team Report</h1>
-<p style="color:#8b949e;margin-top:8px">Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} &nbsp;|&nbsp; 35 Tools &nbsp;|&nbsp; 45 Skills &nbsp;|&nbsp; Targets: {', '.join(p.host for p in profiles)}</p></div>
+<p style="color:#8b949e;margin-top:8px">Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} &nbsp;|&nbsp; 360 Tools &nbsp;|&nbsp; 370 Skills &nbsp;|&nbsp; Targets: {', '.join(p.host for p in profiles)}</p></div>
 <div class="stats">{stat_cards}</div>
 <h2>Infrastructure</h2>
 <table><tr><th>Host</th><th>IP</th><th>Provider</th><th>TLS</th><th>WAF/CDN</th><th>Headers</th><th>Findings</th></tr>{infra}</table>
@@ -14100,7 +14252,8 @@ class APEXOrchestrator:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.reporter = APEXReporter(cfg.output)
-        # Instantiate all 35 tools
+        self.ai = AIAnalyzer(cfg.ai_key)
+        # Instantiate all tools
         self.t01 = DNSResolver(); self.t02 = TLSAnalyzer()
         self.t03 = CTLogScanner(); self.t04 = WaybackMiner()
         self.t05 = WAFDetector(); self.t06 = TechFingerprinter()
@@ -14505,8 +14658,11 @@ class APEXOrchestrator:
         print(f"  Output  : {self.cfg.output}")
         print(f"  Phases  : {self.cfg.phases}")
         print(f"  Workers : {self.cfg.workers} | Rate: {self.cfg.rate} r/s | Depth: {self.cfg.depth}")
+        ai_status = f"claude-opus-4-8 (key set)" if self.cfg.ai_key else "disabled (use --ai-key)"
+        print(f"  AI      : {ai_status}")
         print(f"{C.WHITE}{SEP}{C.NC}\n")
         profiles = []
+        out_dir = Path(self.cfg.output)
         for target in self.cfg.targets:
             banner(f"TARGET: {target}")
             profile = self._init_profile(target)
@@ -14519,7 +14675,11 @@ class APEXOrchestrator:
             banner(f"Summary — {profile.host}")
             for sev, col in [("CRITICAL",C.RED),("HIGH",C.RED),("MEDIUM",C.YELLOW),("LOW",C.CYAN),("INFO",C.DIM)]:
                 if cnts.get(sev): print(f"  {col}{sev}: {cnts[sev]}{C.NC}")
+            # AI per-target analysis
+            self.ai.run_for_profile(profile, self.cfg, out_dir, self.reporter.ts)
         self.reporter.run(profiles)
+        # AI executive report across all targets
+        self.ai.run_executive(profiles, out_dir, self.reporter.ts)
         banner("Complete")
         ok(f"Total findings: {sum(len(p.findings) for p in profiles)} across {len(profiles)} target(s)")
         ok(f"Reports: {self.cfg.output}/")
@@ -14935,6 +15095,7 @@ Examples:
   python APEX_HUNTER.py --target https://t1.com --target https://t2.com --output ./out
   python APEX_HUNTER.py --target https://example.com --output ./out --phases 1,2,3,7,8,9
   python APEX_HUNTER.py --target https://example.com --output ./out --workers 15 --rate 3.0
+  python APEX_HUNTER.py --target https://example.com --output ./out --ai-key sk-ant-...
   python APEX_HUNTER.py --skills
 """)
     p.add_argument("--target","-t", action="append", default=[], dest="targets",
@@ -14947,6 +15108,9 @@ Examples:
     p.add_argument("--scope",    action="append", default=[], dest="scope_extras")
     p.add_argument("--phases",   default="1,2,3,4,5,6,7,8,9,10,11,12,13,14,15",
                    help="Phases to run (default: 1-15, e.g. 1,2,7,8,9,10,11,12,13,14,15)")
+    p.add_argument("--ai-key",   default=os.environ.get("ANTHROPIC_API_KEY", ""),
+                   dest="ai_key",
+                   help="Anthropic API key for claude-opus-4-8 AI analysis (or set ANTHROPIC_API_KEY env var)")
     p.add_argument("--skills",   action="store_true", help="Print skills index and exit")
     args = p.parse_args()
 
@@ -14966,7 +15130,8 @@ Examples:
     cfg = Config(
         targets=args.targets, output=args.output,
         workers=args.workers, rate=args.rate, depth=args.depth,
-        timeout=args.timeout, scope_extras=args.scope_extras, phases=phases)
+        timeout=args.timeout, scope_extras=args.scope_extras, phases=phases,
+        ai_key=args.ai_key)
     APEXOrchestrator(cfg).run()
 
 if __name__ == "__main__":
