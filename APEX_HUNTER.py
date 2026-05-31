@@ -215,6 +215,8 @@ class TargetProfile:
     ssti_params: List[str] = field(default_factory=list)
     smuggling_results: List[Dict] = field(default_factory=list)
     chain_state: Dict[str, Any] = field(default_factory=dict)
+    is_ip: bool = False
+    rdns_hostname: str = ""
 
 @dataclass
 class Config:
@@ -230,6 +232,50 @@ class Config:
     @property
     def ua(self) -> str:
         return self.user_agent
+
+# ══════════════════════════════════════════════════════════════
+# TARGET NORMALIZER — IP and domain smart detection
+# ══════════════════════════════════════════════════════════════
+_IP_RE  = re.compile(r'^(\d{1,3}(?:\.\d{1,3}){3})$')
+_IP6_RE = re.compile(r'^\[?([0-9a-fA-F:]+)\]?$')
+
+def _is_ip(host: str) -> bool:
+    """Return True if host is an IPv4 or IPv6 address."""
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return True
+    except ValueError:
+        return False
+
+def _normalize_target(raw: str) -> str:
+    """Accept any of these formats and return a proper URL:
+      192.168.1.1          → https://192.168.1.1
+      192.168.1.1:8443     → https://192.168.1.1:8443
+      http://10.0.0.1:8080 → http://10.0.0.1:8080
+      example.com          → https://example.com
+      example.com:8080     → https://example.com:8080
+    """
+    raw = raw.strip()
+    if not raw:
+        return raw
+    # Already has a scheme
+    if re.match(r'^https?://', raw):
+        return raw
+    # Bare IP with optional port: 10.0.0.1 or 10.0.0.1:8080
+    bare_ip = re.match(r'^(\d{1,3}(?:\.\d{1,3}){3})(?::(\d+))?$', raw)
+    if bare_ip:
+        ip, port = bare_ip.group(1), bare_ip.group(2)
+        scheme = "http" if port and port == "80" else "https"
+        return f"{scheme}://{ip}" + (f":{port}" if port else "")
+    # IPv6 bare
+    bare_ip6 = re.match(r'^\[([0-9a-fA-F:]+)\](?::(\d+))?$', raw)
+    if bare_ip6:
+        ip6, port = bare_ip6.group(1), bare_ip6.group(2)
+        scheme = "http" if port and port == "80" else "https"
+        return f"{scheme}://[{ip6}]" + (f":{port}" if port else "")
+    # Domain with optional port
+    return "https://" + raw
+
 
 # ══════════════════════════════════════════════════════════════
 # HTTP HELPERS
@@ -309,8 +355,50 @@ class DNSResolver:
         rand = f"notexist-{int(time.time())}-xyzabc.{apex}"
         return self.resolve(rand) != "NXDOMAIN"
 
+    _COMMON_PORTS = [80, 443, 8080, 8443, 8000, 8008, 8888, 3000, 4000, 5000, 9000, 9443]
+
+    def _open_ports(self, ip: str, timeout: float = 1.0) -> List[int]:
+        open_p = []
+        for port in self._COMMON_PORTS:
+            try:
+                with socket.create_connection((ip, port), timeout=timeout):
+                    open_p.append(port)
+            except Exception:
+                pass
+        return open_p
+
     def run(self, profile: TargetProfile) -> TargetProfile:
         skill("DNS-01: Resolving target + ASN + wildcard check")
+        if profile.is_ip:
+            # IP target — skip forward DNS, do reverse + port scan
+            ip = profile.host
+            profile.ip = ip
+            profile.provider = self.classify(ip)
+            ok(f"  IP target: {ip} ({profile.provider})")
+            if profile.rdns_hostname:
+                ok(f"  rDNS: {profile.rdns_hostname}")
+                profile.subdomains = [profile.rdns_hostname]
+            open_ports = self._open_ports(ip)
+            if open_ports:
+                ok(f"  Open ports: {open_ports}")
+                profile.chain_state["open_ports"] = open_ports
+            profile.findings.append(Finding(
+                id="DNS-IP-PROFILE-001",
+                title=f"IP Target Profile — {ip}",
+                severity="INFO", cvss=0.0, cwe="CWE-200",
+                description=(
+                    f"Target is a bare IP address: {ip}\n"
+                    f"Provider: {profile.provider}\n"
+                    f"Reverse DNS: {profile.rdns_hostname or 'none'}\n"
+                    f"Open ports detected: {open_ports}"
+                ),
+                evidence=f"IP={ip} | rDNS={profile.rdns_hostname} | Ports={open_ports}",
+                poc_curl=f"# Port scan: nmap -sV -p {','.join(str(p) for p in open_ports or [80,443])} {ip}",
+                category="Recon",
+                remediation="Restrict public access to internal IPs. Ensure services on all open ports are intentional."
+            ))
+            return profile
+        # Domain target — original behaviour
         h = profile.host; apex = profile.apex
         ip = self.resolve(h)
         profile.ip = ip
@@ -333,10 +421,15 @@ class DNSResolver:
 class TLSAnalyzer:
     def run(self, profile: TargetProfile) -> TargetProfile:
         skill("TLS-02: Cipher, version, cert, SAN, ACME detection")
+        # For IP targets use the URL port; for domains default to 443
+        parsed_port = urlparse(profile.url).port
+        tls_port = parsed_port if parsed_port else 443
+        # For IP targets don't send SNI (server_hostname stays as IP)
+        sni_host = profile.host if not profile.is_ip else None
         try:
             ctx = _ssl_ctx()
-            with socket.create_connection((profile.host, 443), timeout=10) as s:
-                with ctx.wrap_socket(s, server_hostname=profile.host) as ss:
+            with socket.create_connection((profile.host, tls_port), timeout=10) as s:
+                with ctx.wrap_socket(s, server_hostname=sni_host) as ss:
                     profile.tls_version = ss.version() or ""
                     profile.tls_cipher  = ss.cipher()[0] if ss.cipher() else ""
                     cert = ss.getpeercert()
@@ -367,6 +460,9 @@ class TLSAnalyzer:
 class CTLogScanner:
     def run(self, profile: TargetProfile) -> TargetProfile:
         skill("CT-03: Certificate Transparency log mining (crt.sh)")
+        if profile.is_ip:
+            info("  CT logs: skipped (IP targets have no certificate transparency records)")
+            return profile
         try:
             url = f"https://crt.sh/?q=%25.{profile.apex}&output=json"
             req = urllib.request.Request(url, headers={"User-Agent": "APEX/1.0"})
@@ -392,8 +488,9 @@ class WaybackMiner:
     def run(self, profile: TargetProfile) -> TargetProfile:
         skill("WAYBACK-04: Mining archived URLs + parameter extraction")
         try:
+            cdx_target = profile.host if profile.is_ip else f"*.{profile.apex}"
             url = (f"https://web.archive.org/cdx/search/cdx"
-                   f"?url=*.{profile.apex}/*&output=json&fl=original"
+                   f"?url={cdx_target}/*&output=json&fl=original"
                    f"&collapse=urlkey&limit=3000")
             req = urllib.request.Request(url, headers={"User-Agent": "APEX/1.0"})
             with urllib.request.urlopen(req, timeout=20) as r:
@@ -979,6 +1076,9 @@ class SubdomainTakeoverDetector:
 
     def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
         skill("TAKEOVER-18: Subdomain takeover (11 provider fingerprints)")
+        if profile.is_ip:
+            info("  Subdomain takeover: skipped (IP targets have no subdomains)")
+            return profile
         resolver = DNSResolver()
         all_subs = list(set(profile.subdomains + profile.ct_subdomains))[:25]
         takeovers = []
@@ -15221,10 +15321,23 @@ class APEXOrchestrator:
         self.t364 = PostRCEImpactMapper()
         self.t365 = DynamicWAFBypassAdapter()
 
-    def _init_profile(self, url: str) -> TargetProfile:
+    def _init_profile(self, raw: str) -> TargetProfile:
+        url = _normalize_target(raw)
         p = urlparse(url)
-        host = p.hostname or url
-        apex = ".".join(host.split(".")[-2:]) if host else host
+        host = p.hostname or raw
+        if _is_ip(host):
+            # Reverse DNS to find real hostname
+            rdns = ""
+            try:
+                rdns = socket.gethostbyaddr(host)[0]
+            except Exception:
+                pass
+            return TargetProfile(
+                url=url, apex=host, host=host, scheme=p.scheme,
+                ip=host, is_ip=True, rdns_hostname=rdns,
+                provider=DNSResolver().classify(host),
+            )
+        apex = ".".join(host.split(".")[-2:]) if "." in host else host
         return TargetProfile(url=url, apex=apex, host=host, scheme=p.scheme)
 
     def _run_phase(self, n: int, p: TargetProfile) -> TargetProfile:
@@ -15911,6 +16024,8 @@ Examples:
         p.print_help()
         print(f"\n{C.RED}Error: at least one --target required{C.NC}")
         sys.exit(1)
+
+    args.targets = [_normalize_target(t) for t in args.targets]
 
     try:
         phases = [int(x.strip()) for x in args.phases.split(",")]
