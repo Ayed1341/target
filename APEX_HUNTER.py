@@ -21443,9 +21443,6 @@ class OAuth2TokenRefererLeak:
     TOKEN_IN_URL_RE = re.compile(
         r"(?:access_token|code|id_token|token)=([A-Za-z0-9\-_.~+/]{10,})", re.I
     )
-    THIRD_PARTY_RE = re.compile(
-        r'src=["\']https?://(?!(?:' , re.I
-    )
 
     def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
         skill("OAUTH2-REFERER-441: OAuth2 token leak via Referer header — confirmed by token in redirect URL")
