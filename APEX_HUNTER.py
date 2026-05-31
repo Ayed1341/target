@@ -267,13 +267,23 @@ def _normalize_target(raw: str) -> str:
         ip, port = bare_ip.group(1), bare_ip.group(2)
         scheme = "http" if port and port == "80" else "https"
         return f"{scheme}://{ip}" + (f":{port}" if port else "")
-    # IPv6 bare
+    # IPv6 bracketed: [::1] or [::1]:8443
     bare_ip6 = re.match(r'^\[([0-9a-fA-F:]+)\](?::(\d+))?$', raw)
     if bare_ip6:
         ip6, port = bare_ip6.group(1), bare_ip6.group(2)
         scheme = "http" if port and port == "80" else "https"
         return f"{scheme}://[{ip6}]" + (f":{port}" if port else "")
-    # Domain with optional port
+    # Bare IPv6 without brackets (e.g. ::1 or 2001:db8::1) — wrap in brackets
+    try:
+        import ipaddress as _ipa
+        _ipa.IPv6Address(raw.split("%")[0])  # strip zone ID if present
+        return f"https://[{raw}]"
+    except ValueError:
+        pass
+    # Domain with optional port — use http:// only for explicit port 80
+    port_m = re.match(r'^.+:(\d+)$', raw)
+    if port_m and port_m.group(1) == "80":
+        return "http://" + raw
     return "https://" + raw
 
 
@@ -1091,6 +1101,7 @@ class SubdomainTakeoverDetector:
                     if sig.lower() in body.lower():
                         high(f"  TAKEOVER CANDIDATE: {sub} ({provider})")
                         takeovers.append({"subdomain":sub,"provider":provider})
+                        break  # one entry per subdomain+provider; avoid dup from multi-sig match
         if takeovers:
             profile.findings.append(Finding(
                 id="F-TKO-001", title="Subdomain Takeover Candidates",
@@ -3673,6 +3684,9 @@ class VHostFuzzer:
     PROBE_HOSTS = ["admin", "internal", "dev", "staging", "api", "backend",
                    "test", "beta", "portal", "dashboard", "manage", "private"]
     def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        if profile.is_ip:
+            info("  VHostFuzzer: skipped (IP targets have no apex domain for vhost construction)")
+            return profile
         # Get baseline with real host
         baseline = _fetch(profile.url, cfg.ua, cfg.timeout)
         if not baseline:
@@ -4209,6 +4223,9 @@ class SubdomainTakeoverV2:
         "is not a registered InCloud YouTrack": ("JetBrains YouTrack", "HIGH"),
     }
     def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        if profile.is_ip:
+            info("  SubdomainTakeoverV2: skipped (IP targets have no apex domain)")
+            return profile
         import socket
         for sub in ["www", "blog", "help", "support", "dev", "staging",
                     "api", "beta", "test", "mail", "cdn", "status"][:8]:
@@ -13221,7 +13238,7 @@ class JWTSecretCracker:
                                 "Attacker can forge any token — impersonate any user, "
                                 "escalate to admin, bypass all JWT-protected endpoints."
                             ),
-                            evidence=f"JWT: {raw_jwt[:60]}... | Secret: {secret}",
+                            evidence=f"JWT: {raw_jwt[:60]}... | Secret: '{secret}'",
                             poc_curl=(
                                 f"# Forge admin JWT with python-jwt or jwt.io:\n"
                                 f"python3 -c \""
@@ -13263,6 +13280,9 @@ class ReconSubdomainBrute:
             return ""
 
     def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
+        if profile.is_ip:
+            info("  ReconSubdomainBrute: skipped (IP targets have no apex domain)")
+            return profile
         apex = profile.apex
         new_subs = []
         for word in self.WORDLIST:
@@ -14268,7 +14288,7 @@ class ContextualMultiStageChain:
         secret = profile.chain_state.get("cracked_jwt_secret")
         if not secret:
             for f in profile.findings:
-                if "JWT-CRACK" in f.id:
+                if "JWT-CRACK" in f.id or "JWT-SECRET-CRACKED" in f.id:
                     m = re.search(r"Secret: '([^']+)'", f.evidence)
                     if m:
                         secret = m.group(1)
@@ -14667,14 +14687,16 @@ class DynamicWAFBypassAdapter:
         # Re-test CMDi findings with bypass variants
         cmdi_f = [f for f in profile.findings if "CMDI" in f.id or "CMDi" in f.id]
         for f in cmdi_f[:3]:
-            m = re.search(r"https?://([^\s'\"?]+)\?(\w+)=", f.poc_curl)
+            m = re.search(r"(https?)://([^\s'\"?]+)\?(\w+)=", f.poc_curl)
             if not m:
                 continue
-            result = self._try_cmdi(f"https://{m.group(1)}", m.group(2), cfg)
+            orig_scheme, orig_path, orig_param = m.group(1), m.group(2), m.group(3)
+            retest_url = f"{orig_scheme}://{orig_path}"  # preserve original scheme
+            result = self._try_cmdi(retest_url, orig_param, cfg)
             if result:
                 name, payload = result
-                profile.chain_state["rce_url"]   = f"https://{m.group(1)}"
-                profile.chain_state["rce_param"]  = m.group(2)
+                profile.chain_state["rce_url"]   = retest_url
+                profile.chain_state["rce_param"]  = orig_param
                 profile.findings.append(Finding(
                     id=f"P16-WAFBYPASS-CMDI-{name.upper()[:18]}",
                     title=f"WAF-Bypass CMDi — '{name}' technique confirmed ({waf})",
@@ -14684,7 +14706,7 @@ class DynamicWAFBypassAdapter:
                         f"Payload: {payload[:100]}. RCE confirmed despite WAF protection."
                     ),
                     evidence=f"technique={name} | payload={payload[:80]}",
-                    poc_curl=f"curl -sk '{profile.chain_state['rce_url']}?{m.group(2)}={urllib.parse.quote(payload)}'",
+                    poc_curl=f"curl -sk '{retest_url}?{orig_param}={urllib.parse.quote(payload)}'",
                     category="WAF Bypass / RCE",
                     remediation="WAF bypass confirmed — validate input at application layer, not only at WAF."
                 ))
@@ -15049,15 +15071,17 @@ document.querySelector('.btn').classList.add('active');
             "",
         ]
         for f in self._sorted_findings(profile):
-            # Use single-quoted APEX_EOF so bash treats the body as a literal string.
-            # This is 100% safe regardless of payload content.
-            safe_poc = f.poc_curl.replace("'APEX_EOF'", "'APE_X_EOF'")  # avoid heredoc collision
+            # Escape single quotes for bash echo (using '\''); replace ALL forms of APEX_EOF
+            # so bash never sees the heredoc sentinel inside the heredoc body.
+            safe_poc = f.poc_curl.replace("APEX_EOF", "APE_X_EOF")
+            safe_title    = f.title[:80].replace("'", "'\\''")
+            safe_category = f.category.replace("'", "'\\''")
             lines += [
                 "",
                 f"echo '{sep}'",
                 f"echo '[{f.severity}] {f.id}'",
-                f"echo '{f.title[:80]}'",
-                f"echo 'CWE: {f.cwe}  CVSS: {f.cvss}  Category: {f.category}'",
+                f"echo '{safe_title}'",
+                f"echo 'CWE: {f.cwe}  CVSS: {f.cvss}  Category: {safe_category}'",
                 f"echo '{sep}'",
                 "cat <<'APEX_EOF'",
                 safe_poc,
