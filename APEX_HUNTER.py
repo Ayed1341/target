@@ -13914,7 +13914,7 @@ class FullChainReportGen:
 #        (3) Signatured / WAF-blocked payloads
 # ══════════════════════════════════════════════════════════════
 
-class WAFBypassPayloadGen:
+class _PayloadLib:
     """Utility: generate WAF-bypassing obfuscated payload variants for any attack class.
     Used by Phase 16 tools — not a Phase tool itself (no run() method)."""
 
@@ -14341,7 +14341,7 @@ class WAFBypassUploadChain:
         elif profile.chain_state.get("auth_session"):
             auth_h = {"Cookie": profile.chain_state["auth_session"]}
 
-        variants = WAFBypassPayloadGen.php_webshells()
+        variants = _PayloadLib.php_webshells()
 
         for up_path in self.UPLOAD_PATHS:
             url = base + up_path
@@ -14516,7 +14516,7 @@ class DynamicWAFBypassAdapter:
         ])
 
     def _try_cmdi(self, base_url: str, param: str, cfg: Config) -> Optional[Tuple[str, str]]:
-        for name, payload in WAFBypassPayloadGen.cmdi_variants("id"):
+        for name, payload in _PayloadLib.cmdi_variants("id"):
             if "__OOB__" in payload:
                 continue  # skip OOB-only payloads
             test_url = f"{base_url}?{param}={urllib.parse.quote(payload)}"
@@ -14532,7 +14532,7 @@ class DynamicWAFBypassAdapter:
         return None
 
     def _try_xss(self, base_url: str, param: str, cfg: Config) -> Optional[str]:
-        for payload in WAFBypassPayloadGen.xss_bypasses():
+        for payload in _PayloadLib.xss_bypasses():
             test_url = f"{base_url}?{param}={urllib.parse.quote(payload)}"
             try:
                 r = _fetch(test_url, cfg.ua, cfg.timeout)
@@ -14546,7 +14546,7 @@ class DynamicWAFBypassAdapter:
         return None
 
     def _try_sqli(self, base_url: str, param: str, cfg: Config) -> Optional[str]:
-        for payload in WAFBypassPayloadGen.sqli_bypasses():
+        for payload in _PayloadLib.sqli_bypasses():
             test_url = f"{base_url}?{param}={urllib.parse.quote(payload)}"
             try:
                 r = _fetch(test_url, cfg.ua, cfg.timeout)
