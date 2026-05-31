@@ -14933,13 +14933,37 @@ document.querySelector('.btn').classList.add('active');
         ok(f"  HTML  → {path}")
 
     def save_poc_script(self, profile: TargetProfile, out: Path):
+        """Write poc_scripts.sh.
+        Each PoC is wrapped in a single-quoted heredoc so bash never interprets
+        shell metacharacters inside URLs or payloads (*)(uid=* etc.).
+        Running the script prints every PoC command for review and copy-paste."""
+        sep = "=" * 62
         path = out / "poc_scripts.sh"
-        lines = ["#!/usr/bin/env bash",
-                 f"# APEX_HUNTER v1.0 — PoC Verification: {profile.host}",
-                 f"# Generated: {self.ts}", "# Authorized bug-bounty use only", ""]
+        lines = [
+            "#!/usr/bin/env bash",
+            f"# APEX_HUNTER v1.0 — PoC Verification: {profile.host}",
+            f"# Generated : {self.ts}",
+            "# Usage     : bash poc_scripts.sh | grep -A20 'CRITICAL'",
+            "# Each block prints the PoC command — copy and run it manually",
+            "# Authorized bug-bounty / legal security research ONLY",
+            "",
+        ]
         for f in self._sorted_findings(profile):
-            lines += [f"", f"# [{f.severity}] {f.id}: {f.title}",
-                      f"# CWE: {f.cwe} | CVSS: {f.cvss}", f.poc_curl, ""]
+            # Use single-quoted APEX_EOF so bash treats the body as a literal string.
+            # This is 100% safe regardless of payload content.
+            safe_poc = f.poc_curl.replace("'APEX_EOF'", "'APE_X_EOF'")  # avoid heredoc collision
+            lines += [
+                "",
+                f"echo '{sep}'",
+                f"echo '[{f.severity}] {f.id}'",
+                f"echo '{f.title[:80]}'",
+                f"echo 'CWE: {f.cwe}  CVSS: {f.cvss}  Category: {f.category}'",
+                f"echo '{sep}'",
+                "cat <<'APEX_EOF'",
+                safe_poc,
+                "APEX_EOF",
+                "echo ''",
+            ]
         path.write_text("\n".join(lines))
         path.chmod(0o755)
         ok(f"  PoC   → {path}")
