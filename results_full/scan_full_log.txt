@@ -19,3 +19,471 @@
 [2m      www.ejada.com → 34.8.198.205[0m
 [2m      mail.ejada.com → 88.85.226.102[0m
 [2m      smtp.ejada.com → 88.85.226.102[0m
+[0;35m[SKILL] TLS-02: Cipher, version, cert, SAN, ACME detection[0m
+[0;32m[+]   TLSv1.3 / TLS_AES_256_GCM_SHA384[0m
+[0;32m[+]   CN= expires=[0m
+[0;35m[SKILL] CT-03: Certificate Transparency log mining (crt.sh)[0m
+[1;33m[!]   CT log query failed (run locally): HTTP Error 403: Forbidden[0m
+[0;35m[SKILL] WAYBACK-04: Mining archived URLs + parameter extraction[0m
+[1;33m[!]   Wayback failed (run locally): HTTP Error 403: Forbidden[0m
+
+[0;36m[*] Phase 2: WAF + Technology Fingerprinting[0m
+[0;35m[SKILL] WAF-05: WAF/CDN fingerprinting + Googlebot bypass[0m
+[0;35m[SKILL] TECH-06: Technology stack fingerprinting (30 signatures)[0m
+
+[0;36m[*] Phase 3: Security Headers + CSP + CORS + Cookie[0m
+[0;35m[SKILL] HEADERS-07: Security header audit & scoring[0m
+  [0;31m[MISSING][0m strict-transport-security: (not set)
+  [0;31m[MISSING][0m content-security-policy: (not set)
+  [0;31m[MISSING][0m x-content-type-options: (not set)
+  [0;31m[MISSING][0m x-frame-options: (not set)
+  [0;31m[MISSING][0m referrer-policy: (not set)
+  [0;31m[MISSING][0m permissions-policy: (not set)
+  [0;31m[MISSING][0m x-xss-protection: (not set)
+  [0;31m[MISSING][0m cache-control: (not set)
+  [0;31m[MISSING][0m cross-origin-opener-policy: (not set)
+  [0;31m[MISSING][0m cross-origin-resource-policy: (not set)
+[0;32m[+]   Score: 0/100[0m
+[0;35m[SKILL] CSP-08: Content Security Policy weakness analysis[0m
+[1;33m[!]   No CSP — XSS fully unmitigated[0m
+[0;35m[SKILL] CORS-09: CORS misconfiguration (6 bypass patterns)[0m
+[0;35m[SKILL] COOKIE-10: Cookie security attribute audit[0m
+
+[0;36m[*] Phase 4: JavaScript + Sourcemap + Secret Scanning[0m
+[0;35m[SKILL] JS-11: JavaScript file discovery + endpoint extraction[0m
+[0;32m[+]   Found 0 JS files[0m
+[0;32m[+]   0 endpoints, 0 parameters[0m
+[0;35m[SKILL] SOURCEMAP-12: Webpack sourcemap exposure detection[0m
+[0;35m[SKILL] SECRETS-13: Credential scanning + Shannon entropy (25 patterns)[0m
+
+[0;36m[*] Phase 5: API Mapping + GraphQL + Path Probing + S3[0m
+[0;35m[SKILL] API-14: API endpoint discovery + Swagger/OpenAPI detection[0m
+  [1;33m[403][0m /api
+  [1;33m[403][0m /api/v1
+  [1;33m[403][0m /api/v2
+  [1;33m[403][0m /api/v3
+  [1;33m[403][0m /rest
+  [1;33m[403][0m /rest/v1
+  [1;33m[403][0m /v1
+  [1;33m[403][0m /v2
+  [1;33m[403][0m /v3
+  [1;33m[403][0m /graphql
+  [1;33m[403][0m /graphiql
+  [1;33m[403][0m /playground
+  [1;33m[403][0m /gql
+  [1;33m[403][0m /query
+  [1;33m[403][0m /api/auth
+  [1;33m[403][0m /api/login
+  [1;33m[403][0m /api/logout
+  [1;33m[403][0m /api/register
+  [1;33m[403][0m /api/token
+  [1;33m[403][0m /api/refresh
+  [1;33m[403][0m /api/reset-password
+  [1;33m[403][0m /api/oauth
+  [1;33m[403][0m /oauth/token
+  [1;33m[403][0m /oauth/authorize
+  [1;33m[403][0m /.well-known/openid-configuration
+  [1;33m[403][0m /api/user
+  [1;33m[403][0m /api/users
+  [1;33m[403][0m /api/me
+  [1;33m[403][0m /api/profile
+  [1;33m[403][0m /api/account
+  [1;33m[403][0m /api/session
+  [1;33m[403][0m /api/search
+  [1;33m[403][0m /api/tickets
+  [1;33m[403][0m /api/ticket
+  [1;33m[403][0m /api/requests
+  [1;33m[403][0m /api/orders
+  [1;33m[403][0m /api/order
+  [1;33m[403][0m /api/bookings
+  [1;33m[403][0m /api/booking
+  [1;33m[403][0m /api/flights
+  [1;33m[403][0m /api/pnr
+  [1;33m[403][0m /api/checkin
+  [1;33m[403][0m /api/config
+  [1;33m[403][0m /api/settings
+  [1;33m[403][0m /api/health
+  [1;33m[403][0m /api/status
+  [1;33m[403][0m /api/ping
+  [1;33m[403][0m /api/version
+  [1;33m[403][0m /api/info
+  [1;33m[403][0m /api/admin
+  [1;33m[403][0m /api/debug
+  [1;33m[403][0m /api/webhooks
+  [1;33m[403][0m /api/notifications
+  [1;33m[403][0m /api/payments
+  [1;33m[403][0m /api/invoices
+  [1;33m[403][0m /api/reports
+  [1;33m[403][0m /api/export
+  [1;33m[403][0m /swagger
+  [1;33m[403][0m /swagger.json
+  [1;33m[403][0m /swagger-ui
+[0;32m[+]   60 API paths responded[0m
+[0;35m[SKILL] GRAPHQL-15: Introspection + schema extraction[0m
+[0;35m[SKILL] PATHS-16: Sensitive file/directory enumeration (50+ paths)[0m
+[0;35m[SKILL] S3-17: S3 bucket enumeration + permission testing[0m
+[1;33m[!]   S3 exists (403 forbidden): ehub-prod[0m
+
+[0;36m[*] Phase 6: Subdomain Takeover + SSRF + IDOR + XSS[0m
+[0;35m[SKILL] TAKEOVER-18: Subdomain takeover (11 provider fingerprints)[0m
+[0;35m[SKILL] SSRF-19: SSRF parameter identification + open redirect testing[0m
+[0;35m[SKILL] IDOR-20: IDOR pattern mapping + XSS surface identification[0m
+
+[0;36m[*] Phase 7: Advanced: Smuggling + JWT + OAuth + Host Injection + HPP + RateLimit + Cache + SSTI + XXE + ProtoPollu + GQL-Adv + DepConf + BizLogic + WebSocket + BOLA[0m
+[0;35m[SKILL] SMUGGLING-21: HTTP Request Smuggling (CL.TE / TE.CL / TE.TE)[0m
+[1;33m[!]   SMUGGLING [CL.TE]: HTTP 400 — server error (investigate manually)[0m
+[1;33m[!]   SMUGGLING [TE.CL]: HTTP 400 — server error (investigate manually)[0m
+[0;35m[SKILL] JWT-22: JWT alg=none, RS256→HS256, weak secret brute-force[0m
+[2m      No JWT tokens found in JS — scanning responses...[0m
+[0;35m[SKILL] OAUTH-23: OAuth 2.0 flow analysis (state, PKCE, redirect_uri)[0m
+[0;35m[SKILL] HOST-24: Host header injection (password reset poisoning + cache)[0m
+[0;35m[SKILL] HPP-25: HTTP Parameter Pollution testing[0m
+[0;35m[SKILL] RATELIMIT-26: Rate limit bypass via header spoofing[0m
+[0;32m[+]   Rate limiting active on https://ehub.ejada.com/api/login (got {403})[0m
+[0;35m[SKILL] CACHE-27: Cache poisoning via unkeyed headers[0m
+[2m      No caching headers — cache poisoning less likely[0m
+[0;35m[SKILL] SSTI-28: Server-Side Template Injection ({{7*7}} detection)[0m
+[0;35m[SKILL] XXE-29: XML injection + SOAP endpoint probing[0m
+[0;35m[SKILL] PROTO-30: Prototype Pollution (__proto__, constructor.prototype)[0m
+[0;35m[SKILL] GQL-ADV-31: GraphQL batch attacks + alias introspection bypass[0m
+[0;35m[SKILL] DEPCNF-32: Dependency confusion / supply chain detector[0m
+[0;35m[SKILL] BIZ-33: Business logic (negative price, integer overflow, coupon)[0m
+[0;35m[SKILL] WS-34: WebSocket security (CSWSH, ws:// downgrade, Origin bypass)[0m
+[0;35m[SKILL] BOLA-35: IDOR deep scanner (BOLA, mass assignment, privilege escalation)[0m
+
+[0;36m[*] Phase 8: Phase 8: SQLi + NoSQLi + CMDi + Upload + CSRF + Clickjack + MethodTamper + AcctEnum + ACLBypass + APIDowngrade + TLS + ZoneXfer + Deserial + BlindSSRF + EmailInject + JSONP + RefererBypass + 2FA + ErrorIntel + OpenRedirect + HTMLi + CORSPreflight + PwdReset + WebDAV + ContentType + InternalSvc + SubLive + LFI + Session + VDP[0m
+[0;35m[SKILL] SQLI-36: SQL Injection (error-based + boolean-blind detection)[0m
+[0;35m[SKILL] NOSQLI-37: NoSQL/MongoDB operator injection[0m
+[0;35m[SKILL] CMDI-38: Command injection (echo/id-based reflection detection)[0m
+[0;35m[SKILL] UPLOAD-39: File upload security (extension bypass, content-type confusion)[0m
+[2m      No file upload endpoints found[0m
+[0;35m[SKILL] CSRF-40: CSRF token bypass detection[0m
+[0;35m[SKILL] CJACK-41: Clickjacking via X-Frame-Options + CSP frame-ancestors[0m
+[0;31m[!!]   CLICKJACKING: No X-Frame-Options or CSP frame-ancestors — page embeddable![0m
+[0;35m[SKILL] METHOD-42: HTTP method tampering + TRACE/WebDAV detection[0m
+[0;35m[SKILL] ENUM-43: Account enumeration via login/register response timing[0m
+[0;35m[SKILL] ACLBYP-44: Path-based ACL bypass (traversal, case, encoding)[0m
+[0;35m[SKILL] APIDOWN-45: API version downgrade privilege regression[0m
+[0;35m[SKILL] TLS-46: TLS version + weak cipher + old protocol detection[0m
+/home/user/target/APEX_HUNTER.py:2554: DeprecationWarning: ssl.TLSVersion.TLSv1 is deprecated
+  ctx.minimum_version = ver_const; ctx.maximum_version = ver_const
+[0;32m[+]   TLSv1.0: rejected (good)[0m
+/home/user/target/APEX_HUNTER.py:2554: DeprecationWarning: ssl.TLSVersion.TLSv1_1 is deprecated
+  ctx.minimum_version = ver_const; ctx.maximum_version = ver_const
+[0;32m[+]   TLSv1.1: rejected (good)[0m
+[0;32m[+]   TLS 1.3 — current best practice[0m
+[0;35m[SKILL] AXFR-47: DNS zone transfer (AXFR) attempt[0m
+[2m      AXFR test failed for ns1.ejada.com: [Errno 2] No such file or directory: 'dig'[0m
+[2m      AXFR test failed for ns2.ejada.com: [Errno 2] No such file or directory: 'dig'[0m
+[0;35m[SKILL] DESER-48: Insecure deserialization detection[0m
+[0;35m[SKILL] BLIND-SSRF-49: OOB SSRF payload generation for manual verification[0m
+[0;35m[SKILL] EMAIL-50: SMTP header injection via contact/feedback forms[0m
+[0;35m[SKILL] JSONP-51: JSONP endpoint discovery (CSP bypass vector)[0m
+[0;35m[SKILL] REFERER-52: Referer-based access control bypass[0m
+[0;35m[SKILL] 2FA-53: 2FA/OTP endpoint discovery + brute-force surface[0m
+[0;35m[SKILL] ERRPAGE-54: Error page version/stack trace intelligence harvesting[0m
+[0;35m[SKILL] REDIR-55: Open redirect chain + OAuth redirect_uri abuse[0m
+[0;35m[SKILL] HTMLINJ-56: HTML injection + dangling markup detection[0m
+[0;35m[SKILL] CORS-PRE-57: CORS preflight OPTIONS analysis[0m
+[0;35m[SKILL] PWRESET-58: Insecure password reset flow analysis[0m
+[0;35m[SKILL] WEBDAV-59: WebDAV misconfiguration (PROPFIND, PUT, MOVE)[0m
+[0;35m[SKILL] CTCONF-60: Content-type confusion attack[0m
+[0;35m[SKILL] INTERNALSVC-61: Internal service map via SSRF candidates[0m
+[2m      No SSRF params found — skipping internal service scan[0m
+[0;35m[SKILL] SUBLIVE-62: Deep subdomain live check + service fingerprinting[0m
+[0;35m[SKILL] LFI-63: Local File Inclusion / path traversal[0m
+[0;35m[SKILL] SESSION-64: Session fixation + cookie jar overflow analysis[0m
+[0;35m[SKILL] VDP-65: security.txt + VDP/bug bounty scope discovery[0m
+[1;33m[!]   No security.txt found at ehub.ejada.com — consider adding one (RFC 9116)[0m
+
+[0;36m[*] Phase 9: Phase 9: GQL-Batch + SRI + postMessage + CacheDeception + ServiceWorker + CRLF + SAML + OAuth-Implicit + VHostFuzz + RaceCondition + TokenLeak + CloudMeta-SSRF + ETag + AuthBypassHdr + PathParam + XST + CSS-Inject + CORS-Cred + MassAssign + JWKS + ReDoS + SubTakeoverV2 + HTTP2 + WebSocket-CSWSH + ProtoPollu-Adv + HPP-Adv + IDOR-v2 + ForcedBrowse + SensitiveData + BFLA + GQL-Mutation + CORS-API + SSL-Hints + GQL-FieldSuggest + DepConf-V2 + ErrorHandling + Desync-Adv + OAuth-StateCSRF + DebugEP + BlindCMDi[0m
+[0;35m[SKILL] DEP-CONFUSION-V2-371: Manifest harvest + public registry confusion check[0m
+[2m      No dependency confusion candidates found[0m
+
+[0;36m[*] Phase 10: Phase 10 [BLACK TEAM]: Log4Shell + XPathInject + LDAPInject + SSI/ESI + PDF-SSRF + JWT-AlgConf + BlindXXE-OOB + SSTI-RCE + CachePoison-Adv + OAuth-RefererLeak + SOAP/XML + PHP-TypeJuggle + Webhook-SSRF + TimingOracle + FullChainPoC[0m
+
+[0;36m[*] Phase 11: Phase 11 [BLACK TEAM]: JWTkid + ZIPSlip + RFD + GQL-Circular + UUID-v1 + SAML-XSW + PKCE-Down + H2C-Smug + WeakCrypto + JWE-Dir + ViewState + SSRF-URLBypass + DNS-Rebind + GQL-CredStuff + StoredXSS + XXE-DOCX + SrvTiming + NoSQL-Timing + ImageMagick + LFI-RCE + MethodTunnel + SessEntropy + CORS-PNA + ParamFrag + JWT-Aud + ProxyPathConf + OOB-SQLi + DupeParam + DeepLink + ExploitChain + GQL-SubSSRF + PostLoginRedir + VerbTunnel + OptionsSchema + CL-Smug + IDORHash + BlindSSTI-Email + OIDC-Misconf + PP-Cookie + BizLogic-Adv[0m
+
+[0;36m[*] Phase 12: Phase 12 [BLACK TEAM]: RCE-OOB + ShellUpload + TimingSQLi + LDAP-Privesc + NTLM-Leak + Azure-IMDS + AWS-IMDS + GCP-Meta + K8s-API + Docker-API + Jenkins-RCE + GitLab-Token + SupplyChain + CF-Bypass + WAF-Bypass + Webshell + Privesc-Hints + JMX-RCE + SpringActuator + Elasticsearch + GitRepoExposed + EnvFileLeak + BackupLeak + Redis + GQL-BatchDoS + ExploitNarrative + PostExploitMap + Scorecard (50 tools)[0m
+
+[0;36m[*] Phase 13: Phase 13 [RED+BLACK TEAM]: OGNL/EL-Inject + SpEL + Velocity/FreeMarker-SSTI + OAuth2-Device + AzureAD-Token + S3-Presign + Nginx-Misconfig + Traefik-Dashboard + ArgoCD + DOM-Clobber + mXSS + PaddingOracle + WeakPRNG + gRPC-Enum + Kerberos-Hints + Struts2-CVE + Log4Shell2 + MobileAPIKey + WS-SSRF + HelmSecrets + InternalGateway + CSRF-Adv + XXE-SVG/XLIFF + BFLA-Adv + DNS-Exfil + Serverless-FaaS (60 tools)[0m
+
+[0;36m[*] Phase 14: Phase 14 [RED+BLACK TEAM]: HTTP-Smuggling-FE + CacheDeception-Adv + GatewayBypass + RaceCondition-Adv + GraphQL-Deep + OAuth2-TokenTheft + SubTakeover-Adv + XSS-AdvPayloads + JWT-SecretBrute + SSRF-AdvChain + LateralMove + Persistence + CloudStorage + CredStuffing + TLS-Attack + PwdPolicy + GQL-Schema + ZeroTrustBypass + APIVersionAbuse + BinaryAnalyzer (70 tools)[0m
+/home/user/target/APEX_HUNTER.py:12685: DeprecationWarning: ssl.TLSVersion.SSLv3 is deprecated
+  ctx.minimum_version = ssl.TLSVersion.SSLv3 if hasattr(ssl.TLSVersion, 'SSLv3') else ssl.TLSVersion.TLSv1
+
+[0;36m[*] Phase 15: Phase 15 [BLACK TEAM]: OAuth2-TokenHijack + HTTP-Desync-TE + JWT-SecretCrack + SubBrute + GQL-IDOR + CORS-Chain + OpenAPI-Fuzz + AzureBlob + SessionFix + CRLF-Adv + CryptoWeak + SensitiveDeep + RateLimit-Adv + APIKey-Exp + CloudPivot + FullReport + OAuth2-Re + Desync-Re + JWTCrack-Re + SubBrute-Re (20 tools)[0m
+
+[0;36m[*] Phase 16: Phase 16 [CHAIN+BYPASS]: AuthContextHarvest + ContextualMultiStage(JWT-forge+IDOR-auth+SQLi-extract) + WAFBypassUpload(10 variants) + PostRCE-ImpactMap(14 cmds) + DynamicWAFBypass(CMDi/XSS/SQLi adapters) (5 tools)[0m
+
+[0;36m[*] Phase 17: Phase 17 [ADVANCED RED/BLACK TEAM]: 2ndOrder-SQLi + SSTI-AutoRCE + GitRecon + TFState + JWT-kid-Inject + DepConfusion-V2 + CRLF-SessionFix + BlindNoSQLi + SSI/ESI-Inject + SMTP-Inject + ReDoS + CSPT + API-VersionBypass + GQL-TypeIDOR + HeadlessBrowser-SSRF + CORS-XSS-Exfil + K8s-RBAC + CachePoison-DoS + OAuth2-PKCE-Down + SupplyChain-Audit (20 tools)[0m
+[0;35m[SKILL] 2ND-ORDER-SQLI-366: Store→trigger SQL injection chain across endpoints[0m
+[2m      No second-order SQLi confirmed[0m
+[0;35m[SKILL] SSTI-AUTO-EXPLOIT-367: Template engine fingerprint → targeted RCE chain[0m
+[2m      No SSTI engine fingerprinted[0m
+[0;35m[SKILL] GIT-RECON-368: Detect exposed .git directory and reconstruct secrets/source[0m
+[2m      /.git/HEAD not accessible[0m
+[0;35m[SKILL] TFSTATE-HARVEST-369: Terraform/IaC state file and secrets exposure[0m
+[2m      No exposed IaC state files found[0m
+[0;35m[SKILL] JWT-KID-INJECT-370: kid SQL/path-traversal injection to forge admin tokens[0m
+[2m      No JWT available for kid injection test[0m
+[0;35m[SKILL] DEP-CONFUSION-V2-371: Manifest harvest + public registry confusion check[0m
+[2m      No dependency confusion candidates found[0m
+[0;35m[SKILL] CRLF-SESSFIX-372: CRLF header injection → Set-Cookie session fixation chain[0m
+[2m      No CRLF session fixation confirmed[0m
+[0;35m[SKILL] BLIND-NOSQLI-373: MongoDB boolean-blind injection via regex/operator payloads[0m
+[2m      No NoSQL injection confirmed[0m
+[0;35m[SKILL] SSI-ESI-INJECT-374: Server/Edge-Side Includes injection for file-read and RCE[0m
+[2m      No SSI/ESI injection confirmed[0m
+[0;35m[SKILL] SMTP-HEADER-INJECT-375: Email form Cc/Bcc injection for mail spoofing/ATO[0m
+[2m      No SMTP header injection confirmed[0m
+[0;35m[SKILL] REDOS-TIMING-376: Catastrophic backtracking regex patterns with timing analysis[0m
+[2m      No ReDoS timing anomaly detected[0m
+[0;35m[SKILL] CSPT-377: Client-side path traversal via fetch/XHR path parameter manipulation[0m
+[2m      No client-side path traversal confirmed[0m
+[0;35m[SKILL] API-VERSION-BYPASS-378: Deprecated/legacy API version enumeration + auth bypass[0m
+[0;32m[+]   Version endpoint alive: /api/v0 (HTTP 403)[0m
+[0;32m[+]   Version endpoint alive: /api/v0.1 (HTTP 403)[0m
+[0;32m[+]   Version endpoint alive: /api/beta (HTTP 403)[0m
+[0;32m[+]   Version endpoint alive: /api/alpha (HTTP 403)[0m
+[0;32m[+]   Version endpoint alive: /api/v2 (HTTP 403)[0m
+[0;32m[+]   Version endpoint alive: /api/v3 (HTTP 403)[0m
+[0;32m[+]   Version endpoint alive: /v0/api (HTTP 403)[0m
+[0;32m[+]   Version endpoint alive: /v1/api (HTTP 403)[0m
+[0;32m[+]   Version endpoint alive: /v2/api (HTTP 403)[0m
+[0;32m[+]   Version endpoint alive: /api/old (HTTP 403)[0m
+[0;32m[+]   Version endpoint alive: /api/legacy (HTTP 403)[0m
+[0;32m[+]   Version endpoint alive: /api/internal (HTTP 403)[0m
+[0;32m[+]   Version endpoint alive: /api/dev (HTTP 403)[0m
+[0;32m[+]   Version endpoint alive: /api/test (HTTP 403)[0m
+[0;32m[+]   Version endpoint alive: /api/debug (HTTP 403)[0m
+[0;32m[+]   Version endpoint alive: /api/1.0 (HTTP 403)[0m
+[0;32m[+]   Version endpoint alive: /api/2.0 (HTTP 403)[0m
+[2m      No deprecated API version bypass found[0m
+[0;35m[SKILL] GQL-TYPE-IDOR-379: GraphQL node interface type confusion cross-object IDOR[0m
+[2m      No GraphQL endpoint found[0m
+[0;35m[SKILL] HEADLESS-SSRF-380: Headless browser endpoint detection + file/SSRF exploitation[0m
+[0;32m[+]   Render endpoint alive: /api/pdf (HTTP 403)[0m
+[0;32m[+]   Render endpoint alive: /api/export/pdf (HTTP 403)[0m
+[0;32m[+]   Render endpoint alive: /api/screenshot (HTTP 403)[0m
+[0;32m[+]   Render endpoint alive: /api/render (HTTP 403)[0m
+[0;32m[+]   Render endpoint alive: /export (HTTP 403)[0m
+[0;32m[+]   Render endpoint alive: /api/export (HTTP 403)[0m
+[0;32m[+]   Render endpoint alive: /api/convert (HTTP 403)[0m
+[0;32m[+]   Render endpoint alive: /print (HTTP 403)[0m
+[0;32m[+]   Render endpoint alive: /api/print (HTTP 403)[0m
+[0;32m[+]   Render endpoint alive: /generate/pdf (HTTP 403)[0m
+[0;32m[+]   Render endpoint alive: /api/generate (HTTP 403)[0m
+[0;32m[+]   Render endpoint alive: /api/report (HTTP 403)[0m
+[0;32m[+]   Render endpoint alive: /report/export (HTTP 403)[0m
+[0;32m[+]   Render endpoint alive: /api/preview (HTTP 403)[0m
+[2m      No headless browser SSRF confirmed[0m
+[0;35m[SKILL] CORS-XSS-EXFIL-381: Chain CORS wildcard + reflected XSS for auth data theft[0m
+[2m      No CORS+XSS chain exploitable[0m
+[0;35m[SKILL] K8S-RBAC-ENUM-382: Kubernetes API RBAC enumeration for lateral movement[0m
+[2m      No K8s API endpoint accessible[0m
+[0;35m[SKILL] CACHE-POISON-DOS-383: Poison CDN/proxy cache with error responses for DoS[0m
+[2m      No CDN/WAF detected — cache poisoning unlikely[0m
+[0;35m[SKILL] OAUTH2-PKCE-DOWN-384: PKCE code_challenge downgrade for authorization code theft[0m
+[2m      No OAuth2 PKCE downgrade confirmed[0m
+[0;35m[SKILL] SUPPLY-CHAIN-AUDIT-385: Third-party script version audit + SRI gap analysis[0m
+[0;32m[+]   0 third-party scripts, 0 without SRI, 0 known-vulnerable[0m
+[2m      No supply chain issues found[0m
+[0;35m[SKILL] ACCOUNT-PRE-HIJACK-386: Detect account pre-hijacking via unverified SSO email merge[0m
+[2m      No registration endpoint found for pre-hijacking check[0m
+[0;35m[SKILL] OIDC-REDIRECT-URI-387: Test redirect_uri wildcard/open-redirect bypass for code theft[0m
+[2m      No OIDC redirect_uri bypass found[0m
+[0;35m[SKILL] DOM-CLOBBER-XSS-388: Identify DOM clobbering → script-gadget XSS path[0m
+[2m      No DOM clobbering XSS path found[0m
+[0;35m[SKILL] DOCKER-API-RCE-389: Detect exposed Docker daemon (2375/2376) → container RCE[0m
+[2m      No exposed Docker API found[0m
+[0;35m[SKILL] ES-DATA-DUMP-390: Unauthenticated Elasticsearch enumeration and data extraction[0m
+[2m      No exposed Elasticsearch found[0m
+[0;35m[SKILL] FIREBASE-MISCONFIG-391: Detect open Firebase RTDB/Firestore read-write rules[0m
+[2m      No Firebase configuration found[0m
+[0;35m[SKILL] SHELLSHOCK-RCE-392: CVE-2014-6271 CGI header injection for remote code execution[0m
+[2m      No Shellshock vulnerability found[0m
+[0;35m[SKILL] SSE-SSRF-393: Server-Sent Events endpoint SSRF via URL parameter injection[0m
+[0;32m[+]   SSE endpoint found: /sse[0m
+[0;32m[+]   SSE endpoint found: /events[0m
+[0;32m[+]   SSE endpoint found: /stream[0m
+[0;32m[+]   SSE endpoint found: /api/sse[0m
+[0;32m[+]   SSE endpoint found: /api/events[0m
+[0;32m[+]   SSE endpoint found: /api/stream[0m
+[0;32m[+]   SSE endpoint found: /notifications/sse[0m
+[0;32m[+]   SSE endpoint found: /push[0m
+[0;32m[+]   SSE endpoint found: /realtime[0m
+[2m      No SSE SSRF found[0m
+[0;35m[SKILL] SPRING4SHELL-394: CVE-2022-22965 Spring data binding ClassLoader RCE detection[0m
+[2m      No Spring Framework indicators found[0m
+[0;35m[SKILL] GRPC-REFLECT-395: Enumerate gRPC reflection for service/method/schema disclosure[0m
+[2m      No gRPC reflection endpoint found[0m
+[0;35m[SKILL] BLIND-XSS-OOB-396: Inject blind XSS into all input vectors — async admin-panel callback[0m
+[2m      No blind XSS injection points found[0m
+[0;35m[SKILL] COGNITO-MISCONFIG-397: AWS Cognito open registration / unverified-email sign-in[0m
+[2m      No Cognito User Pool IDs found[0m
+[0;35m[SKILL] SVG-STORED-XSS-398: Upload SVG with embedded JS to image endpoints for stored XSS[0m
+[2m      No SVG upload XSS found[0m
+[0;35m[SKILL] API-KEY-LIVENESS-399: Extract API keys from JS/config and verify against service APIs[0m
+[2m      No API keys found in accessible JS files[0m
+[0;35m[SKILL] CBC-PADDING-ORACLE-400: Detect padding oracle via error differentiation on CBC tokens[0m
+[2m      No CBC-shaped tokens found[0m
+[0;35m[SKILL] GQL-UNAUTH-SUB-401: Test GraphQL subscriptions for unauthenticated WebSocket data leak[0m
+[2m      No unauthenticated GraphQL subscriptions found[0m
+[0;35m[SKILL] UA-LOG-INJECT-402: User-Agent CRLF/SIEM injection for log forging and SYSLOG manipulation[0m
+[2m      Log injection payloads tested — 5 patterns accepted[0m
+[0;35m[SKILL] WP-XMLRPC-403: WordPress xmlrpc.php user enum, multicall brute amplification, pingback SSRF[0m
+[2m      xmlrpc.php not found[0m
+[0;35m[SKILL] PROTO-POLLUTION-404: Node.js prototype pollution via JSON body for RCE/privilege escalation[0m
+[2m      No Node.js indicators found[0m
+[0;35m[SKILL] OOB-SQLI-DNS-405: Out-of-band SQL injection via DNS lookup for blind DB detection[0m
+[2m      No OOB SQLi DNS errors found[0m
+[0;35m[SKILL] APACHE-TRAVERSAL-406: CVE-2021-41773/42013 Apache 2.4.49/50 path traversal + RCE[0m
+[2m      Apache path traversal: no Apache detected[0m
+[0;35m[SKILL] JNDI-HEADER-INJECT-407: Log4Shell CVE-2021-44228 JNDI lookup in HTTP headers[0m
+[1;33m[!]   JNDI payloads injected — OOB verification required for confirmation[0m
+[0;35m[SKILL] MARKDOWN-INJECT-408: Markdown rendering injection — JS XSS, SSRF, LFI via markdown fields[0m
+[2m      No Markdown rendering injection found[0m
+[0;35m[SKILL] GH-ACTIONS-SECRET-409: Exposed GitHub Actions workflow YAML — secret/credential/injection leak[0m
+[2m      No GitHub Actions workflow files accessible[0m
+[0;35m[SKILL] OPENAPI-EXPLOIT-410: Fetch OpenAPI spec, enumerate endpoints, probe for unauth/IDOR access[0m
+[2m      No OpenAPI spec found[0m
+[0;35m[SKILL] PWD-RESET-ENTROPY-411: Collect multiple reset tokens and detect low entropy/sequential patterns[0m
+[2m      No password reset endpoint found[0m
+[0;35m[SKILL] BIZ-LOGIC-NEGVAL-412: Negative quantity/amount in checkout flows for balance manipulation[0m
+[2m      No negative value business logic flaw found[0m
+[0;35m[SKILL] OAUTH2-STATE-CSRF-413: OAuth2 state parameter absence/fixation for CSRF account takeover[0m
+[0;32m[+]   OAuth callback endpoint: /oauth/callback[0m
+[0;32m[+]   OAuth callback endpoint: /auth/callback[0m
+[0;32m[+]   OAuth callback endpoint: /oauth2/callback[0m
+[0;32m[+]   OAuth callback endpoint: /login/oauth/callback[0m
+[0;32m[+]   OAuth callback endpoint: /api/oauth/callback[0m
+[0;32m[+]   OAuth callback endpoint: /connect/callback[0m
+[0;32m[+]   OAuth callback endpoint: /auth/google/callback[0m
+[0;32m[+]   OAuth callback endpoint: /auth/github/callback[0m
+[0;32m[+]   OAuth callback endpoint: /auth/facebook/callback[0m
+[0;31m[!!]   [!] OAuth2 state CSRF: /oauth/callback: no state validation error (HTTP 403)[0m
+[0;35m[SKILL] SSRF-REDIRECT-BYPASS-414: SSRF allowlist bypass via chained open-redirect to internal targets[0m
+[2m      No SSRF redirect bypass found[0m
+[0;35m[SKILL] RACE-CONDITION-415: Concurrent multi-step requests for double-spend / privilege duplication[0m
+[0;32m[+]   Race condition target found: /api/coupon/apply[0m
+[0;32m[+]   Race condition target found: /api/checkout[0m
+[0;32m[+]   Race condition target found: /api/transfer[0m
+[0;32m[+]   Race condition target found: /api/vote[0m
+[0;32m[+]   Race condition target found: /api/like[0m
+[0;32m[+]   Race condition target found: /api/redeem[0m
+[2m      No obvious race condition found (concurrent test)[0m
+[0;35m[SKILL] JAVA-DESER-416: Detect Java deserialization (magic bytes / ysoserial candidate) in endpoints[0m
+[2m      No Java deserialization indicators found[0m
+[0;35m[SKILL] CORS-SUBDOMAIN-417: Reflected wildcard/subdomain CORS origin with credentials flag[0m
+[2m      No CORS subdomain reflection found[0m
+[0;35m[SKILL] ADMIN-PANEL-418: Enumerate admin panel paths and detect exposed management interfaces[0m
+[0;35m[SKILL] GQL-RECURSION-DOS-419: Deep nested and alias-amplification GraphQL query DoS test[0m
+[2m      GraphQL depth/complexity limiting appears active[0m
+[0;35m[SKILL] CSP-BYPASS-JSONP-420: Find JSONP callback endpoints to bypass CSP script-src allowlist[0m
+[2m      No JSONP endpoints found[0m
+[0;35m[SKILL] MULTIPART-INJECT-421: CRLF injection in multipart boundary to bypass file filters / inject parts[0m
+[2m      No multipart boundary injection found[0m
+[0;35m[SKILL] HIDDEN-PARAM-422: Fuzz for undocumented debug/admin/bypass parameters on target endpoints[0m
+[2m      No hidden parameter behavior changes found[0m
+[0;35m[SKILL] OBJ-STORAGE-ACL-423: Enumerate S3/GCS/Azure storage buckets for public read/write[0m
+[0;31m[!!]   S3 public bucket: https://ehub-data.s3.amazonaws.com/[0m
+[0;31m[!!]   [!] Object storage: S3 public read: https://ehub-data.s3.amazonaws.com/[0m
+[0;35m[SKILL] DEEP-LINK-ABUSE-424: Detect custom URI schemes and intent:// handlers for mobile link abuse[0m
+[2m      No deep link scheme abuse vectors found[0m
+[0;35m[SKILL] PROMETHEUS-METRICS-425: Harvest unauthenticated Prometheus/Actuator metrics for secret/infra leakage[0m
+[2m      No unauthenticated metrics endpoints found[0m
+[0;35m[SKILL] HTTP-SMUGGLING-426: CL.TE/TE.CL desync differential — confirmed by status/timing change[0m
+[0;31m[!!]   Smuggling CL.TE CONFIRMED: TE='chunked' 403→400[0m
+[0;31m[!!]   Smuggling TE.CL CONFIRMED: 403→400[0m
+[0;35m[SKILL] SAML-WRAP-427: SAML XXE + signature wrapping differential — confirmed by auth state change[0m
+[2m      No SAML endpoint found or no vulnerability confirmed[0m
+[0;35m[SKILL] CSWSH-428: Cross-site WebSocket hijacking — origin-bypass differential analysis[0m
+[0;32m[+]   WebSocket endpoint: /ws (baseline HTTP 403)[0m
+[0;32m[+]   WebSocket endpoint: /socket (baseline HTTP 403)[0m
+[0;32m[+]   WebSocket endpoint: /websocket (baseline HTTP 403)[0m
+[0;32m[+]   WebSocket endpoint: /chat (baseline HTTP 403)[0m
+[0;32m[+]   WebSocket endpoint: /api/ws (baseline HTTP 403)[0m
+[0;32m[+]   WebSocket endpoint: /realtime (baseline HTTP 403)[0m
+[0;32m[+]   WebSocket endpoint: /live (baseline HTTP 403)[0m
+[0;32m[+]   WebSocket endpoint: /stream (baseline HTTP 403)[0m
+[0;32m[+]   WebSocket endpoint: /events/ws (baseline HTTP 403)[0m
+[0;32m[+]   WebSocket endpoint: /api/socket (baseline HTTP 403)[0m
+[0;32m[+]   WebSocket endpoint: /notify (baseline HTTP 403)[0m
+[0;35m[SKILL] MASS-ASSIGN-429: Privileged field injection in update endpoints — confirmed by reflection/behavior[0m
+[2m      No mass assignment confirmed[0m
+[0;35m[SKILL] XXE-INJECT-430: XML external entity file-read and SSRF — confirmed by content differential[0m
+[2m      No XXE confirmed[0m
+[0;35m[SKILL] NGINX-ALIAS-431: Off-by-slash Nginx alias traversal — confirmed by file content differential[0m
+[2m      No Nginx off-by-slash traversal found[0m
+[0;35m[SKILL] CSS-INJECT-432: CSS injection exfil — confirm rendered CSS injection via response differential[0m
+[2m      No CSS injection found[0m
+[0;35m[SKILL] CLICKJACK-433: X-Frame-Options / CSP frame-ancestors absence — confirmed by framing feasibility[0m
+[2m      All tested endpoints have clickjacking protection[0m
+[0;35m[SKILL] XXE-UPLOAD-434: XXE via SVG/DOCX/XML file upload — confirmed by /etc/passwd in response[0m
+[2m      No XXE via file upload confirmed[0m
+[0;35m[SKILL] GQL-INTROSPECT-435: GraphQL introspection schema dump — confirmed by __schema content[0m
+[2m      No GraphQL introspection available[0m
+[0;35m[SKILL] JWT-ALG-CONFUSION-436: RS256→HS256 algorithm confusion — confirmed by auth state change[0m
+[2m      No public key or JWT found for algorithm confusion test[0m
+[0;35m[SKILL] LATEX-INJECT-437: LaTeX RCE via \write18/\input in PDF generator — confirmed by file/command output[0m
+[2m      No LaTeX injection found[0m
+[0;35m[SKILL] XPATH-INJECT-438: Boolean-blind XPath injection — confirmed by true/false response differential[0m
+[2m      No XPath injection confirmed[0m
+[0;35m[SKILL] PHP-FILTER-LFI-439: php://filter chain LFI — confirmed by base64 PHP source in response[0m
+[2m      No PHP indicators and no LFI confirmed[0m
+[0;35m[SKILL] H2-RAPID-RESET-440: CVE-2023-44487 HTTP/2 rapid reset DoS — fingerprint H2 server version[0m
+[2m      No HTTP/2 detected[0m
+[0;35m[SKILL] OAUTH2-REFERER-441: OAuth2 token leak via Referer header — confirmed by token in redirect URL[0m
+[2m      No OAuth2 Referer token leak found[0m
+[0;35m[SKILL] CORS-NULL-442: null Origin CORS bypass — confirmed by Access-Control-Allow-Origin: null[0m
+[2m      No CORS null origin vulnerability found[0m
+[0;35m[SKILL] GQL-BATCH-443: GraphQL batching for rate-limit bypass — confirmed by multi-response in single request[0m
+[2m      No GraphQL endpoint found for batching test[0m
+[0;35m[SKILL] REDIS-RCE-444: Unauthenticated Redis CONFIG SET for cron/SSH key write RCE — HTTP proxy probe[0m
+[2m      No unauthenticated Redis found[0m
+[0;35m[SKILL] HOST-HEADER-INJECT-445: Host header injection for reset-link poisoning — confirmed by host in response[0m
+[2m      No Host header injection found[0m
+[0;35m[SKILL] HPP-446: HTTP parameter pollution — WAF bypass via duplicate param splitting[0m
+[2m      No HTTP parameter pollution bypass found[0m
+[0;35m[SKILL] PATH-PARAM-INJECT-447: ;jsessionid / matrix param auth bypass — confirmed by access change[0m
+[0;32m[+]   Protected path: /api/admin (HTTP 403)[0m
+[0;32m[+]   Protected path: /admin (HTTP 403)[0m
+[0;32m[+]   Protected path: /api/v1/admin (HTTP 403)[0m
+[0;32m[+]   Protected path: /api/users (HTTP 403)[0m
+[0;32m[+]   Protected path: /api/settings (HTTP 403)[0m
+[0;32m[+]   Protected path: /api/internal (HTTP 403)[0m
+[2m      No path parameter bypass found[0m
+[0;35m[SKILL] PDF-SSRF-448: HTML-to-PDF SSRF via file:///etc/passwd or IMDS — confirmed by content in output[0m
+[2m      No PDF generator SSRF confirmed[0m
+[0;35m[SKILL] PHP-DESER-449: PHP unserialize() object injection — confirmed by magic method error differential[0m
+[2m      No PHP deserialization surface found[0m
+[0;35m[SKILL] COOKIE-PREFIX-450: __Host-/__Secure- prefix bypass — confirmed by Set-Cookie without required attributes[0m
+[2m      No Set-Cookie header found[0m
+[0;35m[SKILL] ACCT-ENUM-TIMING-451: Timing-based account enumeration — confirmed by reproducible statistical diff[0m
+[2m      No account enumeration timing signal found[0m
+[0;35m[SKILL] DOTENV-EXPOSE-452: .env / secret config file exposure — confirmed by secret key content[0m
+[2m      No .env file exposure found[0m
+[0;35m[SKILL] MEMCACHED-INJECT-453: Unauthenticated Memcached key enum / cache poisoning — TCP probe[0m
+[2m      No unauthenticated Memcached found[0m
+[0;35m[SKILL] S3-PRESIGN-454: S3 pre-signed URL scope audit — expiry, prefix, write permission check[0m
+[2m      No S3 pre-signed URL issues found[0m
+[0;35m[SKILL] INSECURE-WS-455: ws:// cleartext WebSocket — confirmed by HTTP 101 on non-TLS upgrade[0m
+[2m      No insecure ws:// WebSocket found[0m
+
+[0;36m[*] Summary — ehub.ejada.com[0m
+  [0;31mCRITICAL: 22[0m
+  [0;31mHIGH: 35[0m
+  [1;33mMEDIUM: 44[0m
+  [2mINFO: 20[0m
+
+[0;36m[*]   Reports → /home/user/target/results_full/ehub.ejada.com_20260601_023212/[0m
+[0;32m[+]   JSON  → /home/user/target/results_full/ehub.ejada.com_20260601_023212/apex_report.json[0m
+[0;32m[+]   CSV   → /home/user/target/results_full/ehub.ejada.com_20260601_023212/findings.csv[0m
+[0;32m[+]   MD    → /home/user/target/results_full/ehub.ejada.com_20260601_023212/apex_report.md[0m
+[0;32m[+]   HTML  → /home/user/target/results_full/ehub.ejada.com_20260601_023212/apex_report.html[0m
+[0;32m[+]   PoC   → /home/user/target/results_full/ehub.ejada.com_20260601_023212/poc_scripts.sh[0m
+
+[0;36m[*] Complete[0m
+[0;32m[+] Total findings: 121 across 1 target(s)[0m
+[0;32m[+] Reports: /home/user/target/results_full/[0m
