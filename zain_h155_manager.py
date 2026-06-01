@@ -4135,11 +4135,15 @@ def cmd_autopilot(sess: H155Session, args):
     """[73] AUTO-EVERYTHING daemon: keeps signal, CA and connection optimal."""
     interval = getattr(args, "interval", 20) or 20
     threshold = getattr(args, "threshold", -108) or -108
+    best_wan = getattr(args, "best_wan", False)
     step("AUTO-EVERYTHING AUTOPILOT")
     info("Monitors connection + signal + CA. Re-optimises when degraded.")
+    if best_wan:
+        info("Best-WAN-IP enabled: will fish for a public IP when stuck on CGNAT/private.")
     info(f"Check every {interval}s · RSRP floor {threshold} dBm · Ctrl+C to stop")
     sep()
     bad_streak = checks = fixes = 0
+    wan_streak = wan_fixes = 0
     last_action = "—"
     try:
         while True:
@@ -4149,6 +4153,8 @@ def cmd_autopilot(sess: H155Session, args):
             sig = sess.get_signal()
             rsrp = sig.get("rsrp_int")
             agg = active_ca_bands(sess)
+            wan_ip = sess.get_device_info().get("wan_ip", "N/A")
+            wan_kind, wan_col = classify_wan_ip(wan_ip)
 
             action = None
             if not connected:
@@ -4179,6 +4185,21 @@ def cmd_autopilot(sess: H155Session, args):
             else:
                 bad_streak = 0
 
+            # ── Best-WAN-IP: when healthy but stuck behind CGNAT/private, fish
+            #    for a public IP (bounded so it never loops forever) ──────────
+            if best_wan and connected and action is None:
+                if wan_kind in ("cgnat", "private", "none"):
+                    wan_streak += 1
+                    if wan_streak >= 3 and wan_fixes < 5:
+                        new_ip = _cycle_wan_once(sess)
+                        wan_fixes += 1
+                        wan_streak = 0
+                        action = "best-wan"
+                        if wan_ip_score(new_ip) >= 3:
+                            wan_fixes = 99  # got public — stop fishing
+                else:
+                    wan_streak = 0
+
             if action:
                 fixes += 1
                 last_action = action
@@ -4190,6 +4211,7 @@ def cmd_autopilot(sess: H155Session, args):
             print(f"\r  {C.DIM}[{ts}] #{checks:>4}{C.RESET} {bar} {cstat} "
                   f"{colorize(str(len(agg))+'CC', C.LIME if len(agg)>1 else C.DIM)} "
                   f"RSRP:{colorize(sig.get('rsrp','?'), r_col, C.BOLD)} "
+                  f"WAN:{colorize(wan_kind, wan_col)} "
                   f"fixes:{colorize(str(fixes), C.YELLOW if fixes else C.DIM)} "
                   f"relogin:{colorize(str(relog), C.CYAN if relog else C.DIM)} "
                   f"last:{colorize(last_action, C.MAGENTA)}    ", end="", flush=True)
@@ -5169,6 +5191,681 @@ def cmd_live_dashboard(sess: H155Session, args):
     sep()
 
 
+# ═════════════════════════════════════════════════════════════
+#  ★★★  v40.3 UPGRADE — 15 IP-CONFLICT & WAN-IP TOOLS  ★★★
+#  Auto-fix LAN IP conflicts, pick the best WAN IP, DNS benchmarking,
+#  device guarding and an all-in-one network doctor. Real logic only.
+# ═════════════════════════════════════════════════════════════
+
+# Extra endpoints used by this group
+EP.update({
+    "dhcp_static": "/api/dhcp/static-addr-info",
+    "lan_ip":      "/api/lan/ipinfo",
+})
+
+
+def classify_wan_ip(ip: str):
+    """Classify a WAN IP → (kind, color). kind ∈ public/cgnat/private/none/other."""
+    import ipaddress
+    if not ip or ip in ("N/A", "0.0.0.0", ""):
+        return ("none", C.RED)
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return ("none", C.RED)
+    if a in ipaddress.ip_network("100.64.0.0/10"):   # carrier-grade NAT
+        return ("cgnat", C.YELLOW)
+    if a.is_private:
+        return ("private", C.ORANGE)
+    if a.is_global:
+        return ("public", C.LIME)
+    return ("other", C.DIM)
+
+
+def wan_ip_score(ip: str) -> int:
+    """Higher = more desirable WAN IP (public routable is best)."""
+    kind = classify_wan_ip(ip)[0]
+    return {"public": 3, "other": 2, "cgnat": 1, "private": 1, "none": 0}[kind]
+
+
+def get_public_ip():
+    """Return this connection's real public IP as seen from the internet."""
+    import ipaddress
+    for url in ("https://api.ipify.org", "https://ifconfig.co/ip", "https://icanhazip.com"):
+        try:
+            r = requests.get(url, timeout=8)
+            if r.ok:
+                ip = r.text.strip()
+                ipaddress.ip_address(ip)   # validate
+                return ip
+        except (requests.exceptions.RequestException, ValueError):
+            continue
+    return None
+
+
+def ping_alive(ip: str, timeout: float = 1.0) -> bool:
+    """True if host answers a single ping (cross-platform)."""
+    win = sys.platform.startswith("win")
+    cnt = ["-n", "1"] if win else ["-c", "1"]
+    wflag = ["-w", str(int(timeout * 1000))] if win else ["-W", str(int(timeout))]
+    try:
+        r = subprocess.run(["ping"] + cnt + wflag + [ip],
+                           capture_output=True, timeout=timeout + 2)
+        return r.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def router_lan_ip(sess: H155Session) -> str:
+    """Best-effort router LAN/gateway IP."""
+    xml = sess.api_get(EP["dhcp"])
+    ip = xval(xml, "DhcpIPAddress", "")
+    if ip and ip != "N/A":
+        return ip
+    return sess.gateway
+
+
+def parse_hosts(sess: H155Session):
+    """Connected clients as dicts: ip, mac, name, active."""
+    xml = sess.api_get(EP["host_list"])
+    out = []
+    for h in re.finditer(r"<Host>(.*?)</Host>", xml, re.DOTALL):
+        b = h.group(1)
+        out.append({
+            "ip":   xval(b, "IpAddress", ""),
+            "mac":  xval(b, "MacAddress", "").upper(),
+            "name": xval(b, "HostName", "?"),
+            "active": xval(b, "Active", "1") == "1",
+        })
+    return [d for d in out if d["ip"]]
+
+
+def find_ip_conflicts(hosts):
+    """Return {ip: [macs]} for any IP claimed by more than one MAC."""
+    by_ip = {}
+    for h in hosts:
+        by_ip.setdefault(h["ip"], set()).add(h["mac"])
+    return {ip: sorted(m) for ip, m in by_ip.items() if len(m) > 1}
+
+
+# ─────────────────────────────────────────────────────────────
+#  GROUP O — IP-CONFLICT & WAN-IP SUITE  (features 99-113)
+# ─────────────────────────────────────────────────────────────
+def cmd_network_doctor(sess: H155Session, args):
+    """[99] All-in-one LAN+WAN+DNS auto-diagnosis with one-tap fixes."""
+    step("Network Doctor — full auto diagnosis")
+    sep()
+    issues, fixes = [], []
+
+    # WAN
+    wan = sess.get_device_info().get("wan_ip", "N/A")
+    kind, kcol = classify_wan_ip(wan)
+    print(f"  {colorize('WAN IP:', C.DIM):<18} {colorize(wan, kcol, C.BOLD)}  ({colorize(kind.upper(), kcol)})")
+    if kind in ("cgnat", "private", "none"):
+        issues.append(f"WAN IP is {kind} (not directly reachable from internet)")
+    pub = get_public_ip()
+    if pub:
+        nat = "behind NAT/CGNAT" if pub != wan else "direct (no NAT)"
+        print(f"  {colorize('Public IP:', C.DIM):<18} {colorize(pub, C.CYAN)}  ({nat})")
+
+    # LAN conflicts
+    hosts = parse_hosts(sess)
+    conflicts = find_ip_conflicts(hosts)
+    print(f"  {colorize('LAN clients:', C.DIM):<18} {colorize(str(len(hosts)), C.WHITE)}")
+    if conflicts:
+        issues.append(f"{len(conflicts)} duplicate IP(s): {', '.join(conflicts)}")
+        for ip, macs in conflicts.items():
+            print(f"    {colorize('⚠ '+ip, C.RED, C.BOLD)} claimed by {', '.join(macs)}")
+
+    # DNS latency
+    dns_xml = sess.api_get(EP["dhcp"])
+    cur_dns = xval(dns_xml, "PrimaryDns", "—")
+    lat = measure_latency_ms(cur_dns if cur_dns not in ("—", "N/A", "") else "8.8.8.8", 3)
+    if lat is not None:
+        dcol = C.GREEN if lat < 40 else (C.YELLOW if lat < 90 else C.RED)
+        print(f"  {colorize('DNS latency:', C.DIM):<18} {colorize(f'{lat:.0f} ms', dcol)} (via {cur_dns})")
+        if lat >= 90:
+            issues.append("DNS latency is high")
+
+    sep()
+    if not issues:
+        ok(colorize("No network problems detected. ✔", C.LIME + C.BOLD))
+        sep()
+        return
+    print(f"  {C.RED}{C.BOLD}  {len(issues)} issue(s):{C.RESET}")
+    for i in issues:
+        print(f"    {colorize('•', C.RED)} {i}")
+    if not confirm(f"\n  {C.YELLOW}Attempt automatic fixes? (yes/no): {C.RESET}"):
+        warn("No changes made.")
+        return
+    # Fix 1: duplicate IPs → renew all leases
+    if conflicts:
+        cur = sess.api_get(EP["dhcp"])
+        body = {
+            "DhcpIPAddress": xval(cur, "DhcpIPAddress", router_lan_ip(sess)),
+            "DhcpLanNetmask": xval(cur, "DhcpLanNetmask", "255.255.255.0"),
+            "DhcpStatus": "1",
+            "DhcpStartIPAddress": xval(cur, "DhcpStartIPAddress", "192.168.8.100"),
+            "DhcpEndIPAddress": xval(cur, "DhcpEndIPAddress", "192.168.8.200"),
+            "DhcpLeaseTime": "3600",
+            "DnsStatus": xval(cur, "DnsStatus", "1"),
+            "PrimaryDns": xval(cur, "PrimaryDns", "192.168.8.1"),
+            "SecondaryDns": xval(cur, "SecondaryDns", "192.168.8.1"),
+        }
+        if sess.post_ok(sess.api_post(EP["dhcp"], body)):
+            fixes.append("Shortened DHCP lease to force conflict-free renewals")
+    # Fix 2: slow DNS → Cloudflare
+    if lat is not None and lat >= 90:
+        cur = sess.api_get(EP["dhcp"])
+        body = {
+            "DhcpIPAddress": xval(cur, "DhcpIPAddress", router_lan_ip(sess)),
+            "DhcpLanNetmask": xval(cur, "DhcpLanNetmask", "255.255.255.0"),
+            "DhcpStatus": "1",
+            "DhcpStartIPAddress": xval(cur, "DhcpStartIPAddress", "192.168.8.100"),
+            "DhcpEndIPAddress": xval(cur, "DhcpEndIPAddress", "192.168.8.200"),
+            "DhcpLeaseTime": xval(cur, "DhcpLeaseTime", "86400"),
+            "DnsStatus": "0", "PrimaryDns": "1.1.1.1", "SecondaryDns": "8.8.8.8",
+        }
+        if sess.post_ok(sess.api_post(EP["dhcp"], body)):
+            fixes.append("Set fast DNS (1.1.1.1 / 8.8.8.8)")
+    # Fix 3: bad WAN IP → reconnect once for a fresh lease
+    if kind in ("cgnat", "private", "none"):
+        sess.api_post(EP["data_switch"], {"dataswitch": "0"})
+        time.sleep(2)
+        sess.api_post(EP["data_switch"], {"dataswitch": "1"})
+        fixes.append("Requested a fresh WAN IP (data reconnect)")
+    sep()
+    if fixes:
+        for f in fixes:
+            ok(colorize("✔ " + f, C.GREEN))
+    else:
+        warn("No automatic fix could be applied (router may not expose those APIs).")
+    sep()
+
+
+def cmd_ip_conflict_auto(sess: H155Session, args):
+    """[100] Detect IP conflicts and auto-fix them (no prompts)."""
+    step("Auto IP-Conflict Fixer")
+    sep()
+    hosts = parse_hosts(sess)
+    conflicts = find_ip_conflicts(hosts)
+    # Also check duplicates between router host-list and local ARP table
+    if not conflicts:
+        ok(colorize("No IP conflicts on the LAN. ✔", C.LIME + C.BOLD))
+        sep()
+        return
+    print(f"  {C.RED}{C.BOLD}  {len(conflicts)} conflict(s) detected:{C.RESET}")
+    for ip, macs in conflicts.items():
+        print(f"    {colorize('⚠ '+ip, C.RED)} → {', '.join(macs)}")
+    info("Auto-fixing: shrinking lease time + renewing the DHCP pool...")
+    cur = sess.api_get(EP["dhcp"])
+    start = xval(cur, "DhcpStartIPAddress", "192.168.8.100")
+    end = xval(cur, "DhcpEndIPAddress", "192.168.8.200")
+    body = {
+        "DhcpIPAddress": xval(cur, "DhcpIPAddress", router_lan_ip(sess)),
+        "DhcpLanNetmask": xval(cur, "DhcpLanNetmask", "255.255.255.0"),
+        "DhcpStatus": "1", "DhcpStartIPAddress": start, "DhcpEndIPAddress": end,
+        "DhcpLeaseTime": "1800",
+        "DnsStatus": xval(cur, "DnsStatus", "1"),
+        "PrimaryDns": xval(cur, "PrimaryDns", "192.168.8.1"),
+        "SecondaryDns": xval(cur, "SecondaryDns", "192.168.8.1"),
+    }
+    if sess.post_ok(sess.api_post(EP["dhcp"], body)):
+        ok(colorize("Lease renewed — duplicate holders will get unique IPs shortly.", C.GREEN + C.BOLD))
+        info("Tip: use 'dhcp-reserve' to permanently bind each device to its own IP.")
+    else:
+        warn("Could not update DHCP — try 'dhcp-reserve' to assign static IPs.")
+    sep()
+
+
+def cmd_dhcp_reservation(sess: H155Session, args):
+    """[101] Bind a device's MAC to a fixed IP (static DHCP reservation)."""
+    step("Static DHCP Reservation")
+    sep()
+    hosts = parse_hosts(sess)
+    if hosts:
+        print(f"  {C.DIM}  Connected devices:{C.RESET}")
+        for h in hosts:
+            print(f"    {colorize(h['ip'], C.CYAN):<22} {colorize(h['mac'], C.DIM)}  {h['name']}")
+    existing = sess.api_get(EP["dhcp_static"])
+    binds = re.findall(r"<static_addr_info>(.*?)</static_addr_info>", existing, re.DOTALL)
+    if binds:
+        print(f"\n  {C.GOLD}  Current reservations:{C.RESET}")
+        for b in binds:
+            print(f"    {colorize(xval(b,'IpAddress'), C.LIME)} ← {colorize(xval(b,'MacAddress'), C.DIM)}")
+    mac = ask(f"\n  {C.YELLOW}Device MAC (AA:BB:CC:DD:EE:FF): {C.RESET}")
+    ip = ask(f"  {C.YELLOW}Reserve this IP for it: {C.RESET}")
+    if not mac or not ip:
+        warn("Cancelled.")
+        return
+    if not re.match(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$", mac):
+        err("Invalid MAC.")
+        return
+    try:
+        socket.inet_aton(ip)
+    except socket.error:
+        err("Invalid IP.")
+        return
+    body = {"MacAddress": mac.upper(), "IpAddress": ip, "Status": "1", "Enable": "1"}
+    resp = sess.api_post(EP["dhcp_static"], body)
+    if sess.post_ok(resp):
+        ok(colorize(f"Reserved {ip} for {mac.upper()} permanently.", C.GREEN + C.BOLD))
+    else:
+        err(explain_error(resp) or "Router did not accept the reservation (API may differ).")
+    sep()
+
+
+def cmd_release_renew_all(sess: H155Session, args):
+    """[102] Force every client to release & renew its DHCP lease."""
+    step("Renew All DHCP Leases")
+    sep()
+    cur = sess.api_get(EP["dhcp"])
+    base = {
+        "DhcpIPAddress": xval(cur, "DhcpIPAddress", router_lan_ip(sess)),
+        "DhcpLanNetmask": xval(cur, "DhcpLanNetmask", "255.255.255.0"),
+        "DhcpStatus": "1",
+        "DhcpStartIPAddress": xval(cur, "DhcpStartIPAddress", "192.168.8.100"),
+        "DhcpEndIPAddress": xval(cur, "DhcpEndIPAddress", "192.168.8.200"),
+        "DnsStatus": xval(cur, "DnsStatus", "1"),
+        "PrimaryDns": xval(cur, "PrimaryDns", "192.168.8.1"),
+        "SecondaryDns": xval(cur, "SecondaryDns", "192.168.8.1"),
+    }
+    # Toggle the server off/on around a short lease to force renewals
+    if not confirm(f"  {C.YELLOW}Force all devices to renew now? (yes/no): {C.RESET}"):
+        warn("Cancelled.")
+        return
+    body = dict(base, DhcpLeaseTime="120")
+    sess.api_post(EP["dhcp"], body)
+    time.sleep(1)
+    body = dict(base, DhcpLeaseTime=xval(cur, "DhcpLeaseTime", "86400"))
+    if sess.post_ok(sess.api_post(EP["dhcp"], body)):
+        ok(colorize("Lease renewal triggered — devices refresh within ~2 min.", C.GREEN + C.BOLD))
+    else:
+        warn("Non-OK response; a router reboot also forces a full renew.")
+    sep()
+
+
+def cmd_arp_scan(sess: H155Session, args):
+    """[103] Active LAN sweep — discover live hosts and spot duplicates."""
+    from concurrent.futures import ThreadPoolExecutor
+    step("Active LAN Sweep")
+    sep()
+    lan = router_lan_ip(sess)
+    prefix = ".".join(lan.split(".")[:3])
+    info(f"Sweeping {colorize(prefix + '.1-254', C.CYAN)} (this takes a few seconds)...")
+    alive = []
+    with ThreadPoolExecutor(max_workers=64) as ex:
+        ips = [f"{prefix}.{i}" for i in range(1, 255)]
+        for ip, up in zip(ips, ex.map(lambda x: ping_alive(x, 1), ips)):
+            if up:
+                alive.append(ip)
+    # Map to router's view (MAC/hostnames)
+    hosts = {h["ip"]: h for h in parse_hosts(sess)}
+    print(f"\n  {colorize(str(len(alive)) + ' live host(s):', C.GOLD, C.BOLD)}")
+    for ip in alive:
+        h = hosts.get(ip)
+        extra = f"  {colorize(h['mac'], C.DIM)}  {h['name']}" if h else f"  {colorize('(not in router table)', C.DIM)}"
+        marker = colorize("  ◀ this router", C.LIME) if ip == lan else ""
+        print(f"    {colorize(ip, C.CYAN)}{extra}{marker}")
+    conflicts = find_ip_conflicts(list(hosts.values()))
+    if conflicts:
+        warn(f"Duplicate IPs: {', '.join(conflicts)} — run 'ip-conflict' to fix.")
+    sep()
+
+
+def cmd_duplicate_ip_resolver(sess: H155Session, args):
+    """[104] Find duplicate IPs and reassign the offending devices."""
+    step("Duplicate IP Resolver")
+    sep()
+    hosts = parse_hosts(sess)
+    conflicts = find_ip_conflicts(hosts)
+    if not conflicts:
+        ok(colorize("No duplicate IPs found. ✔", C.LIME + C.BOLD))
+        sep()
+        return
+    cur = sess.api_get(EP["dhcp"])
+    start = xval(cur, "DhcpStartIPAddress", "192.168.8.100")
+    prefix = ".".join(start.split(".")[:3])
+    used = {h["ip"] for h in hosts}
+    free = [f"{prefix}.{i}" for i in range(100, 250) if f"{prefix}.{i}" not in used]
+    for ip, macs in conflicts.items():
+        print(f"  {colorize('⚠ '+ip, C.RED, C.BOLD)} used by {', '.join(macs)}")
+        # Keep the first MAC on the IP; reserve fresh IPs for the rest
+        for mac in macs[1:]:
+            if not free:
+                warn("  pool exhausted — widen the DHCP range first")
+                break
+            newip = free.pop(0)
+            body = {"MacAddress": mac, "IpAddress": newip, "Status": "1", "Enable": "1"}
+            if sess.post_ok(sess.api_post(EP["dhcp_static"], body)):
+                ok(f"  Reassigned {colorize(mac, C.DIM)} → {colorize(newip, C.LIME, C.BOLD)}")
+            else:
+                warn(f"  Could not reserve {newip} for {mac}")
+    info("Devices take the new IP on their next DHCP renew (or reconnect them).")
+    sep()
+
+
+def cmd_dhcp_pool_optimize(sess: H155Session, args):
+    """[105] Resize the DHCP pool so it never clashes with static devices."""
+    step("DHCP Pool Optimizer")
+    sep()
+    cur = sess.api_get(EP["dhcp"])
+    lan = xval(cur, "DhcpIPAddress", router_lan_ip(sess))
+    prefix = ".".join(lan.split(".")[:3])
+    start = xval(cur, "DhcpStartIPAddress", f"{prefix}.100")
+    end = xval(cur, "DhcpEndIPAddress", f"{prefix}.200")
+    print(f"  Current pool: {colorize(start, C.CYAN)} → {colorize(end, C.CYAN)}")
+    # Recommend leaving .2-.49 for statics, pool .50-.200
+    rec_start, rec_end = f"{prefix}.50", f"{prefix}.200"
+    info(f"Recommended: reserve {prefix}.2–.49 for static devices, "
+         f"pool {colorize(rec_start + '–' + rec_end, C.GOLD)}")
+    if not confirm(f"  {C.YELLOW}Apply recommended pool? (yes/no): {C.RESET}"):
+        warn("Unchanged.")
+        return
+    body = {
+        "DhcpIPAddress": lan, "DhcpLanNetmask": xval(cur, "DhcpLanNetmask", "255.255.255.0"),
+        "DhcpStatus": "1", "DhcpStartIPAddress": rec_start, "DhcpEndIPAddress": rec_end,
+        "DhcpLeaseTime": xval(cur, "DhcpLeaseTime", "86400"),
+        "DnsStatus": xval(cur, "DnsStatus", "1"),
+        "PrimaryDns": xval(cur, "PrimaryDns", lan),
+        "SecondaryDns": xval(cur, "SecondaryDns", lan),
+    }
+    if sess.post_ok(sess.api_post(EP["dhcp"], body)):
+        ok(colorize(f"Pool set to {rec_start}–{rec_end}.", C.GREEN + C.BOLD))
+    else:
+        err("Failed to resize pool.")
+    sep()
+
+
+def cmd_lan_subnet_change(sess: H155Session, args):
+    """[106] Move the whole LAN to a new subnet (escape a conflicting range)."""
+    step("Change LAN Subnet")
+    sep()
+    cur = sess.api_get(EP["dhcp"])
+    lan = xval(cur, "DhcpIPAddress", router_lan_ip(sess))
+    print(f"  Current router LAN IP: {colorize(lan, C.CYAN)}")
+    warn("Changing the subnet disconnects you — reconnect at the new gateway IP.")
+    new_gw = ask(f"  {C.YELLOW}New router IP (e.g. 192.168.10.1): {C.RESET}")
+    if not new_gw:
+        warn("Cancelled.")
+        return
+    try:
+        socket.inet_aton(new_gw)
+    except socket.error:
+        err("Invalid IP.")
+        return
+    prefix = ".".join(new_gw.split(".")[:3])
+    # Apply via DHCP settings (gateway + derived pool) and LAN ipinfo
+    body = {
+        "DhcpIPAddress": new_gw, "DhcpLanNetmask": "255.255.255.0", "DhcpStatus": "1",
+        "DhcpStartIPAddress": f"{prefix}.100", "DhcpEndIPAddress": f"{prefix}.200",
+        "DhcpLeaseTime": xval(cur, "DhcpLeaseTime", "86400"),
+        "DnsStatus": "1", "PrimaryDns": new_gw, "SecondaryDns": new_gw,
+    }
+    ok1 = sess.post_ok(sess.api_post(EP["dhcp"], body))
+    sess.api_post(EP["lan_ip"], {"DhcpLanIpAddress": new_gw, "DhcpLanNetmask": "255.255.255.0"})
+    if ok1:
+        ok(colorize(f"LAN moved to {prefix}.0/24.", C.GREEN + C.BOLD))
+        warn(f"Reconnect to the router at: http://{new_gw}")
+    else:
+        warn("Non-OK response — change may need the web UI.")
+    sep()
+
+
+def cmd_wan_ip_info(sess: H155Session, args):
+    """[107] Show the WAN IP, its type, gateway and DNS."""
+    step("WAN IP Details")
+    sep()
+    dev = sess.get_device_info()
+    wan = dev.get("wan_ip", "N/A")
+    kind, kcol = classify_wan_ip(wan)
+    explain = {
+        "public": "Routable — port-forwarding / remote access will work.",
+        "cgnat": "Carrier-grade NAT (100.64/10) — shared, not reachable inbound.",
+        "private": "Private range — double-NAT; inbound blocked.",
+        "none": "No WAN IP assigned (data may be down).",
+        "other": "Special-use address.",
+    }
+    print(f"  {colorize('WAN IP:', C.DIM):<16} {colorize(wan, kcol, C.BOLD)}")
+    print(f"  {colorize('Type:', C.DIM):<16} {colorize(kind.upper(), kcol, C.BOLD)} — {explain[kind]}")
+    pub = get_public_ip()
+    if pub:
+        nat = colorize("behind NAT/CGNAT", C.YELLOW) if pub != wan else colorize("direct (no NAT)", C.LIME)
+        print(f"  {colorize('Public IP:', C.DIM):<16} {colorize(pub, C.CYAN)}  ({nat})")
+    sep()
+
+
+def _cycle_wan_once(sess: H155Session):
+    """Drop & re-raise data, return the new WAN IP (best effort)."""
+    sess.api_post(EP["data_switch"], {"dataswitch": "0"})
+    time.sleep(2)
+    sess.api_post(EP["data_switch"], {"dataswitch": "1"})
+    ip = "N/A"
+    for _ in range(8):
+        time.sleep(2)
+        ip = sess.get_device_info().get("wan_ip", "N/A")
+        if ip not in ("N/A", "", "0.0.0.0"):
+            break
+    return ip
+
+
+def cmd_best_wan_ip(sess: H155Session, args):
+    """[108] Reconnect-cycle until the best WAN IP (public > CGNAT) is obtained."""
+    attempts = getattr(args, "duration", 60) // 10 or 6
+    step(f"Best WAN IP Finder (up to {attempts} reconnect attempts)")
+    warn("Each attempt briefly drops your data connection.")
+    sep()
+    if not confirm(f"  {C.YELLOW}Start fishing for a better WAN IP? (yes/no): {C.RESET}"):
+        warn("Cancelled.")
+        return
+    cur = sess.get_device_info().get("wan_ip", "N/A")
+    best = cur
+    best_score = wan_ip_score(cur)
+    k, c = classify_wan_ip(cur)
+    info(f"Starting WAN IP: {colorize(cur, c)} ({k}, score {best_score})")
+    if best_score >= 3:
+        ok(colorize("Already on a public IP — nothing to improve. ✔", C.LIME + C.BOLD))
+        sep()
+        return
+    for i in range(int(attempts)):
+        print(f"\n  {C.MAGENTA}▶{C.RESET}  attempt {i+1}/{int(attempts)} — reconnecting...")
+        ip = _cycle_wan_once(sess)
+        score = wan_ip_score(ip)
+        kk, cc = classify_wan_ip(ip)
+        print(f"    got {colorize(ip, cc, C.BOLD)} ({kk}, score {score})")
+        if score > best_score:
+            best, best_score = ip, score
+        if best_score >= 3:
+            break
+    sep()
+    if best_score >= 3:
+        ok(colorize(f"Got a PUBLIC WAN IP: {best} 🎉", C.LIME + C.BOLD))
+    else:
+        kk, cc = classify_wan_ip(best)
+        warn(f"Best obtainable here: {colorize(best, cc)} ({kk}). "
+             f"Carrier likely enforces CGNAT — ask for a public-IP APN/plan.")
+    sep()
+
+
+def cmd_wan_ip_monitor(sess: H155Session, args):
+    """[109] Watch the WAN IP and log every change."""
+    interval = getattr(args, "interval", 30) or 30
+    step(f"WAN IP Monitor (every {interval}s, Ctrl+C to stop)")
+    sep()
+    last = None
+    changes = 0
+    try:
+        while True:
+            ip = sess.get_device_info().get("wan_ip", "N/A")
+            k, c = classify_wan_ip(ip)
+            ts = datetime.now().strftime("%H:%M:%S")
+            if ip != last:
+                if last is not None:
+                    changes += 1
+                    print(f"\n  {colorize('['+ts+'] WAN IP changed:', C.GOLD, C.BOLD)} "
+                          f"{colorize(str(last), C.DIM)} → {colorize(ip, c, C.BOLD)} ({k})")
+                last = ip
+            print(f"\r  {C.DIM}[{ts}]{C.RESET}  WAN {colorize(ip, c, C.BOLD)} ({k})  "
+                  f"changes:{colorize(str(changes), C.YELLOW if changes else C.DIM)}    ",
+                  end="", flush=True)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()
+        ok(f"WAN monitor stopped — {changes} IP change(s) observed.")
+    sep()
+
+
+def cmd_public_ip_check(sess: H155Session, args):
+    """[110] Compare router WAN IP with the real public IP (detect CGNAT)."""
+    step("Public IP / CGNAT Check")
+    sep()
+    wan = sess.get_device_info().get("wan_ip", "N/A")
+    pub = get_public_ip()
+    k, c = classify_wan_ip(wan)
+    print(f"  {colorize('Router WAN IP:', C.DIM):<18} {colorize(wan, c, C.BOLD)} ({k})")
+    if not pub:
+        err("Could not reach a public-IP service (data down or blocked).")
+        sep()
+        return
+    print(f"  {colorize('Internet sees:', C.DIM):<18} {colorize(pub, C.CYAN, C.BOLD)}")
+    if pub == wan and k == "public":
+        ok(colorize("Direct public IP — no NAT. Inbound connections work. ✔", C.LIME + C.BOLD))
+    elif k == "cgnat" or (pub != wan and k != "public"):
+        warn("You are behind Carrier-Grade NAT (CGNAT).")
+        info("Port-forwarding / DDNS won't accept inbound traffic on this plan.")
+        info("Use 'best-wan' to try for a public IP, or request a public-IP APN.")
+    else:
+        info("WAN IP differs from public IP → an upstream NAT is present.")
+    sep()
+
+
+def cmd_dns_benchmark(sess: H155Session, args):
+    """[111] Benchmark popular DNS resolvers by latency and set the fastest."""
+    step("DNS Resolver Benchmark")
+    sep()
+    resolvers = [
+        ("Cloudflare", "1.1.1.1", "1.0.0.1"),
+        ("Google", "8.8.8.8", "8.8.4.4"),
+        ("Quad9", "9.9.9.9", "149.112.112.112"),
+        ("OpenDNS", "208.67.222.222", "208.67.220.220"),
+        ("AdGuard", "94.140.14.14", "94.140.15.15"),
+    ]
+    results = []
+    for name, pri, sec in resolvers:
+        lat = measure_latency_ms(pri, count=4)
+        if lat is not None:
+            results.append((name, pri, sec, lat))
+            dcol = C.GREEN if lat < 40 else (C.YELLOW if lat < 90 else C.RED)
+            print(f"  {colorize(name, C.WHITE):<14} {colorize(pri, C.CYAN):<18} {colorize(f'{lat:.0f} ms', dcol, C.BOLD)}")
+        else:
+            print(f"  {colorize(name, C.DIM):<14} {colorize(pri, C.DIM):<18} {colorize('unreachable', C.RED)}")
+    if not results:
+        err("No resolver responded.")
+        return
+    results.sort(key=lambda x: x[3])
+    name, pri, sec, lat = results[0]
+    sep()
+    ok(f"Fastest: {colorize(name, C.LIME, C.BOLD)} ({pri}) at {lat:.0f} ms")
+    if not confirm(f"  {C.YELLOW}Set {name} as the router DNS? (yes/no): {C.RESET}"):
+        warn("Left unchanged.")
+        return
+    cur = sess.api_get(EP["dhcp"])
+    body = {
+        "DhcpIPAddress": xval(cur, "DhcpIPAddress", router_lan_ip(sess)),
+        "DhcpLanNetmask": xval(cur, "DhcpLanNetmask", "255.255.255.0"),
+        "DhcpStatus": "1",
+        "DhcpStartIPAddress": xval(cur, "DhcpStartIPAddress", "192.168.8.100"),
+        "DhcpEndIPAddress": xval(cur, "DhcpEndIPAddress", "192.168.8.200"),
+        "DhcpLeaseTime": xval(cur, "DhcpLeaseTime", "86400"),
+        "DnsStatus": "0", "PrimaryDns": pri, "SecondaryDns": sec,
+    }
+    if sess.post_ok(sess.api_post(EP["dhcp"], body)):
+        ok(colorize(f"Router DNS set to {name} ({pri}/{sec}).", C.GREEN + C.BOLD))
+    else:
+        err("Failed to set DNS.")
+    sep()
+
+
+def cmd_block_unknown_devices(sess: H155Session, args):
+    """[112] Block any connected device whose MAC is not on your allowlist."""
+    step("Guard LAN — Block Unknown Devices")
+    sep()
+    hosts = parse_hosts(sess)
+    if not hosts:
+        warn("No connected devices reported.")
+        sep()
+        return
+    print(f"  {C.DIM}  Currently connected:{C.RESET}")
+    for i, h in enumerate(hosts):
+        print(f"    {colorize('['+str(i)+']', C.CYAN)} {colorize(h['ip'], C.WHITE):<22} "
+              f"{colorize(h['mac'], C.DIM)}  {h['name']}")
+    raw = ask(f"\n  {C.YELLOW}Indices to TRUST (allow), e.g. '0 2 3' (others get blocked): {C.RESET}")
+    if raw is None:
+        warn("Cancelled.")
+        return
+    trusted_idx = {int(x) for x in raw.split() if x.isdigit() and int(x) < len(hosts)}
+    allow = [hosts[i]["mac"] for i in trusted_idx]
+    block = [h["mac"] for i, h in enumerate(hosts) if i not in trusted_idx]
+    if not block:
+        ok("Nothing to block — all listed devices are trusted.")
+        sep()
+        return
+    info(f"Allowing {len(allow)} device(s); blocking {len(block)}.")
+    # Whitelist mode (1) with the trusted MACs
+    body = {"WifiMacFilterStatus": "1"}
+    for i, mac in enumerate(allow):
+        body[f"WifiMacFilterMac{i}"] = mac
+    resp = sess.api_post(EP["mac_filter"], body)
+    if sess.post_ok(resp):
+        ok(colorize(f"Allowlist active — {len(block)} unknown device(s) will be blocked.", C.GREEN + C.BOLD))
+    else:
+        err(explain_error(resp) or "Failed to apply MAC allowlist.")
+    sep()
+
+
+def cmd_wan_quality(sess: H155Session, args):
+    """[113] Score overall WAN quality: IP type + latency + loss + jitter."""
+    step("WAN Quality Score")
+    sep()
+    host = getattr(args, "target", None) or "8.8.8.8"
+    wan = sess.get_device_info().get("wan_ip", "N/A")
+    kind, kcol = classify_wan_ip(wan)
+    print(f"  {colorize('WAN IP:', C.DIM):<16} {colorize(wan, kcol)} ({kind})")
+    # Probe latency/jitter/loss with several pings
+    samples = []
+    sent = 8
+    for _ in range(sent):
+        lat = measure_latency_ms(host, count=1)
+        if lat is not None:
+            samples.append(lat)
+        time.sleep(0.3)
+    loss = (sent - len(samples)) / sent * 100
+    avg = sum(samples) / len(samples) if samples else None
+    jit = stdev(samples) if len(samples) > 1 else 0.0
+
+    score = 0
+    score += {"public": 30, "other": 22, "cgnat": 15, "private": 12, "none": 0}[kind]
+    if avg is not None:
+        score += 30 if avg < 30 else (22 if avg < 60 else (12 if avg < 120 else 4))
+        score += 20 if jit < 5 else (14 if jit < 15 else (6 if jit < 40 else 0))
+    score += 20 if loss == 0 else (10 if loss < 10 else 0)
+
+    if avg is not None:
+        print(f"  {colorize('Latency:', C.DIM):<16} {colorize(f'{avg:.0f} ms', C.CYAN)}")
+        print(f"  {colorize('Jitter:', C.DIM):<16} {colorize(f'±{jit:.1f} ms', C.CYAN)}")
+    print(f"  {colorize('Packet loss:', C.DIM):<16} {colorize(f'{loss:.0f}%', C.GREEN if loss==0 else C.RED)}")
+    if score >= 80: grade, gc = "EXCELLENT", C.LIME
+    elif score >= 60: grade, gc = "GOOD", C.GREEN
+    elif score >= 40: grade, gc = "FAIR", C.YELLOW
+    else: grade, gc = "POOR", C.RED
+    filled = int(score / 5)
+    bar = colorize("█" * filled, gc) + colorize("░" * (20 - filled), C.DIM)
+    print(f"\n  {colorize('WAN SCORE', C.BOLD)}  [{bar}]  {colorize(f'{score}/100', gc, C.BOLD)}  {colorize(grade, gc, C.BOLD)}")
+    if kind in ("cgnat", "private"):
+        info("Tip: run 'best-wan' to fish for a public IP.")
+    sep()
+
+
 # ─────────────────────────────────────────────────────────────
 #  MAIN CLI  –  NUMBERED INTERACTIVE MENU
 # ─────────────────────────────────────────────────────────────
@@ -5275,6 +5972,22 @@ MENU_ITEMS = [
     (96, "selftest",   cmd_self_test,       "Probe which API endpoints work",             C.PINK),
     (97, "wizard",     cmd_setup_wizard,    "Guided optimal setup wizard",                C.PINK),
     (98, "dashboard",  cmd_live_dashboard,  "All-in-one live dashboard",                  C.PINK),
+    # ── v40.3 IP-conflict & WAN-IP suite ───────────────────────────────────
+    (99,  "ip-doctor",  cmd_network_doctor,        "Network doctor: LAN+WAN+DNS auto-fix",  C.ORANGE),
+    (100, "ip-conflict",cmd_ip_conflict_auto,      "Auto-detect & fix IP conflicts",        C.ORANGE),
+    (101, "dhcp-reserve",cmd_dhcp_reservation,     "Static DHCP reservation (MAC→IP)",      C.ORANGE),
+    (102, "dhcp-renew", cmd_release_renew_all,     "Force all clients to renew leases",     C.ORANGE),
+    (103, "arp-scan",   cmd_arp_scan,              "Active LAN sweep (live hosts/dupes)",   C.ORANGE),
+    (104, "dup-ip",     cmd_duplicate_ip_resolver, "Find & reassign duplicate IPs",         C.ORANGE),
+    (105, "pool-opt",   cmd_dhcp_pool_optimize,    "Resize DHCP pool to avoid clashes",     C.ORANGE),
+    (106, "subnet",     cmd_lan_subnet_change,     "Change LAN subnet (escape conflicts)",  C.ORANGE),
+    (107, "wan-ip",     cmd_wan_ip_info,           "WAN IP details + type",                 C.TEAL),
+    (108, "best-wan",   cmd_best_wan_ip,           "Reconnect-cycle → best WAN IP",         C.TEAL),
+    (109, "wan-watch",  cmd_wan_ip_monitor,        "Monitor + log WAN IP changes",          C.TEAL),
+    (110, "public-ip",  cmd_public_ip_check,       "Public IP / CGNAT detection",           C.TEAL),
+    (111, "dns-bench",  cmd_dns_benchmark,         "Benchmark DNS resolvers → set fastest", C.TEAL),
+    (112, "guard-lan",  cmd_block_unknown_devices, "Block unknown devices (allowlist)",     C.TEAL),
+    (113, "wan-score",  cmd_wan_quality,           "WAN quality score (IP+latency+loss)",   C.TEAL),
     ( 0, "exit",      None,                "Exit",                                        C.DIM),
 ]
 
@@ -5296,7 +6009,7 @@ def show_numbered_menu():
         ("📶  WI-FI",           [26, 27, 28, 29, 30, 31]),
         ("🔌  CONNECTION",      [32, 33, 34, 35, 36]),
         ("🌐  OPERATOR",        [37, 38]),
-        ("🔒  SECURITY / NAT",  [14, 42, 43, 44, 45, 46]),
+        ("🔒  SECURITY / NAT",  [42, 43, 44, 45, 46]),
         ("🩺  DIAGNOSTICS",     [47, 48, 49, 50]),
         ("💾  BACKUP / EXPORT", [51, 52, 53, 54, 55]),
         ("🧩  CARRIER AGGREGATION", [59, 60, 61, 62, 63, 64, 65, 66]),
@@ -5305,6 +6018,8 @@ def show_numbered_menu():
         ("🚀  SPEED / LATENCY", [81, 82, 83, 84, 85, 86]),
         ("📈  ANALYTICS",       [87, 88, 89, 90, 91, 92]),
         ("🧪  ADVANCED / RESILIENCE", [93, 94, 95, 96, 97, 98]),
+        ("🛜  IP CONFLICT / LAN", [14, 99, 100, 101, 102, 103, 104, 105, 106, 112]),
+        ("🌍  WAN IP",          [107, 108, 109, 110, 111, 113]),
         ("⚡  OPTIMIZER",       [15]),
         ("⚙️   SYSTEM",          [16, 0]),
     ]
@@ -5358,6 +6073,8 @@ def main():
     parser.add_argument("--target",     default=None, help="Host for ping/traceroute")
     parser.add_argument("--threshold",  type=int, default=-110, help="RSRP alert threshold (dBm)")
     parser.add_argument("--file",       default=None, help="File path for export/backup/restore")
+    parser.add_argument("--best-wan",   dest="best_wan", action="store_true",
+                        help="In autopilot: fish for a public WAN IP when on CGNAT/private")
     parser.add_argument("--help", "-h", action="store_true")
 
     args = parser.parse_args()
