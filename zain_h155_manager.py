@@ -86,9 +86,9 @@ BANNER = f"""
     ███╔╝ ██╔══██║██║██║╚████║    ██╔══██║ ██║╚════██║╚════██║
    ███████╗██║  ██║██║██║ ╚███║   ██║  ██║ ██║███████║███████║
    ╚══════╝╚═╝  ╚═╝╚═╝╚═╝  ╚══╝   ╚═╝  ╚═╝ ╚═╝╚══════╝╚══════╝{C.RESET}
-{C.GOLD}             ⚡  Advanced Router Manager · v40.2 Edition  ⚡{C.RESET}
+{C.GOLD}             ⚡  Advanced Router Manager · v40.4 Edition  ⚡{C.RESET}
 {C.DIM}             Model: Zain H155 | 4G·5G Tower & Frequency Optimizer{C.RESET}
-{C.DIM}             98 tools · Auto-CA · Best Tower · Autopilot · Reports{C.RESET}
+{C.DIM}             119 tools · Smart Autopilot (50+ tactics) · Max DL/UL/Ping{C.RESET}
 """
 
 # ─────────────────────────────────────────────────────────────
@@ -4192,119 +4192,1092 @@ def _optimize_now(sess: H155Session, mode: str = "auto", want_5g: bool = False):
 
 
 # ─────────────────────────────────────────────────────────────
-def cmd_autopilot(sess: H155Session, args):
-    """[73] AUTO-EVERYTHING daemon: IP-conflict heal + best CA/5G/tower +
-    connection recovery + auto re-login (and optional best-WAN-IP)."""
-    interval = getattr(args, "interval", 20) or 20
-    threshold = getattr(args, "threshold", -108) or -108
-    best_wan = getattr(args, "best_wan", False)
-    want_5g = getattr(args, "five_g", False)
-    mode = (getattr(args, "mode", None) or "auto").lower()
-    if mode not in ("speed", "stability", "auto"):
-        mode = "auto"
-    do_init = not getattr(args, "no_init", False)
+# ═════════════════════════════════════════════════════════════
+#  ★★★★  v40.4 — SMART AUTOPILOT ENGINE · 50+ NEW TACTICS  ★★★★
+#  `autopilot` alone turns EVERYTHING on, keeps it at its best, and fixes
+#  anything that drifts (bands, CA, 5G, tower, WAN, IP, DNS, MTU, antenna…)
+#  while maximising ping / download / upload. Real logic only.
+# ═════════════════════════════════════════════════════════════
 
-    step("AUTO-EVERYTHING AUTOPILOT")
-    info(f"Mode: {colorize(mode, C.GOLD, C.BOLD)}  ·  5G EN-DC: "
-         f"{colorize('on' if want_5g else 'off', C.LIME if want_5g else C.DIM)}  ·  "
-         f"Best-WAN: {colorize('on' if best_wan else 'off', C.LIME if best_wan else C.DIM)}")
-    info("Heals IP conflicts · builds best CA/tower · recovers drops · auto re-login")
-    info(f"Check every {interval}s · RSRP floor {threshold} dBm · Ctrl+C to stop")
+def measure_upload_mbps(size_mb: int = 5, timeout: int = 40):
+    """Upload a payload through the router and return throughput in Mbps."""
+    payload = b"\x00" * (size_mb * 1024 * 1024)
+    try:
+        start = time.time()
+        r = requests.post("https://speed.cloudflare.com/__up", data=payload, timeout=timeout)
+        el = time.time() - start
+        if el > 0 and r.ok:
+            return (len(payload) * 8) / el / 1_000_000
+    except requests.exceptions.RequestException:
+        return None
+    return None
+
+
+def find_best_mtu(host: str = "8.8.8.8"):
+    """Binary-search the largest un-fragmented payload → return optimal MTU."""
+    win = sys.platform.startswith("win")
+
+    def passes(payload):
+        if win:
+            cmd = ["ping", "-n", "1", "-f", "-l", str(payload), host]
+        else:
+            cmd = ["ping", "-c", "1", "-M", "do", "-s", str(payload), host]
+        try:
+            return subprocess.run(cmd, capture_output=True, timeout=4).returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return None
+    base = passes(1200)
+    if base is None:
+        return None          # ping/DF not supported on this OS
+    if base is False:
+        return None
+    lo, hi = 1200, 1472
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if passes(mid):
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo + 28           # + IP/ICMP headers
+
+
+def measure_bufferbloat(host: str = "8.8.8.8"):
+    """Return (idle_ms, loaded_ms, bloat_ms): latency increase under load."""
+    import threading
+    idle = measure_latency_ms(host, 4)
+    stop = {"v": False}
+
+    def load():
+        try:
+            with requests.get("https://speed.cloudflare.com/__down?bytes=104857600",
+                              stream=True, timeout=30) as r:
+                for _ in r.iter_content(chunk_size=65536):
+                    if stop["v"]:
+                        break
+        except requests.exceptions.RequestException:
+            pass
+    t = threading.Thread(target=load, daemon=True)
+    t.start()
+    time.sleep(1)
+    loaded = measure_latency_ms(host, 6)
+    stop["v"] = True
+    bloat = (loaded - idle) if (idle is not None and loaded is not None) else None
+    return idle, loaded, bloat
+
+
+def _snapshot(sess: H155Session) -> dict:
+    """One cheap read of the whole router state, shared by all tactics."""
+    sig = sess.get_signal()
+    mon = sess.get_monitoring()
+    dev = sess.get_device_info()
+    bf = str(sig.get("band", ""))
+    return {
+        "connected": mon.get("connection_status", "0") == "901",
+        "rsrp": sig.get("rsrp_int"), "sinr": sig.get("sinr_int"),
+        "band_field": bf,
+        "agg": sorted({int(x) for x in re.findall(r"B(\d+)", bf)}),
+        "pci": sig.get("pci", "?"),
+        "wan": dev.get("wan_ip", "N/A"),
+        "dl_rate": mon.get("dl_speed", "0"), "ul_rate": mon.get("ul_speed", "0"),
+        "net_type": mon.get("network_type", "0"),
+        "roaming": mon.get("roaming", "0"), "sim": mon.get("sim_status", "1"),
+        "txpower": str(sig.get("txpower", "N/A")), "uptime": dev.get("uptime", "0"),
+    }
+
+
+def _strong_bands(sess: H155Session, floor: int = -112):
+    """(ordered strong band list, {band: best_rsrp}) from the neighbour scan."""
+    best = {}
+    for t in visible_towers(sess):
+        d = re.sub(r"[^\d]", "", t["band"])
+        if d:
+            b = int(d)
+            best[b] = max(best.get(b, -999), t["rsrp_int"])
+    ordered = sorted([b for b, r in best.items() if r >= floor], key=lambda b: -best[b])
+    return ordered, best
+
+
+class SmartCtx:
+    """Shared state for the smart autopilot tactic engine."""
+    def __init__(self, sess: H155Session, args):
+        self.mode = (getattr(args, "mode", None) or "auto").lower()
+        if self.mode not in ("speed", "stability", "auto"):
+            self.mode = "auto"
+        self.threshold = getattr(args, "threshold", -108) or -108
+        self.want_5g = not getattr(args, "no_5g", False)
+        self.best_wan = not getattr(args, "no_wan", False)
+        self.snap = {}
+        self.last = {}            # tactic key -> last run (monotonic)
+        self.streak = {}
+        self.rsrp_hist = []
+        self.dl_last = self.dl_peak = None
+        self.ul_last = self.ul_peak = None
+        self.lat_last = self.lat_base = None
+        self.last_relock = 0.0
+        self.min_relock = 45.0
+        self.actions = 0
+        self.last_action = "—"
+        self.wan_fixes = 0
+        self.wan_last = None
+        self.profile = None
+        self.blacklist = set()
+        self.known_macs = None
+        self.health_header = False
+        self.mtu_done = self.dns_done = False
+
+    def due(self, key, cadence):
+        now = time.monotonic()
+        if now - self.last.get(key, 0.0) >= cadence:
+            self.last[key] = now
+            return True
+        return False
+
+    def bump(self, key):
+        self.streak[key] = self.streak.get(key, 0) + 1
+        return self.streak[key]
+
+    def reset(self, key):
+        self.streak[key] = 0
+
+    def can_relock(self):
+        return time.monotonic() - self.last_relock >= self.min_relock
+
+    def mark_relock(self):
+        self.last_relock = time.monotonic()
+
+
+# ── 50+ SMART TACTICS ─ each: (sess, ctx) → action label or None ──────────
+def tac_reconnect(sess, ctx):
+    """Reconnect data the moment the link drops."""
+    if ctx.snap["connected"]:
+        ctx.reset("disc"); return None
+    if ctx.bump("disc") == 1:
+        sess.api_post(EP["data_switch"], {"dataswitch": "0"}); time.sleep(2)
+        sess.api_post(EP["data_switch"], {"dataswitch": "1"})
+        return "reconnect"
+    return None
+
+def tac_reboot_recover(sess, ctx):
+    """Reboot to recover after a persistent disconnect."""
+    if not ctx.snap["connected"] and ctx.streak.get("disc", 0) >= 4:
+        sess.reboot(); ctx.reset("disc"); return "reboot-recover"
+    return None
+
+def tac_dead_link_recover(sess, ctx):
+    """Connected but no packets pass → reconnect."""
+    if not ctx.snap["connected"]:
+        return None
+    if measure_latency_ms("8.8.8.8", 2) is None:
+        if ctx.bump("dead") >= 2:
+            sess.api_post(EP["data_switch"], {"dataswitch": "0"}); time.sleep(2)
+            sess.api_post(EP["data_switch"], {"dataswitch": "1"})
+            ctx.reset("dead"); return "dead-link-recover"
+    else:
+        ctx.reset("dead")
+    return None
+
+def tac_stuck_connecting(sess, ctx):
+    """No-service while SIM is fine → kick the radio."""
+    if ctx.snap["net_type"] == "0" and ctx.snap["sim"] in ("1", "255"):
+        if ctx.bump("stuck") >= 3:
+            sess.api_post(EP["data_switch"], {"dataswitch": "0"}); time.sleep(2)
+            sess.api_post(EP["data_switch"], {"dataswitch": "1"}); ctx.reset("stuck")
+            return "no-service-recover"
+    else:
+        ctx.reset("stuck")
+    return None
+
+def tac_sim_guard(sess, ctx):
+    """Alert once if the SIM is not ready/locked."""
+    if ctx.snap["sim"] not in ("1", "255", "", None):
+        if ctx.bump("sim") == 1:
+            return "SIM-issue"
+    else:
+        ctx.reset("sim")
+    return None
+
+def tac_roaming_guard(sess, ctx):
+    """Disable roaming auto-connect to avoid surprise charges."""
+    if ctx.snap["roaming"] == "1" and ctx.bump("roam") == 1:
+        xml = sess.api_get(EP["dial_conn"])
+        sess.api_post(EP["dial_conn"], {
+            "RoamAutoConnectEnable": "0",
+            "MaxIdelTime": xval(xml, "MaxIdelTime", "0"),
+            "ConnectMode": xval(xml, "ConnectMode", "0"),
+            "MTU": xval(xml, "MTU", "1500")})
+        return "roam-guard"
+    if ctx.snap["roaming"] != "1":
+        ctx.reset("roam")
+    return None
+
+def tac_relogin_verify(sess, ctx):
+    """Touch the API so the session layer re-logs in before tactics need it."""
+    before = getattr(sess, "_reauth_count", 0)
+    sess.get_device_info()
+    if getattr(sess, "_reauth_count", 0) > before:
+        return "relogin"
+    return None
+
+def tac_rebuild_ca(sess, ctx):
+    """Rebuild carrier aggregation when it collapses to a single carrier."""
+    if ctx.mode == "stability" or len(ctx.snap["agg"]) >= 2 or not ctx.can_relock():
+        return None
+    strong, _ = _strong_bands(sess)
+    if len(strong) >= 2:
+        lock_bands(sess, strong[:4]); ctx.mark_relock(); return "rebuild-CA"
+    return None
+
+def tac_best_band_weak(sess, ctx):
+    """Re-optimise bands/CA when RSRP falls below the floor."""
+    r = ctx.snap["rsrp"]
+    if r is None or r >= ctx.threshold:
+        ctx.reset("weak"); return None
+    if ctx.bump("weak") >= 2 and ctx.can_relock():
+        acts = _optimize_now(sess, ctx.mode, ctx.want_5g)
+        ctx.mark_relock(); ctx.reset("weak")
+        return acts[0] if acts else "re-opt"
+    return None
+
+def tac_add_strong_band(sess, ctx):
+    """Add a newly-appeared strong neighbour band to the CA set."""
+    if ctx.mode == "stability" or not ctx.can_relock():
+        return None
+    cur = set(ctx.snap["agg"])
+    if not cur:
+        return None
+    strong, _ = _strong_bands(sess, floor=-108)
+    extra = [b for b in strong if b not in cur]
+    if extra:
+        lock_bands(sess, sorted(cur | set(extra[:2]))); ctx.mark_relock()
+        return "add-band B" + str(extra[0])
+    return None
+
+def tac_drop_weak_carrier(sess, ctx):
+    """Drop a weak component carrier that drags the aggregate down."""
+    if ctx.mode == "stability" or len(ctx.snap["agg"]) < 2 or not ctx.can_relock():
+        return None
+    _, best = _strong_bands(sess, floor=-999)
+    keep = [b for b in ctx.snap["agg"] if best.get(b, -999) >= -115]
+    if keep and len(keep) < len(ctx.snap["agg"]):
+        lock_bands(sess, keep); ctx.mark_relock(); return "drop-weak-CC"
+    return None
+
+def tac_prefer_wide_bw(sess, ctx):
+    """Prefer wide-bandwidth bands (more MHz = more speed)."""
+    if ctx.mode == "stability" or not ctx.can_relock():
+        return None
+    strong, _ = _strong_bands(sess, floor=-105)
+    cur = set(ctx.snap["agg"])
+    wide = [b for b in strong if b in (1, 3, 7, 38, 40, 41, 42) and b not in cur]
+    if wide and cur:
+        lock_bands(sess, sorted(cur | {wide[0]})); ctx.mark_relock()
+        return "wide-bw B" + str(wide[0])
+    return None
+
+def tac_avoid_low_sinr(sess, ctx):
+    """Escape interference (very low SINR) by switching band/cell."""
+    s = ctx.snap["sinr"]
+    if s is None or s >= 0:
+        ctx.reset("sinr"); return None
+    if ctx.bump("sinr") >= 2 and ctx.can_relock():
+        strong, _ = _strong_bands(sess)
+        alt = [b for b in strong if b not in set(ctx.snap["agg"])]
+        if alt:
+            lock_bands(sess, [alt[0]]); ctx.mark_relock(); ctx.reset("sinr")
+            return "esc-interference B" + str(alt[0])
+    return None
+
+def tac_lowband_stability(sess, ctx):
+    """Drop to a low band for stability when signal is very poor."""
+    r = ctx.snap["rsrp"]
+    if r is None or r >= -110 or not ctx.can_relock():
+        return None
+    strong, _ = _strong_bands(sess, floor=-118)
+    low = [b for b in strong if b in (28, 20, 8)]
+    if low:
+        lock_bands(sess, [low[0]]); ctx.mark_relock(); return "lowband B" + str(low[0])
+    return None
+
+def tac_highband_speed(sess, ctx):
+    """Push to high-capacity bands when signal is strong (speed/auto)."""
+    if ctx.mode == "stability":
+        return None
+    r = ctx.snap["rsrp"]
+    if r is None or r < -85 or not ctx.can_relock():
+        return None
+    strong, _ = _strong_bands(sess, floor=-95)
+    high = [b for b in strong if b in (7, 1, 3, 40, 41, 42)]
+    cur = set(ctx.snap["agg"])
+    if len(high) >= 2 and set(high[:2]) - cur:
+        lock_bands(sess, sorted(set(high[:3]) | cur)); ctx.mark_relock()
+        return "highband-CA"
+    return None
+
+def tac_endc_5g(sess, ctx):
+    """Enable 5G NR EN-DC aggregation when requested."""
+    if not ctx.want_5g or not ctx.can_relock():
+        return None
+    if "5G" in network_type_name(ctx.snap["net_type"]) or "NR" in ctx.snap["band_field"].upper():
+        return None
+    strong, _ = _strong_bands(sess)
+    lte = bands_to_lte_bitmask(strong or [3])
+    nr = nr_bands_to_bitmask(sorted(NR_BAND_DB))
+    if sess.post_ok(sess.api_post(EP["net_mode"],
+                    {"NetworkMode": "0803", "NetworkBand": "3FFFFFFF", "LTEBand": lte, "NRBand": nr})):
+        ctx.mark_relock(); return "5G-ENDC"
+    return None
+
+def tac_nr_band_opt(sess, ctx):
+    """Re-assert all NR bands if 5G dropped while EN-DC is wanted."""
+    if not ctx.want_5g or not ctx.can_relock():
+        return None
+    if "5G" in network_type_name(ctx.snap["net_type"]) or "NR" in ctx.snap["band_field"].upper():
+        return None
+    strong, _ = _strong_bands(sess)
+    lte = bands_to_lte_bitmask(strong or [3])
+    nr = nr_bands_to_bitmask(sorted(NR_BAND_DB))
+    if sess.post_ok(sess.api_post(EP["net_mode"],
+                    {"NetworkMode": "0803", "NetworkBand": "3FFFFFFF", "LTEBand": lte, "NRBand": nr})):
+        ctx.mark_relock(); return "reassert-NR"
+    return None
+
+def tac_ca_3cc(sess, ctx):
+    """Go 3-carrier aggregation when three strong bands are present."""
+    if ctx.mode == "stability" or not ctx.can_relock():
+        return None
+    strong, _ = _strong_bands(sess, floor=-108)
+    if len(strong) >= 3 and len(ctx.snap["agg"]) < 3:
+        lock_bands(sess, strong[:3]); ctx.mark_relock(); return "3CC"
+    return None
+
+def tac_antenna_ab(sess, ctx):
+    """Periodic antenna A/B test → keep the stronger one."""
+    best_code, best = None, -999
+    for code in ("1", "2"):
+        sess._xml_post(ANTENNA_SET_EP, '<?xml version="1.0" encoding="UTF-8"?><request>'
+                       f"<antenna_type>{code}</antenna_type></request>")
+        time.sleep(4)
+        r, _ = avg_signal(sess, samples=3, delay=1)
+        if r is not None and r > best:
+            best, best_code = r, code
+    if best_code:
+        sess._xml_post(ANTENNA_SET_EP, '<?xml version="1.0" encoding="UTF-8"?><request>'
+                       f"<antenna_type>{best_code}</antenna_type></request>")
+        return "antenna=" + ("ext" if best_code == "2" else "int")
+    return None
+
+def tac_antenna_on_weak(sess, ctx):
+    """Switch to the external antenna when signal is weak."""
+    r = ctx.snap["rsrp"]
+    if r is None or r >= -100:
+        ctx.reset("antw"); return None
+    if ctx.bump("antw") >= 3:
+        sess._xml_post(ANTENNA_SET_EP,
+                       '<?xml version="1.0" encoding="UTF-8"?><request><antenna_type>2</antenna_type></request>')
+        ctx.reset("antw"); return "ext-antenna"
+    return None
+
+def tac_txpower_watch(sess, ctx):
+    """Flag a far tower (modem at max TX power)."""
+    nums = [int(x) for x in re.findall(r"(-?\d+)", ctx.snap["txpower"])]
+    if nums and max(nums) >= 23:
+        if ctx.bump("tx") == 1:
+            return "high-TX(far-tower)"
+    else:
+        ctx.reset("tx")
+    return None
+
+def tac_speed_probe(sess, ctx):
+    """Measure real download throughput (tracks the running peak)."""
+    mbps = measure_download_mbps(6)
+    if mbps is None:
+        return None
+    ctx.dl_last = mbps
+    if ctx.dl_peak is None or mbps > ctx.dl_peak:
+        ctx.dl_peak = mbps
+    return None
+
+def tac_speed_regression_reopt(sess, ctx):
+    """Re-optimise when download collapses well below the recent peak."""
+    if ctx.dl_last is None or ctx.dl_peak is None:
+        return None
+    if ctx.dl_last < ctx.dl_peak * 0.5 and ctx.can_relock():
+        _optimize_now(sess, ctx.mode, ctx.want_5g); ctx.mark_relock()
+        return f"dl{ctx.dl_last:.0f}<peak→reopt"
+    return None
+
+def tac_latency_probe(sess, ctx):
+    """Measure ping latency (tracks the best/baseline)."""
+    lat = measure_latency_ms("8.8.8.8", 4)
+    if lat is None:
+        return None
+    ctx.lat_last = lat
+    if ctx.lat_base is None or lat < ctx.lat_base:
+        ctx.lat_base = lat
+    return None
+
+def tac_latency_spike_reopt(sess, ctx):
+    """Switch band when latency spikes far above baseline."""
+    if ctx.lat_last is None or ctx.lat_base is None:
+        return None
+    if ctx.lat_last > max(120, ctx.lat_base * 3) and ctx.can_relock():
+        strong, _ = _strong_bands(sess)
+        alt = [b for b in strong if b not in set(ctx.snap["agg"])]
+        if alt:
+            lock_bands(sess, [alt[0]]); ctx.mark_relock()
+            return f"lat{ctx.lat_last:.0f}→band"
+    return None
+
+def tac_upload_probe(sess, ctx):
+    """Measure real upload throughput."""
+    mbps = measure_upload_mbps(4)
+    if mbps is None:
+        return None
+    ctx.ul_last = mbps
+    if ctx.ul_peak is None or mbps > ctx.ul_peak:
+        ctx.ul_peak = mbps
+    return None
+
+def tac_upload_optimize(sess, ctx):
+    """Prefer an FDD band (dedicated uplink) when upload is poor."""
+    if ctx.ul_last is None or ctx.ul_last >= 5 or not ctx.can_relock():
+        return None
+    strong, _ = _strong_bands(sess)
+    fdd = [b for b in strong if b in (1, 3, 7, 8, 20, 28)]
+    cur = set(ctx.snap["agg"])
+    if fdd and fdd[0] not in cur:
+        lock_bands(sess, sorted(cur | {fdd[0]})); ctx.mark_relock()
+        return "ul-opt FDD B" + str(fdd[0])
+    return None
+
+def tac_fastest_band_periodic(sess, ctx):
+    """Periodically speed-test the top two bands and keep the faster."""
+    if ctx.mode == "stability" or not ctx.can_relock():
+        return None
+    strong, _ = _strong_bands(sess)
+    cand = strong[:2]
+    if len(cand) < 2:
+        return None
+    results = []
+    for b in cand:
+        lock_bands(sess, [b]); time.sleep(6)
+        mb = measure_download_mbps(5)
+        if mb is not None:
+            results.append((b, mb))
+    if results:
+        results.sort(key=lambda x: -x[1])
+        lock_bands(sess, [results[0][0]]); ctx.mark_relock()
+        return "fastest B" + str(results[0][0])
+    return None
+
+def tac_mtu_optimize(sess, ctx):
+    """Find and set the optimal MTU (no fragmentation) once."""
+    if ctx.mtu_done:
+        return None
+    ctx.mtu_done = True
+    mtu = find_best_mtu()
+    if mtu and 1280 <= mtu <= 1500:
+        xml = sess.api_get(EP["dial_conn"])
+        if sess.post_ok(sess.api_post(EP["dial_conn"], {
+                "RoamAutoConnectEnable": xval(xml, "RoamAutoConnectEnable", "0"),
+                "MaxIdelTime": xval(xml, "MaxIdelTime", "0"),
+                "ConnectMode": xval(xml, "ConnectMode", "0"), "MTU": str(mtu)})):
+            return f"MTU={mtu}"
+    return None
+
+def tac_dns_latency_opt(sess, ctx):
+    """Set the lowest-latency DNS resolver once."""
+    if ctx.dns_done:
+        return None
+    ctx.dns_done = True
+    best, bl = None, 1e9
+    for pri, sec in (("1.1.1.1", "1.0.0.1"), ("8.8.8.8", "8.8.4.4"), ("9.9.9.9", "149.112.112.112")):
+        l = measure_latency_ms(pri, 3)
+        if l is not None and l < bl:
+            bl, best = l, (pri, sec)
+    if best:
+        cur = sess.api_get(EP["dhcp"])
+        if sess.post_ok(sess.api_post(EP["dhcp"], {
+                "DhcpIPAddress": xval(cur, "DhcpIPAddress", router_lan_ip(sess)),
+                "DhcpLanNetmask": xval(cur, "DhcpLanNetmask", "255.255.255.0"), "DhcpStatus": "1",
+                "DhcpStartIPAddress": xval(cur, "DhcpStartIPAddress", "192.168.8.100"),
+                "DhcpEndIPAddress": xval(cur, "DhcpEndIPAddress", "192.168.8.200"),
+                "DhcpLeaseTime": xval(cur, "DhcpLeaseTime", "86400"),
+                "DnsStatus": "0", "PrimaryDns": best[0], "SecondaryDns": best[1]})):
+            return "DNS=" + best[0]
+    return None
+
+def tac_bufferbloat_check(sess, ctx):
+    """Flag bufferbloat (latency rising sharply under load)."""
+    _, _, bloat = measure_bufferbloat()
+    if bloat is not None and bloat > 100:
+        return f"bufferbloat+{bloat:.0f}ms"
+    return None
+
+def tac_apn_failover(sess, ctx):
+    """Switch APN profile if there is persistently no WAN IP."""
+    if classify_wan_ip(ctx.snap["wan"])[0] != "none":
+        ctx.reset("apn"); return None
+    if ctx.bump("apn") < 6:
+        return None
+    ctx.reset("apn")
+    xml = sess.api_get(EP["profiles"])
+    idxs = re.findall(r"<Index>(\d+)</Index>", xml)
+    cur = xval(xml, "CurrentProfile", "0")
+    others = [i for i in idxs if i != cur]
+    if others:
+        sess.api_post(EP["profiles"], {"SetDefault": others[0], "Modify": 0, "Delete": 0})
+        sess.api_post(EP["data_switch"], {"dataswitch": "0"}); time.sleep(2)
+        sess.api_post(EP["data_switch"], {"dataswitch": "1"})
+        return "apn→" + others[0]
+    return None
+
+def tac_band_blacklist_bad(sess, ctx):
+    """Blacklist a single band that stays very weak."""
+    agg, r = ctx.snap["agg"], ctx.snap["rsrp"]
+    if len(agg) == 1 and r is not None and r < -115:
+        ctx.blacklist.add(agg[0])
+        if ctx.can_relock():
+            keep = [x for x in BAND_DB if x not in ctx.blacklist]
+            if keep:
+                lock_bands(sess, keep); ctx.mark_relock(); return "blacklist B" + str(agg[0])
+    return None
+
+def tac_wan_public_fish(sess, ctx):
+    """Reconnect-cycle for a public WAN IP when stuck on CGNAT/private."""
+    if not ctx.best_wan:
+        return None
+    if classify_wan_ip(ctx.snap["wan"])[0] in ("cgnat", "private", "none"):
+        if ctx.bump("wan") >= 3 and ctx.wan_fixes < 5:
+            ctx.reset("wan"); ctx.wan_fixes += 1
+            ip = _cycle_wan_once(sess)
+            if wan_ip_score(ip) >= 3:
+                ctx.wan_fixes = 99
+            return "wan-fish→" + classify_wan_ip(ip)[0]
+    else:
+        ctx.reset("wan")
+    return None
+
+def tac_wan_change_log(sess, ctx):
+    """Report whenever the WAN IP changes."""
+    ip = ctx.snap["wan"]
+    out = None
+    if ctx.wan_last is not None and ip != ctx.wan_last and ip not in ("N/A", ""):
+        out = "wan→" + ip
+    ctx.wan_last = ip
+    return out
+
+def tac_wan_quality_reopt(sess, ctx):
+    """Re-optimise when WAN packet loss is high."""
+    sent, got = 6, 0
+    for _ in range(sent):
+        if measure_latency_ms("8.8.8.8", 1) is not None:
+            got += 1
+    loss = (sent - got) / sent * 100
+    if loss >= 30 and ctx.can_relock():
+        _optimize_now(sess, ctx.mode, ctx.want_5g); ctx.mark_relock()
+        return f"loss{loss:.0f}%→reopt"
+    return None
+
+def tac_ip_conflict_heal(sess, ctx):
+    """Heal duplicate LAN IPs by forcing a clean lease renewal."""
+    conf = find_ip_conflicts(parse_hosts(sess))
+    if not conf:
+        return None
+    cur = sess.api_get(EP["dhcp"])
+    if sess.post_ok(sess.api_post(EP["dhcp"], {
+            "DhcpIPAddress": xval(cur, "DhcpIPAddress", router_lan_ip(sess)),
+            "DhcpLanNetmask": xval(cur, "DhcpLanNetmask", "255.255.255.0"), "DhcpStatus": "1",
+            "DhcpStartIPAddress": xval(cur, "DhcpStartIPAddress", "192.168.8.100"),
+            "DhcpEndIPAddress": xval(cur, "DhcpEndIPAddress", "192.168.8.200"),
+            "DhcpLeaseTime": "1800",
+            "DnsStatus": xval(cur, "DnsStatus", "1"),
+            "PrimaryDns": xval(cur, "PrimaryDns", "192.168.8.1"),
+            "SecondaryDns": xval(cur, "SecondaryDns", "192.168.8.1")})):
+        return f"ip-fix×{len(conf)}"
+    return None
+
+def tac_dhcp_pool_guard(sess, ctx):
+    """Widen the DHCP pool before it runs out of addresses."""
+    hosts = parse_hosts(sess)
+    cur = sess.api_get(EP["dhcp"])
+    start = xval(cur, "DhcpStartIPAddress", "192.168.8.100")
+    end = xval(cur, "DhcpEndIPAddress", "192.168.8.200")
+    try:
+        size = int(end.split(".")[-1]) - int(start.split(".")[-1]) + 1
+    except ValueError:
+        return None
+    if size > 0 and len(hosts) >= size * 0.8:
+        prefix = ".".join(start.split(".")[:3])
+        if sess.post_ok(sess.api_post(EP["dhcp"], {
+                "DhcpIPAddress": xval(cur, "DhcpIPAddress", router_lan_ip(sess)),
+                "DhcpLanNetmask": "255.255.255.0", "DhcpStatus": "1",
+                "DhcpStartIPAddress": f"{prefix}.50", "DhcpEndIPAddress": f"{prefix}.240",
+                "DhcpLeaseTime": xval(cur, "DhcpLeaseTime", "86400"),
+                "DnsStatus": xval(cur, "DnsStatus", "1"),
+                "PrimaryDns": xval(cur, "PrimaryDns", "192.168.8.1"),
+                "SecondaryDns": xval(cur, "SecondaryDns", "192.168.8.1")})):
+            return "pool-widen"
+    return None
+
+def tac_new_device_watch(sess, ctx):
+    """Alert when a new device joins the LAN."""
+    macs = {h["mac"] for h in parse_hosts(sess)}
+    if ctx.known_macs is None:
+        ctx.known_macs = macs; return None
+    new = macs - ctx.known_macs
+    ctx.known_macs |= macs
+    if new:
+        return f"new-device×{len(new)}"
+    return None
+
+def tac_dns_failover(sess, ctx):
+    """Switch resolver if the configured DNS stops answering."""
+    cur = sess.api_get(EP["dhcp"])
+    pri = xval(cur, "PrimaryDns", "")
+    if not pri or pri in ("N/A", "192.168.8.1"):
+        return None
+    if measure_latency_ms(pri, 2) is None:
+        if sess.post_ok(sess.api_post(EP["dhcp"], {
+                "DhcpIPAddress": xval(cur, "DhcpIPAddress", router_lan_ip(sess)),
+                "DhcpLanNetmask": xval(cur, "DhcpLanNetmask", "255.255.255.0"), "DhcpStatus": "1",
+                "DhcpStartIPAddress": xval(cur, "DhcpStartIPAddress", "192.168.8.100"),
+                "DhcpEndIPAddress": xval(cur, "DhcpEndIPAddress", "192.168.8.200"),
+                "DhcpLeaseTime": xval(cur, "DhcpLeaseTime", "86400"),
+                "DnsStatus": "0", "PrimaryDns": "1.1.1.1", "SecondaryDns": "8.8.8.8"})):
+            return "dns-failover"
+    return None
+
+def tac_thermal_reboot(sess, ctx):
+    """Refresh-reboot after very long uptime when degraded."""
+    try:
+        up = int(ctx.snap["uptime"])
+    except (ValueError, TypeError):
+        return None
+    r = ctx.snap["rsrp"]
+    if up > 86400 * 3 and r is not None and r < ctx.threshold:
+        if ctx.bump("therm") >= 2:
+            sess.reboot(); ctx.reset("therm"); return "refresh-reboot"
+    else:
+        ctx.reset("therm")
+    return None
+
+def tac_night_profile(sess, ctx):
+    """At night, switch to a stable low band."""
+    h = datetime.now().hour
+    night = h >= 23 or h < 7
+    if not night or ctx.profile == "night" or ctx.mode == "speed" or not ctx.can_relock():
+        if not night:
+            ctx.profile = None if ctx.profile == "night" else ctx.profile
+        return None
+    strong, _ = _strong_bands(sess, floor=-118)
+    low = [b for b in strong if b in (28, 20, 8)]
+    if low:
+        lock_bands(sess, [low[0]]); ctx.mark_relock(); ctx.profile = "night"
+        return "night-profile"
+    return None
+
+def tac_day_profile(sess, ctx):
+    """During the day, rebuild best CA/5G for speed."""
+    h = datetime.now().hour
+    day = 7 <= h < 23
+    if not day or ctx.profile == "day" or not ctx.can_relock():
+        return None
+    _optimize_now(sess, ctx.mode, ctx.want_5g); ctx.mark_relock(); ctx.profile = "day"
+    return "day-profile"
+
+def tac_rsrp_trend(sess, ctx):
+    """Pre-emptively re-optimise when RSRP is trending down fast."""
+    r = ctx.snap["rsrp"]
+    if r is None:
+        return None
+    ctx.rsrp_hist.append(r); ctx.rsrp_hist = ctx.rsrp_hist[-6:]
+    if len(ctx.rsrp_hist) >= 5:
+        drop = ctx.rsrp_hist[0] - ctx.rsrp_hist[-1]
+        if drop >= 10 and ctx.rsrp_hist[-1] < ctx.threshold + 8 and ctx.can_relock():
+            _optimize_now(sess, ctx.mode, ctx.want_5g); ctx.mark_relock()
+            ctx.rsrp_hist = []; return "trend↓→preempt"
+    return None
+
+def tac_stability_hold(sess, ctx):
+    """When signal is strong & clean, clear transient streaks (anti-flap)."""
+    if (ctx.snap["rsrp"] is not None and ctx.snap["rsrp"] >= -90
+            and ctx.snap["sinr"] is not None and ctx.snap["sinr"] >= 10):
+        for k in ("weak", "sinr", "antw"):
+            ctx.reset(k)
+    return None
+
+def tac_keepalive(sess, ctx):
+    """Tiny keep-alive ping so the carrier never idles the data session."""
+    measure_latency_ms("8.8.8.8", 1)
+    return None
+
+def tac_congestion_switch(sess, ctx):
+    """Switch tower/band when the cell is congested (high bufferbloat)."""
+    _, _, bloat = measure_bufferbloat()
+    if bloat is not None and bloat > 150 and ctx.can_relock():
+        strong, _ = _strong_bands(sess)
+        alt = [b for b in strong if b not in set(ctx.snap["agg"])]
+        if alt:
+            lock_bands(sess, [alt[0]]); ctx.mark_relock(); return "congested→switch"
+    return None
+
+def tac_cell_reselect(sess, ctx):
+    """Re-select toward a neighbour cell that is much stronger than serving."""
+    towers = visible_towers(sess)
+    if not towers:
+        return None
+    serving = str(ctx.snap["pci"])
+    sv = [t for t in towers if str(t["pci"]) == serving]
+    sv_r = sv[0]["rsrp_int"] if sv else (ctx.snap["rsrp"] or -999)
+    best = max(towers, key=lambda t: t["rsrp_int"])
+    if best["rsrp_int"] - sv_r >= 8 and ctx.can_relock():
+        d = re.sub(r"[^\d]", "", best["band"])
+        if d:
+            lock_bands(sess, [int(d)]); ctx.mark_relock()
+            return "reselect PCI" + str(best["pci"])
+    return None
+
+def tac_health_log(sess, ctx):
+    """Append a health row to autopilot_health.csv for history."""
+    try:
+        with open("autopilot_health.csv", "a", encoding="utf-8") as f:
+            if not ctx.health_header:
+                f.write("timestamp,rsrp,sinr,cc,wan,dl_mbps,ul_mbps,lat_ms\n")
+                ctx.health_header = True
+            f.write(f"{datetime.now().isoformat(timespec='seconds')},{ctx.snap['rsrp']},"
+                    f"{ctx.snap['sinr']},{len(ctx.snap['agg'])},"
+                    f"{classify_wan_ip(ctx.snap['wan'])[0]},"
+                    f"{ctx.dl_last or ''},{ctx.ul_last or ''},{ctx.lat_last or ''}\n")
+    except OSError:
+        pass
+    return None
+
+def tac_baseline_reset(sess, ctx):
+    """Slowly decay the speed peaks/baseline so they adapt to conditions."""
+    if ctx.dl_peak:
+        ctx.dl_peak *= 0.9
+    if ctx.ul_peak:
+        ctx.ul_peak *= 0.9
+    ctx.lat_base = None
+    return None
+
+def tac_jitter_guard(sess, ctx):
+    """Switch band when latency jitter is high (unstable cell)."""
+    samples = []
+    for _ in range(5):
+        l = measure_latency_ms("8.8.8.8", 1)
+        if l is not None:
+            samples.append(l)
+    if len(samples) >= 3 and stdev(samples) > 40 and ctx.can_relock():
+        strong, _ = _strong_bands(sess)
+        alt = [b for b in strong if b not in set(ctx.snap["agg"])]
+        if alt:
+            lock_bands(sess, [alt[0]]); ctx.mark_relock()
+            return f"jitter±{stdev(samples):.0f}→band"
+    return None
+
+
+# (key, function, cadence_seconds) — ordered; probes precede their re-opts
+SMART_TACTICS = [
+    ("reconnect",          tac_reconnect,           0),
+    ("reboot_recover",     tac_reboot_recover,      0),
+    ("stuck_connecting",   tac_stuck_connecting,    0),
+    ("sim_guard",          tac_sim_guard,           20),
+    ("roaming_guard",      tac_roaming_guard,       30),
+    ("relogin_verify",     tac_relogin_verify,      30),
+    ("stability_hold",     tac_stability_hold,      0),
+    ("rebuild_ca",         tac_rebuild_ca,          40),
+    ("best_band_weak",     tac_best_band_weak,      0),
+    ("rsrp_trend",         tac_rsrp_trend,          0),
+    ("avoid_low_sinr",     tac_avoid_low_sinr,      0),
+    ("lowband_stability",  tac_lowband_stability,   30),
+    ("highband_speed",     tac_highband_speed,      60),
+    ("add_strong_band",    tac_add_strong_band,     90),
+    ("drop_weak_carrier",  tac_drop_weak_carrier,   90),
+    ("prefer_wide_bw",     tac_prefer_wide_bw,      120),
+    ("ca_3cc",             tac_ca_3cc,              120),
+    ("endc_5g",            tac_endc_5g,             120),
+    ("nr_band_opt",        tac_nr_band_opt,         300),
+    ("cell_reselect",      tac_cell_reselect,       60),
+    ("band_blacklist_bad", tac_band_blacklist_bad,  90),
+    ("txpower_watch",      tac_txpower_watch,       60),
+    ("antenna_on_weak",    tac_antenna_on_weak,     60),
+    ("antenna_ab",         tac_antenna_ab,          900),
+    ("dead_link_recover",  tac_dead_link_recover,   45),
+    ("keepalive",          tac_keepalive,           50),
+    ("new_device_watch",   tac_new_device_watch,    30),
+    ("ip_conflict_heal",   tac_ip_conflict_heal,    60),
+    ("dhcp_pool_guard",    tac_dhcp_pool_guard,     300),
+    ("dns_failover",       tac_dns_failover,        120),
+    ("dns_latency_opt",    tac_dns_latency_opt,     30),
+    ("mtu_optimize",       tac_mtu_optimize,        25),
+    ("speed_probe",        tac_speed_probe,         180),
+    ("speed_regression_reopt", tac_speed_regression_reopt, 60),
+    ("latency_probe",      tac_latency_probe,       120),
+    ("latency_spike_reopt", tac_latency_spike_reopt, 60),
+    ("upload_probe",       tac_upload_probe,        300),
+    ("upload_optimize",    tac_upload_optimize,     120),
+    ("fastest_band_periodic", tac_fastest_band_periodic, 900),
+    ("bufferbloat_check",  tac_bufferbloat_check,   600),
+    ("congestion_switch",  tac_congestion_switch,   600),
+    ("jitter_guard",       tac_jitter_guard,        300),
+    ("wan_public_fish",    tac_wan_public_fish,     0),
+    ("wan_change_log",     tac_wan_change_log,      20),
+    ("wan_quality_reopt",  tac_wan_quality_reopt,   240),
+    ("apn_failover",       tac_apn_failover,        30),
+    ("thermal_reboot",     tac_thermal_reboot,      600),
+    ("night_profile",      tac_night_profile,       120),
+    ("day_profile",        tac_day_profile,         120),
+    ("health_log",         tac_health_log,          120),
+    ("baseline_reset",     tac_baseline_reset,      1800),
+]
+
+# Heavy tactics (network transfers / pings) — staggered so cycle 1 stays fast.
+_HEAVY_TACTICS = {
+    "speed_probe", "speed_regression_reopt", "latency_probe", "latency_spike_reopt",
+    "upload_probe", "upload_optimize", "fastest_band_periodic", "mtu_optimize",
+    "dns_latency_opt", "bufferbloat_check", "congestion_switch", "jitter_guard",
+    "wan_quality_reopt", "antenna_ab", "dhcp_pool_guard", "thermal_reboot",
+    "dead_link_recover", "dns_failover",
+}
+
+
+# ─────────────────────────────────────────────────────────────
+def cmd_autopilot(sess: H155Session, args):
+    """[73] SMART AUTO-EVERYTHING daemon: 50+ tactics that keep bands, CA,
+    5G, tower, WAN, IP, DNS, MTU and antenna optimal — maximising ping/DL/UL."""
+    interval = getattr(args, "interval", 20) or 20
+    do_init = not getattr(args, "no_init", False)
+    ctx = SmartCtx(sess, args)
+
+    step("SMART AUTO-EVERYTHING AUTOPILOT")
+    info(f"Mode {colorize(ctx.mode, C.GOLD, C.BOLD)} · "
+         f"5G {colorize('on' if ctx.want_5g else 'off', C.LIME if ctx.want_5g else C.DIM)} · "
+         f"Best-WAN {colorize('on' if ctx.best_wan else 'off', C.LIME if ctx.best_wan else C.DIM)} · "
+         f"{colorize(str(len(SMART_TACTICS)) + ' tactics', C.CYAN)}")
+    info("Auto-tunes bands·CA·5G·tower·WAN·IP·DNS·MTU·antenna + recovers drops · maximises ping/DL/UL")
+    info(f"Check every {interval}s · Ctrl+C to stop")
     sep()
 
-    # ── INITIAL FULL OPTIMIZATION PASS ──────────────────────────────────────
+    # Stagger heavy tactics so the first cycle is fast
+    now = time.monotonic()
+    for key, _fn, cad in SMART_TACTICS:
+        if key in _HEAVY_TACTICS:
+            ctx.last[key] = now
+
+    # ── INITIAL FULL OPTIMIZATION PASS ──
     if do_init and is_connected(sess):
-        print(f"  {C.CYAN}{C.BOLD}  [INIT] Running full optimization pass...{C.RESET}")
-        acts = _optimize_now(sess, mode, want_5g)
-        if best_wan:
-            wk = classify_wan_ip(sess.get_device_info().get("wan_ip", "N/A"))[0]
-            if wk in ("cgnat", "private", "none"):
-                newip = _cycle_wan_once(sess)
-                acts.append("wan→" + classify_wan_ip(newip)[0])
-        if acts:
-            for a in acts:
-                ok(colorize("✔ " + a, C.GREEN))
-        else:
-            info("Already optimal — nothing to change.")
-        time.sleep(3)
+        print(f"  {C.CYAN}{C.BOLD}  [INIT] Building the best configuration...{C.RESET}")
+        acts = _optimize_now(sess, ctx.mode, ctx.want_5g)
+        if ctx.best_wan and classify_wan_ip(sess.get_device_info().get("wan_ip", "N/A"))[0] in ("cgnat", "private", "none"):
+            acts.append("wan→" + classify_wan_ip(_cycle_wan_once(sess))[0])
+        for a in (acts or ["already optimal"]):
+            ok(colorize("✔ " + a, C.GREEN))
+        ctx.mark_relock()
+        time.sleep(2)
         sep()
 
-    bad_streak = checks = fixes = 0
-    wan_streak = wan_fixes = 0
-    last_action = "init" if do_init else "—"
+    checks = 0
     try:
         while True:
             checks += 1
-            ts = datetime.now().strftime("%H:%M:%S")
-            connected = is_connected(sess)
-            sig = sess.get_signal()
-            rsrp = sig.get("rsrp_int")
-            agg = active_ca_bands(sess)
-            wan_ip = sess.get_device_info().get("wan_ip", "N/A")
-            wan_kind, wan_col = classify_wan_ip(wan_ip)
+            ctx.snap = _snapshot(sess)
+            acts = []
+            for key, fn, cad in SMART_TACTICS:
+                if not ctx.due(key, cad):
+                    continue
+                try:
+                    res = fn(sess, ctx)
+                except Exception:
+                    res = None   # one bad tactic must never kill the daemon
+                if res:
+                    acts.append(res)
+            if acts:
+                ctx.actions += len(acts)
+                ctx.last_action = ("; ".join(acts))[:46]
 
-            action = None
-            if not connected:
-                bad_streak += 1
-                if bad_streak == 1:
-                    action = "reconnect"
-                    sess.api_post(EP["data_switch"], {"dataswitch": "0"})
-                    time.sleep(2)
-                    sess.api_post(EP["data_switch"], {"dataswitch": "1"})
-                elif bad_streak >= 4:
-                    action = "reboot-recover"
-                    sess.reboot()
-                    bad_streak = 0
-            elif rsrp is not None and rsrp < threshold:
-                bad_streak += 1
-                if bad_streak >= 2:
-                    # Full re-optimisation: best CA / tower / 5G for current site
-                    acts = _optimize_now(sess, mode, want_5g)
-                    action = acts[0] if acts else "re-opt"
-                    bad_streak = 0
-            else:
-                bad_streak = 0
-
-            # Periodic IP-conflict heal while healthy (every ~15 checks)
-            if connected and action is None and checks % 15 == 0:
-                if find_ip_conflicts(parse_hosts(sess)):
-                    _optimize_now(sess, mode, want_5g)
-                    action = "ip-fix"
-
-            # Best-WAN-IP: when healthy but stuck behind CGNAT/private, fish
-            # for a public IP (bounded so it never loops forever)
-            if best_wan and connected and action is None:
-                if wan_kind in ("cgnat", "private", "none"):
-                    wan_streak += 1
-                    if wan_streak >= 3 and wan_fixes < 5:
-                        new_ip = _cycle_wan_once(sess)
-                        wan_fixes += 1
-                        wan_streak = 0
-                        action = "best-wan"
-                        if wan_ip_score(new_ip) >= 3:
-                            wan_fixes = 99  # got public — stop fishing
-                else:
-                    wan_streak = 0
-
-            if action:
-                fixes += 1
-                last_action = action
-
-            r_lbl, r_col = grade_rsrp(rsrp)
-            bar = signal_bar(rsrp)
-            cstat = colorize("UP", C.GREEN) if connected else colorize("DOWN", C.RED, C.BOLD)
+            snap = ctx.snap
+            r_lbl, r_col = grade_rsrp(snap["rsrp"])
+            bar = signal_bar(snap["rsrp"])
+            cstat = colorize("UP", C.GREEN) if snap["connected"] else colorize("DOWN", C.RED, C.BOLD)
+            wk, wc = classify_wan_ip(snap["wan"])
             relog = getattr(sess, "_reauth_count", 0)
-            print(f"\r  {C.DIM}[{ts}] #{checks:>4}{C.RESET} {bar} {cstat} "
-                  f"{colorize(str(len(agg))+'CC', C.LIME if len(agg)>1 else C.DIM)} "
-                  f"RSRP:{colorize(sig.get('rsrp','?'), r_col, C.BOLD)} "
-                  f"WAN:{colorize(wan_kind, wan_col)} "
-                  f"fixes:{colorize(str(fixes), C.YELLOW if fixes else C.DIM)} "
-                  f"relogin:{colorize(str(relog), C.CYAN if relog else C.DIM)} "
-                  f"last:{colorize(last_action, C.MAGENTA)}    ", end="", flush=True)
+            dl = f"{ctx.dl_last:.0f}" if ctx.dl_last else "-"
+            ul = f"{ctx.ul_last:.0f}" if ctx.ul_last else "-"
+            la = f"{ctx.lat_last:.0f}" if ctx.lat_last else "-"
+            ts = datetime.now().strftime("%H:%M:%S")
+            print(f"\r  {C.DIM}[{ts}]#{checks:>4}{C.RESET} {bar} {cstat} "
+                  f"{colorize(str(len(snap['agg']))+'CC', C.LIME if len(snap['agg'])>1 else C.DIM)} "
+                  f"RSRP:{colorize(str(snap['rsrp']), r_col, C.BOLD)} "
+                  f"WAN:{colorize(wk, wc)} "
+                  f"DL:{colorize(dl, C.LIME)} UL:{colorize(ul, C.TEAL)} LAT:{colorize(la, C.CYAN)} "
+                  f"fix:{colorize(str(ctx.actions), C.YELLOW if ctx.actions else C.DIM)} "
+                  f"rl:{colorize(str(relog), C.CYAN if relog else C.DIM)} "
+                  f"last:{colorize(ctx.last_action, C.MAGENTA)}   ", end="", flush=True)
             time.sleep(interval)
     except KeyboardInterrupt:
         print()
-        ok(f"Autopilot stopped — {checks} checks, {fixes} corrective actions.")
+        ok(f"Smart autopilot stopped — {checks} cycles, {ctx.actions} actions taken.")
+    sep()
+
+
+# ─────────────────────────────────────────────────────────────
+#  v40.4 STANDALONE THROUGHPUT TOOLS  (features 114-119)
+# ─────────────────────────────────────────────────────────────
+def cmd_speed_upload(sess: H155Session, args):
+    """[114] Measure real upload throughput."""
+    step("Upload Speed Test")
+    sep()
+    info("Uploading test payload via the router...")
+    mbps = measure_upload_mbps(5)
+    if mbps is None:
+        err("Upload test failed (data down or blocked).")
+    else:
+        ok(colorize(f"Upload: {mbps:.2f} Mbps  ({mbps/8:.2f} MB/s)", C.TEAL + C.BOLD))
+    sep()
+
+
+def cmd_mtu_optimize(sess: H155Session, args):
+    """[115] Find and set the optimal MTU (no fragmentation)."""
+    step("MTU Optimizer")
+    sep()
+    info("Probing the largest un-fragmented packet size...")
+    mtu = find_best_mtu(getattr(args, "target", None) or "8.8.8.8")
+    if not mtu:
+        err("Could not probe MTU (ping DF not supported here).")
+        sep()
+        return
+    ok(f"Optimal MTU: {colorize(str(mtu), C.GOLD, C.BOLD)}")
+    if not confirm(f"  {C.YELLOW}Apply MTU {mtu} to the router? (yes/no): {C.RESET}"):
+        warn("Left unchanged.")
+        return
+    xml = sess.api_get(EP["dial_conn"])
+    if sess.post_ok(sess.api_post(EP["dial_conn"], {
+            "RoamAutoConnectEnable": xval(xml, "RoamAutoConnectEnable", "0"),
+            "MaxIdelTime": xval(xml, "MaxIdelTime", "0"),
+            "ConnectMode": xval(xml, "ConnectMode", "0"), "MTU": str(mtu)})):
+        ok(colorize(f"MTU set to {mtu}.", C.GREEN + C.BOLD))
+    else:
+        err("Failed to set MTU.")
+    sep()
+
+
+def cmd_bufferbloat(sess: H155Session, args):
+    """[116] Measure bufferbloat (latency increase under load)."""
+    step("Bufferbloat Test")
+    warn("Runs a real download while pinging — uses data.")
+    sep()
+    idle, loaded, bloat = measure_bufferbloat(getattr(args, "target", None) or "8.8.8.8")
+    if idle is None or loaded is None:
+        err("Could not measure (ping/data unavailable).")
+        sep()
+        return
+    print(f"  {colorize('Idle latency:', C.DIM):<20} {colorize(f'{idle:.0f} ms', C.GREEN)}")
+    print(f"  {colorize('Loaded latency:', C.DIM):<20} {colorize(f'{loaded:.0f} ms', C.CYAN)}")
+    if bloat is not None:
+        if bloat < 30: grade, gc = "EXCELLENT (A)", C.LIME
+        elif bloat < 60: grade, gc = "GOOD (B)", C.GREEN
+        elif bloat < 100: grade, gc = "FAIR (C)", C.YELLOW
+        else: grade, gc = "POOR (bufferbloat!)", C.RED
+        print(f"  {colorize('Bloat:', C.DIM):<20} {colorize(f'+{bloat:.0f} ms', gc, C.BOLD)}  {colorize(grade, gc)}")
+    sep()
+
+
+def cmd_max_throughput(sess: H155Session, args):
+    """[117] Test bands & CA by real download+upload, lock the fastest."""
+    from itertools import combinations
+    step("Max Throughput Optimizer (download + upload)")
+    warn("Tests bands & CA with real transfers — several minutes.")
+    sep()
+    if not confirm(f"  {C.RED}Start? (yes/no): {C.RESET}"):
+        warn("Cancelled.")
+        return
+    vis = visible_bands(sess)
+    if not vis:
+        err("No visible bands.")
+        return
+    trials = [[b] for b in vis[:3]]
+    if len(vis) >= 2:
+        trials += [list(p) for p in list(combinations(sorted(vis)[:3], 2))[:2]]
+    best = None
+    for combo in trials:
+        names = "+".join("B" + str(b) for b in combo)
+        print(f"\n  {C.MAGENTA}▶{C.RESET}  {colorize(names, C.GOLD)}")
+        if not lock_bands(sess, combo):
+            continue
+        wait_reconnect(9)
+        dl = measure_download_mbps(8)
+        ul = measure_upload_mbps(4)
+        score = (dl or 0) + (ul or 0) * 0.5
+        dl_s = f"{dl:.1f}" if dl else "-"
+        ul_s = f"{ul:.1f}" if ul else "-"
+        print(f"  ↓{colorize(dl_s + ' Mbps', C.LIME, C.BOLD)}   ↑{colorize(ul_s + ' Mbps', C.TEAL, C.BOLD)}")
+        if best is None or score > best[1]:
+            best = (combo, score, names)
+    if not best:
+        err("No measurable throughput.")
+        return
+    sep()
+    ok(f"Fastest: {colorize(best[2], C.LIME, C.BOLD)}")
+    if lock_bands(sess, best[0]):
+        ok(colorize("Locked the fastest configuration!", C.LIME + C.BOLD))
+    sep()
+
+
+def cmd_auto_tune(sess: H155Session, args):
+    """[118] One-shot smart tune: best CA/5G + MTU + DNS, then report."""
+    step("One-Shot Auto-Tune")
+    sep()
+    if not is_connected(sess):
+        err("Not connected — cannot tune.")
+        return
+    mode = (getattr(args, "mode", None) or "auto")
+    want_5g = not getattr(args, "no_5g", False)
+    acts = _optimize_now(sess, mode, want_5g)
+    # MTU
+    mtu = find_best_mtu()
+    if mtu and 1280 <= mtu <= 1500:
+        xml = sess.api_get(EP["dial_conn"])
+        if sess.post_ok(sess.api_post(EP["dial_conn"], {
+                "RoamAutoConnectEnable": xval(xml, "RoamAutoConnectEnable", "0"),
+                "MaxIdelTime": xval(xml, "MaxIdelTime", "0"),
+                "ConnectMode": xval(xml, "ConnectMode", "0"), "MTU": str(mtu)})):
+            acts.append(f"MTU={mtu}")
+    # Fastest DNS
+    best, bl = None, 1e9
+    for pri, sec in (("1.1.1.1", "1.0.0.1"), ("8.8.8.8", "8.8.4.4"), ("9.9.9.9", "149.112.112.112")):
+        l = measure_latency_ms(pri, 3)
+        if l is not None and l < bl:
+            bl, best = l, (pri, sec)
+    if best:
+        cur = sess.api_get(EP["dhcp"])
+        if sess.post_ok(sess.api_post(EP["dhcp"], {
+                "DhcpIPAddress": xval(cur, "DhcpIPAddress", router_lan_ip(sess)),
+                "DhcpLanNetmask": xval(cur, "DhcpLanNetmask", "255.255.255.0"), "DhcpStatus": "1",
+                "DhcpStartIPAddress": xval(cur, "DhcpStartIPAddress", "192.168.8.100"),
+                "DhcpEndIPAddress": xval(cur, "DhcpEndIPAddress", "192.168.8.200"),
+                "DhcpLeaseTime": xval(cur, "DhcpLeaseTime", "86400"),
+                "DnsStatus": "0", "PrimaryDns": best[0], "SecondaryDns": best[1]})):
+            acts.append("DNS=" + best[0])
+    sep()
+    if acts:
+        for a in acts:
+            ok(colorize("✔ " + a, C.GREEN))
+    else:
+        info("Already optimal — nothing to change.")
+    sep()
+
+
+def cmd_list_tactics(sess: H155Session, args):
+    """[119] List every smart-autopilot tactic and its check interval."""
+    step(f"Smart Autopilot Tactics ({len(SMART_TACTICS)})")
+    sep()
+    for i, (key, fn, cad) in enumerate(SMART_TACTICS, 1):
+        doc = (fn.__doc__ or "").strip().splitlines()[0] if fn.__doc__ else ""
+        cad_s = "every cycle" if cad == 0 else f"{cad}s"
+        print(f"  {colorize(f'{i:>2}.', C.DIM)} {colorize(key, C.CYAN, C.BOLD)}  "
+              f"{colorize(cad_s, C.GOLD)}\n      {colorize(doc, C.DIM)}")
     sep()
 
 
@@ -6074,6 +7047,13 @@ MENU_ITEMS = [
     (111, "dns-bench",  cmd_dns_benchmark,         "Benchmark DNS resolvers → set fastest", C.TEAL),
     (112, "guard-lan",  cmd_block_unknown_devices, "Block unknown devices (allowlist)",     C.TEAL),
     (113, "wan-score",  cmd_wan_quality,           "WAN quality score (IP+latency+loss)",   C.TEAL),
+    # ── v40.4 throughput tools (autopilot uses 50+ smart tactics) ──────────
+    (114, "speed-up",   cmd_speed_upload,          "Upload speed test",                     C.LIME),
+    (115, "mtu",        cmd_mtu_optimize,          "Find & set optimal MTU",                C.LIME),
+    (116, "bufferbloat",cmd_bufferbloat,           "Bufferbloat test (latency under load)", C.LIME),
+    (117, "max-tput",   cmd_max_throughput,        "Max throughput optimizer (DL+UL)",      C.LIME),
+    (118, "auto-tune",  cmd_auto_tune,             "One-shot smart tune (CA/5G+MTU+DNS)",   C.MAGENTA),
+    (119, "tactics",    cmd_list_tactics,          "List the 50+ autopilot tactics",        C.DIM),
     ( 0, "exit",      None,                "Exit",                                        C.DIM),
 ]
 
@@ -6106,6 +7086,7 @@ def show_numbered_menu():
         ("🧪  ADVANCED / RESILIENCE", [93, 94, 95, 96, 97, 98]),
         ("🛜  IP CONFLICT / LAN", [14, 99, 100, 101, 102, 103, 104, 105, 106, 112]),
         ("🌍  WAN IP",          [107, 108, 109, 110, 111, 113]),
+        ("🚀  THROUGHPUT MAX",  [114, 115, 116, 117, 118, 119]),
         ("⚡  OPTIMIZER",       [15]),
         ("⚙️   SYSTEM",          [16, 0]),
     ]
@@ -6164,7 +7145,11 @@ def main():
     parser.add_argument("--mode",       default="auto", choices=["speed", "stability", "auto"],
                         help="Autopilot strategy: speed (best CA), stability (lock best tower), or auto")
     parser.add_argument("--5g",         dest="five_g", action="store_true",
-                        help="In autopilot: enable 5G NR EN-DC aggregation")
+                        help="(legacy) 5G is on by default in autopilot; use --no-5g to disable")
+    parser.add_argument("--no-5g",      dest="no_5g", action="store_true",
+                        help="In autopilot: disable 5G NR EN-DC aggregation")
+    parser.add_argument("--no-wan",     dest="no_wan", action="store_true",
+                        help="In autopilot: disable best-WAN-IP fishing")
     parser.add_argument("--no-init",    dest="no_init", action="store_true",
                         help="In autopilot: skip the initial full optimization pass")
     parser.add_argument("--help", "-h", action="store_true")
