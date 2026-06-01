@@ -175,6 +175,77 @@ class H155Session:
         # huawei-lte-api handles (used when the library is installed)
         self._hw_conn   = None
         self._hw_client = None
+        # ── auto re-authentication state ──
+        self._password      = None    # remembered so we can re-login on expiry
+        self._manual_login  = None    # (password_value, password_type) that worked
+        self._reauth_count  = 0       # how many times the session was rebuilt
+
+    # ── SESSION-EXPIRY DETECTION & AUTO RE-AUTH ─────────────
+    # Huawei routers drop the web session after a while; subsequent calls fail
+    # with 100003 ("no rights / needs login") or 125003 ("wrong session token").
+    # These helpers transparently re-establish the session so long-running
+    # daemons (autopilot, watchdog, dashboards) keep working unattended.
+    _SESSION_ERR_MARKERS = ("100003", "125003", "125002", "needs login",
+                            "No rights", "no rights", "not login", "ResponseErrorNotSupported")
+
+    @classmethod
+    def _is_session_error(cls, text_or_exc) -> bool:
+        s = str(text_or_exc)
+        return any(mark in s for mark in cls._SESSION_ERR_MARKERS)
+
+    def _reauth(self) -> bool:
+        """Rebuild the router session using the remembered credentials."""
+        if not self._password:
+            return False
+        self._reauth_count += 1
+        # Preferred: rebuild the huawei-lte-api connection (handles SCRAM).
+        if HUAWEI_LIB:
+            try:
+                url = f"http://admin:{self._password}@{self.gateway}/"
+                self._hw_conn   = _HuaweiConnection(url)
+                self._hw_client = _HuaweiClient(self._hw_conn)
+                self._hw_client.device.information()   # verify it works
+                self.authenticated = True
+                self._token = None                     # force fresh CSRF token
+                return True
+            except Exception:
+                self._hw_conn = None
+                self._hw_client = None
+        # Fallback: manual XML re-login (reuse the variant that worked before).
+        if self._get_token():
+            if self._manual_login:
+                pw_val, pw_type = self._manual_login
+            else:
+                pw_val = base64.b64encode(self._password.encode()).decode()
+                pw_type = "4"
+            login_xml = (
+                '<?xml version="1.0" encoding="UTF-8"?><request>'
+                "<Username>admin</Username>"
+                f"<Password>{pw_val}</Password>"
+                f"<password_type>{pw_type}</password_type></request>"
+            )
+            resp = self._xml_post(self.BASE_ENDPOINTS["login"], login_xml)
+            if resp and "<response>OK</response>" in resp:
+                self.authenticated = True
+                return True
+        return False
+
+    def _safe_lib(self, func, label: str):
+        """Run a huawei-lte-api read; on session-expiry, re-auth once and retry.
+        Returns (ok, result). Only warns on a genuine (non-recovered) failure."""
+        try:
+            return True, func()
+        except Exception as e:
+            if self._is_session_error(e) and self._reauth():
+                try:
+                    return True, func()
+                except Exception as e2:
+                    if not self._is_session_error(e2):
+                        warn(f"{label}: {e2}")
+                    return False, None
+            if not self._is_session_error(e):
+                warn(f"{label}: {e}")
+            return False, None
 
     # ── LOW-LEVEL HTTP ──────────────────────────────────────
     def _get_token(self) -> bool:
@@ -245,6 +316,7 @@ class H155Session:
         """
         step("Connecting to router...")
         info(f"Gateway : {colorize(self.gateway, C.CYAN)}")
+        self._password = password   # remembered for automatic re-authentication
 
         # ── Preferred path: maintained library ──────────────────
         if HUAWEI_LIB:
@@ -325,6 +397,7 @@ class H155Session:
             if resp and "<response>OK</response>" in resp:
                 ok(colorize(f"Authenticated! [{label}]", C.GREEN + C.BOLD))
                 self.authenticated = True
+                self._manual_login = (pw_val, pw_type)   # reuse on re-auth
                 return True
             last_resp = resp
             if resp:
@@ -360,8 +433,9 @@ class H155Session:
     # ── DEVICE INFO ─────────────────────────────────────────
     def get_device_info(self) -> dict:
         if self._hw_client is not None:
-            try:
-                d = self._hw_client.device.information()
+            okq, d = self._safe_lib(lambda: self._hw_client.device.information(),
+                                    "Library device-info read failed")
+            if okq:
                 return {
                     "model":    d.get("DeviceName",       "N/A"),
                     "imei":     d.get("Imei",             "N/A"),
@@ -373,8 +447,6 @@ class H155Session:
                     "uptime":   d.get("uptime",           "N/A"),
                     "wan_ip":   d.get("WanIPAddress",     "N/A"),
                 }
-            except Exception as e:
-                warn(f"Library device-info read failed: {e}")
 
         xml = self._xml_get(self.BASE_ENDPOINTS["device_info"])
         if not xml:
@@ -396,8 +468,9 @@ class H155Session:
         # Preferred: use the library client – it knows the right endpoint
         # and field names for your specific firmware (fixes the empty N/A reads).
         if self._hw_client is not None:
-            try:
-                d = self._hw_client.device.signal()
+            okq, d = self._safe_lib(lambda: self._hw_client.device.signal(),
+                                    "Library signal read failed")
+            if okq:
                 raw = {
                     "rsrp":   d.get("rsrp",   "N/A"),
                     "rsrq":   d.get("rsrq",   "N/A"),
@@ -418,8 +491,6 @@ class H155Session:
                 raw["rsrp_int"] = safe_int(raw["rsrp"])
                 raw["sinr_int"] = safe_int(raw["sinr"])
                 return raw
-            except Exception as e:
-                warn(f"Library signal read failed: {e}")
 
         xml = self._xml_get(self.BASE_ENDPOINTS["signal"])
         if not xml:
@@ -449,8 +520,9 @@ class H155Session:
 
     def get_monitoring(self) -> dict:
         if self._hw_client is not None:
-            try:
-                d = self._hw_client.monitoring.status()
+            okq, d = self._safe_lib(lambda: self._hw_client.monitoring.status(),
+                                    "Library monitoring read failed")
+            if okq:
                 return {
                     "connection_status": d.get("ConnectionStatus",     "N/A"),
                     "network_type":      d.get("CurrentNetworkType",    "N/A"),
@@ -462,8 +534,6 @@ class H155Session:
                     "dl_total":          d.get("TotalDownload",         "0"),
                     "ul_total":          d.get("TotalUpload",           "0"),
                 }
-            except Exception as e:
-                warn(f"Library monitoring read failed: {e}")
 
         xml = self._xml_get(self.BASE_ENDPOINTS["monitoring"])
         if not xml:
@@ -483,15 +553,14 @@ class H155Session:
     # ── NETWORK MODE / BAND LOCKING ─────────────────────────
     def get_net_mode(self) -> dict:
         if self._hw_client is not None:
-            try:
-                d = self._hw_client.net.net_mode()
+            okq, d = self._safe_lib(lambda: self._hw_client.net.net_mode(),
+                                    "Library net-mode read failed")
+            if okq:
                 return {
                     "network_mode":  d.get("NetworkMode", "N/A"),
                     "network_band":  d.get("NetworkBand", "N/A"),
                     "lte_band":      d.get("LTEBand",     "N/A"),
                 }
-            except Exception as e:
-                warn(f"Library net-mode read failed: {e}")
 
         xml = self._xml_get(self.BASE_ENDPOINTS["net_mode"])
         if not xml:
@@ -510,12 +579,11 @@ class H155Session:
         lte_band:     hex bitmask for LTE bands
         """
         if self._hw_client is not None:
-            try:
-                # Library signature: set_net_mode(networkmode, networkband, lteband)
-                r = self._hw_client.net.set_net_mode(network_mode, network_band, lte_band)
+            okq, r = self._safe_lib(
+                lambda: self._hw_client.net.set_net_mode(network_mode, network_band, lte_band),
+                "Library set-net-mode failed")
+            if okq:
                 return r == "OK" or (isinstance(r, dict) and not r.get("error"))
-            except Exception as e:
-                warn(f"Library set-net-mode failed: {e}")
 
         xml = (
             '<?xml version="1.0" encoding="UTF-8"?>'
@@ -531,10 +599,11 @@ class H155Session:
     def get_cell_info(self) -> str:
         """Return raw cell neighbor list XML (or library-shaped string)."""
         if self._hw_client is not None:
-            try:
-                # Library returns parsed dict(s); re-emit as the <Cell> XML
-                # shape the rest of the code already parses.
-                d = self._hw_client.net.cell_info()
+            # Library returns parsed dict(s); re-emit as the <Cell> XML
+            # shape the rest of the code already parses.
+            okq, d = self._safe_lib(lambda: self._hw_client.net.cell_info(),
+                                    "Library cell-info read failed")
+            if okq:
                 cells = d if isinstance(d, list) else [d]
                 parts = []
                 for c in cells:
@@ -546,8 +615,6 @@ class H155Session:
                     parts.append(f"<Cell>{fields}</Cell>")
                 if parts:
                     return "<response>" + "".join(parts) + "</response>"
-            except Exception as e:
-                warn(f"Library cell-info read failed: {e}")
         return self._xml_get(self.BASE_ENDPOINTS["cell_info"]) or ""
 
     def get_plmn_list(self) -> str:
@@ -588,23 +655,31 @@ class H155Session:
                 return None
         return obj if callable(obj) else None
 
-    def api_get(self, endpoint: str) -> str:
+    def api_get(self, endpoint: str, _retry: bool = True) -> str:
         """Authenticated GET → raw XML text ('' on failure). In library mode it
-        reuses the library's authenticated session; otherwise the manual one."""
+        reuses the library's authenticated session; otherwise the manual one.
+        Auto re-authenticates and retries once if the session has expired."""
         if self._hw_client is not None:
             s = self._lib_session()
             if s is not None:
                 try:
-                    return s.get(self.base_url + endpoint, timeout=10).text
+                    text = s.get(self.base_url + endpoint, timeout=10).text
                 except Exception as e:
                     warn(f"GET {endpoint} failed: {e}")
                     return ""
-        return self._xml_get(endpoint) or ""
+                if _retry and self._is_session_error(text) and self._reauth():
+                    return self.api_get(endpoint, _retry=False)
+                return text
+        text = self._xml_get(endpoint) or ""
+        if _retry and self._is_session_error(text) and self._reauth():
+            return self.api_get(endpoint, _retry=False)
+        return text
 
-    def api_post(self, endpoint: str, fields) -> str:
+    def api_post(self, endpoint: str, fields, _retry: bool = True) -> str:
         """Authenticated POST. `fields` may be a dict (serialised to
         <key>value</key> pairs in document order) or a ready XML body string.
-        Returns the raw XML response text ('' on failure)."""
+        Returns the raw XML response text ('' on failure). Auto re-authenticates
+        and retries once if the session has expired."""
         if isinstance(fields, dict):
             body = ('<?xml version="1.0" encoding="UTF-8"?><request>'
                     + "".join(f"<{k}>{v}</{k}>" for k, v in fields.items())
@@ -636,11 +711,17 @@ class H155Session:
                                or r.headers.get("__RequestVerificationToken"))
                     if new_tok:
                         self._token = new_tok.split("#")[0] if "#" in new_tok else new_tok
-                    return r.text
+                    text = r.text
                 except Exception as e:
                     warn(f"POST {endpoint} failed: {e}")
                     return ""
-        return self._xml_post(endpoint, body) or ""
+                if _retry and self._is_session_error(text) and self._reauth():
+                    return self.api_post(endpoint, fields, _retry=False)
+                return text
+        text = self._xml_post(endpoint, body) or ""
+        if _retry and self._is_session_error(text) and self._reauth():
+            return self.api_post(endpoint, fields, _retry=False)
+        return text
 
     @staticmethod
     def post_ok(resp: str) -> bool:
@@ -4105,10 +4186,12 @@ def cmd_autopilot(sess: H155Session, args):
             r_lbl, r_col = grade_rsrp(rsrp)
             bar = signal_bar(rsrp)
             cstat = colorize("UP", C.GREEN) if connected else colorize("DOWN", C.RED, C.BOLD)
+            relog = getattr(sess, "_reauth_count", 0)
             print(f"\r  {C.DIM}[{ts}] #{checks:>4}{C.RESET} {bar} {cstat} "
                   f"{colorize(str(len(agg))+'CC', C.LIME if len(agg)>1 else C.DIM)} "
                   f"RSRP:{colorize(sig.get('rsrp','?'), r_col, C.BOLD)} "
                   f"fixes:{colorize(str(fixes), C.YELLOW if fixes else C.DIM)} "
+                  f"relogin:{colorize(str(relog), C.CYAN if relog else C.DIM)} "
                   f"last:{colorize(last_action, C.MAGENTA)}    ", end="", flush=True)
             time.sleep(interval)
     except KeyboardInterrupt:
