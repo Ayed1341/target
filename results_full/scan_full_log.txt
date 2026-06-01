@@ -1,0 +1,19 @@
+
+[1m[1;37m══════════════════════════════════════════════════════════════════════[0m
+[1m[0;36m  APEX_HUNTER v1.0[0m
+[1;37m  455 Tools | 465 Skills | Auto-Chain Execution[0m
+[1;37m══════════════════════════════════════════════════════════════════════[0m
+  Targets : https://ehub.ejada.com/
+  Output  : /home/user/target/results_full
+  Phases  : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+  Workers : 10 | Rate: 2.0 r/s | Depth: 3
+  AI      : disabled (use --ai-key)
+[1;37m══════════════════════════════════════════════════════════════════════[0m
+
+
+[0;36m[*] TARGET: https://ehub.ejada.com/[0m
+
+[0;36m[*] Phase 1: Passive OSINT (DNS, TLS, CT Logs, Wayback)[0m
+[0;35m[SKILL] DNS-01: Resolving target + ASN + wildcard check[0m
+[0;32m[+]   ehub.ejada.com → 34.111.193.103 (Unknown)[0m
+[2m      www.ejada.com → 34.8.198.205[0m
