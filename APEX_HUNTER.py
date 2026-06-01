@@ -179,7 +179,7 @@ WORDLIST_JWT_SECRETS = [
 @dataclass
 class Finding:
     id: str; title: str; severity: str; cwe: str; cvss: float
-    description: str; poc_curl: str
+    description: str = ""; poc_curl: str = ""
     evidence: str = ""; reproduction: str = ""
     burp_request: str = ""; category: str = ""; remediation: str = ""
 
