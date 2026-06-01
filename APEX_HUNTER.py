@@ -3940,10 +3940,10 @@ class PathParameterInjection:
     INJECT = ["0", "-1", "null", "undefined", "true", "%00", "../../etc/passwd",
               "1 OR 1=1", "1; DROP TABLE users--", "99999999999999"]
     def run(self, profile: TargetProfile, cfg: Config) -> TargetProfile:
-        if not profile.js_endpoints:
+        if not profile.api_endpoints:
             return profile
         tested = set()
-        for ep in list(profile.js_endpoints)[:20]:
+        for ep in list(profile.api_endpoints)[:20]:
             m = self.ID_PAT.search(ep)
             if not m:
                 continue
