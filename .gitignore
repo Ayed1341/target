@@ -5,5 +5,9 @@ __pycache__/
 
 # Tool output files generated at runtime
 signal_log_*.csv
+throughput_*.csv
 h155_status_*.json
 h155_backup_*.json
+h155_profiles.json
+h155_report_*.md
+h155_report_*.html
