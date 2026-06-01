@@ -86,9 +86,9 @@ BANNER = f"""
     ███╔╝ ██╔══██║██║██║╚████║    ██╔══██║ ██║╚════██║╚════██║
    ███████╗██║  ██║██║██║ ╚███║   ██║  ██║ ██║███████║███████║
    ╚══════╝╚═╝  ╚═╝╚═╝╚═╝  ╚══╝   ╚═╝  ╚═╝ ╚═╝╚══════╝╚══════╝{C.RESET}
-{C.GOLD}             ⚡  Advanced Router Manager · v40 Edition  ⚡{C.RESET}
+{C.GOLD}             ⚡  Advanced Router Manager · v40.2 Edition  ⚡{C.RESET}
 {C.DIM}             Model: Zain H155 | 4G·5G Tower & Frequency Optimizer{C.RESET}
-{C.DIM}             58 tools · SMS · USSD · Wi-Fi · NAT · Diagnostics{C.RESET}
+{C.DIM}             98 tools · Auto-CA · Best Tower · Autopilot · Reports{C.RESET}
 """
 
 # ─────────────────────────────────────────────────────────────
@@ -3448,6 +3448,1644 @@ def cmd_health_report(sess: H155Session, args):
     sep()
 
 
+# ═════════════════════════════════════════════════════════════
+#  ★★  v40.2 UPGRADE — 40 AUTOMATION & CARRIER-AGGREGATION TOOLS  ★★
+#  Auto-everything: best CA (4G+4G / 4G+4G+4G) pairs, best cell tower,
+#  throughput-driven optimisation, autopilot daemons, profiles & reports.
+#  Every tool is fully implemented against the real H155 API / local OS.
+# ═════════════════════════════════════════════════════════════
+
+PROFILES_FILE = "h155_profiles.json"
+
+
+# ── Shared measurement / discovery helpers (reused by many features) ──
+def measure_download_mbps(size_mb: int = 10, timeout: int = 40, show: bool = False) -> Optional[float]:
+    """Download a payload through the router and return throughput in Mbps."""
+    url = f"https://speed.cloudflare.com/__down?bytes={size_mb * 1024 * 1024}"
+    try:
+        start = time.time()
+        got = 0
+        with requests.get(url, stream=True, timeout=timeout, verify=True) as r:
+            r.raise_for_status()
+            for chunk in r.iter_content(chunk_size=65536):
+                got += len(chunk)
+                if show:
+                    el = time.time() - start
+                    if el > 0:
+                        mbps = (got * 8) / el / 1_000_000
+                        print(f"\r  {C.DIM}downloading {bytes_fmt(str(got))}  "
+                              f"{colorize(f'{mbps:.1f} Mbps', C.LIME)}   {C.RESET}", end="", flush=True)
+        el = time.time() - start
+        if show:
+            print()
+        return (got * 8) / el / 1_000_000 if el > 0 else None
+    except requests.exceptions.RequestException:
+        if show:
+            print()
+        return None
+
+
+def measure_latency_ms(host: str = "8.8.8.8", count: int = 4) -> Optional[float]:
+    """Average ICMP round-trip time in milliseconds (via the OS ping)."""
+    flag = "-n" if sys.platform.startswith("win") else "-c"
+    try:
+        res = subprocess.run(["ping", flag, str(count), host],
+                             capture_output=True, text=True, timeout=20)
+        ms = [float(x) for x in re.findall(r"time[=<]\s?([\d.]+)", res.stdout)]
+        return sum(ms) / len(ms) if ms else None
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+
+def avg_signal(sess: H155Session, samples: int = 4, delay: float = 1.0):
+    """Return (avg_rsrp, avg_sinr) over several samples (None if unavailable)."""
+    rs, ss = [], []
+    for _ in range(samples):
+        sig = sess.get_signal()
+        r, s = sig.get("rsrp_int"), sig.get("sinr_int")
+        if r is not None:
+            rs.append(r)
+        if s is not None:
+            ss.append(s)
+        time.sleep(delay)
+    return (sum(rs) / len(rs) if rs else None,
+            sum(ss) / len(ss) if ss else None)
+
+
+def stdev(vals) -> float:
+    """Population standard deviation (0.0 for <2 samples)."""
+    n = len(vals)
+    if n < 2:
+        return 0.0
+    mean = sum(vals) / n
+    return (sum((v - mean) ** 2 for v in vals) / n) ** 0.5
+
+
+def active_ca_bands(sess: H155Session):
+    """LTE band numbers currently aggregated, parsed from the signal field."""
+    bf = str(sess.get_signal().get("band", ""))
+    return sorted({int(x) for x in re.findall(r"B(\d+)", bf)})
+
+
+def visible_bands(sess: H155Session):
+    """LTE band numbers seen in the neighbour-cell scan."""
+    xml = sess.get_cell_info()
+    bands = set()
+    for c in re.finditer(r"<Cell>(.*?)</Cell>", xml, re.DOTALL):
+        mm = re.search(r"<Band>(.*?)</Band>", c.group(1))
+        if mm:
+            digits = re.sub(r"[^\d]", "", mm.group(1))
+            if digits:
+                bands.add(int(digits))
+    return sorted(bands)
+
+
+def visible_towers(sess: H155Session):
+    """Neighbour cells as dicts: pci, band, earfcn, rsrp, rsrp_int, sinr, cell_id."""
+    xml = sess.get_cell_info()
+    out = []
+    for c in re.finditer(r"<Cell>(.*?)</Cell>", xml, re.DOTALL):
+        b = c.group(1)
+
+        def v(t, d="N/A"):
+            mm = re.search(rf"<{t}>(.*?)</{t}>", b)
+            return mm.group(1).strip() if mm else d
+
+        try:
+            ri = int(re.sub(r"[^-\d]", "", v("Rsrp", "-999")))
+        except ValueError:
+            ri = -999
+        out.append({
+            "pci": v("Pci"), "band": v("Band"), "earfcn": v("Earfcn"),
+            "rsrp": v("Rsrp"), "rsrp_int": ri, "sinr": v("Sinr"),
+            "cell_id": v("CellId"),
+        })
+    return out
+
+
+def lock_bands(sess: H155Session, bands, mode: str = "03") -> bool:
+    """Lock the modem to the given LTE band set (enables CA across them)."""
+    return sess.set_net_mode(mode, "3FFFFFFF", bands_to_lte_bitmask(bands))
+
+
+def wait_reconnect(seconds: int = 12, step: int = 2):
+    n = max(1, seconds // step)
+    print(f"  {C.DIM}  reconnecting", end="", flush=True)
+    for _ in range(n):
+        time.sleep(step)
+        print(f"{C.DIM}.{C.RESET}", end="", flush=True)
+    print()
+
+
+def band_label(b: int) -> str:
+    return BAND_DB.get(b, {}).get("name", f"Band {b}")
+
+
+def is_connected(sess: H155Session) -> bool:
+    return sess.get_monitoring().get("connection_status", "0") == "901"
+
+
+# ─────────────────────────────────────────────────────────────
+#  GROUP I — CARRIER AGGREGATION (4G+4G) SUITE  (features 59-66)
+# ─────────────────────────────────────────────────────────────
+def cmd_ca_combos(sess: H155Session, args):
+    """[59] Discover candidate carrier-aggregation band combinations."""
+    from itertools import combinations
+    step("Carrier-Aggregation Combinations")
+    sep()
+    vis = visible_bands(sess)
+    if not vis:
+        warn("No neighbour bands visible — run a tower scan in LTE mode first.")
+        sep()
+        return
+    info(f"Bands visible here: {colorize(', '.join('B'+str(b) for b in vis), C.GOLD)}")
+    cur = active_ca_bands(sess)
+    if len(cur) > 1:
+        ok(f"Currently aggregating: {colorize('+'.join('B'+str(b) for b in cur), C.LIME, C.BOLD)}")
+    pairs = list(combinations(vis, 2))
+    print(f"\n  {C.GOLD}{C.BOLD}  Candidate 4G+4G pairs ({len(pairs)}):{C.RESET}")
+    for a, b in pairs:
+        active = set([a, b]) == set(cur)
+        mark = colorize("  ◀ active", C.LIME, C.BOLD) if active else ""
+        print(f"    {colorize(f'B{a}+B{b}', C.CYAN, C.BOLD):<22} "
+              f"{colorize(band_label(a)+' + '+band_label(b), C.DIM)}{mark}")
+    if len(vis) >= 3:
+        trips = list(combinations(vis, 3))
+        print(f"\n  {C.GOLD}{C.BOLD}  Candidate 4G+4G+4G triples ({len(trips)}):{C.RESET}")
+        for combo in trips[:12]:
+            print(f"    {colorize('+'.join('B'+str(x) for x in combo), C.MAGENTA, C.BOLD)}")
+    info("Use 'ca-best' to benchmark & lock the strongest pair automatically.")
+    sep()
+
+
+def _benchmark_combos(sess: H155Session, combos, samples=3, settle=10, speed=False):
+    """Lock each band combo, verify aggregation, score it. Returns ranked list."""
+    results = []
+    for combo in combos:
+        names = "+".join("B" + str(b) for b in combo)
+        print(f"\n  {C.MAGENTA}▶{C.RESET}  Testing {colorize(names, C.GOLD, C.BOLD)}...")
+        if not lock_bands(sess, list(combo)):
+            warn(f"  Could not lock {names} — skipping")
+            continue
+        wait_reconnect(settle)
+        agg = active_ca_bands(sess)
+        rsrp, sinr = avg_signal(sess, samples=samples, delay=1)
+        mbps = measure_download_mbps(8, show=True) if speed else None
+        if rsrp is None:
+            warn(f"  No signal on {names}")
+            continue
+        ca_ok = len(agg) >= len(combo)
+        # Composite score: signal quality + aggregation bonus + throughput
+        score = rsrp + (sinr or 0) * 1.5 + (10 if ca_ok else 0) + (mbps or 0)
+        bar = signal_bar(int(rsrp))
+        extra = f"  {colorize(f'{mbps:.1f} Mbps', C.LIME, C.BOLD)}" if mbps else ""
+        print(f"  {bar}  RSRP {colorize(f'{rsrp:.1f}', C.CYAN)}  "
+              f"SINR {colorize(f'{sinr:.1f}' if sinr is not None else '?', C.CYAN)}  "
+              f"CA {colorize('YES' if ca_ok else 'no', C.LIME if ca_ok else C.DIM)}{extra}")
+        results.append({"combo": list(combo), "names": names, "rsrp": rsrp,
+                        "sinr": sinr or -99, "mbps": mbps, "ca": ca_ok, "score": score})
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results
+
+
+def cmd_ca_best(sess: H155Session, args):
+    """[60] Benchmark every 4G+4G CA pair and lock the strongest one."""
+    from itertools import combinations
+    step("Auto-Best Carrier Aggregation (4G+4G)")
+    warn("Router will reconnect several times (~2-4 min). Don't disconnect.")
+    sep()
+    if not confirm(f"  {C.RED}Start CA benchmark? (yes/no): {C.RESET}"):
+        warn("Cancelled.")
+        return
+    vis = visible_bands(sess)
+    if len(vis) < 2:
+        err("Need at least 2 visible bands for CA. Run a scan in LTE mode.")
+        return
+    # Bound the search to the strongest 4 bands → at most C(4,2)=6 pairs
+    towers = visible_towers(sess)
+    strength = {}
+    for t in towers:
+        try:
+            bb = int(re.sub(r"[^\d]", "", t["band"]))
+        except (ValueError, TypeError):
+            continue
+        strength[bb] = max(strength.get(bb, -999), t["rsrp_int"])
+    top = sorted(vis, key=lambda b: strength.get(b, -999), reverse=True)[:4]
+    pairs = list(combinations(sorted(top), 2))
+    info(f"Testing {len(pairs)} CA pairs from strongest bands: "
+         f"{colorize(', '.join('B'+str(b) for b in top), C.CYAN)}")
+    results = _benchmark_combos(sess, pairs, speed=getattr(args, "speed", False))
+    if not results:
+        err("No CA pair produced a usable signal.")
+        return
+    sep()
+    print(f"\n  {C.GOLD}{C.BOLD}  ╔══  CA PAIR RANKING  ═════════════════════════╗{C.RESET}")
+    for i, r in enumerate(results):
+        icon = f"{C.GOLD}★{C.RESET}" if i == 0 else f"{C.DIM}{i+1}.{C.RESET}"
+        mbps = f"{r['mbps']:.1f}Mbps" if r["mbps"] else "—"
+        rsrp_s = "{:.0f}".format(r["rsrp"])
+        sinr_s = "{:.0f}".format(r["sinr"])
+        ca_s = "Y" if r["ca"] else "n"
+        print(f"  {C.GOLD}║{C.RESET} {icon} {colorize(r['names'], C.WHITE):<14} "
+              f"RSRP {colorize(rsrp_s, C.CYAN)}  "
+              f"SINR {colorize(sinr_s, C.CYAN)}  "
+              f"CA {colorize(ca_s, C.LIME if r['ca'] else C.DIM)}  "
+              f"{colorize(mbps, C.LIME)}")
+    print(f"  {C.GOLD}{C.BOLD}  ╚════════════════════════════════════════════════╝{C.RESET}")
+    winner = results[0]
+    info(f"\n  Locking winner: {colorize(winner['names'], C.LIME, C.BOLD)}")
+    if lock_bands(sess, winner["combo"]):
+        ok(colorize(f"Locked best CA pair: {winner['names']}!", C.LIME + C.BOLD))
+    sep()
+
+
+def cmd_ca_lock(sess: H155Session, args):
+    """[61] Manually lock a specific CA combo (e.g. 1 3)."""
+    step("Manual CA Lock")
+    sep()
+    if args.bands:
+        combo = [int(b) for b in args.bands]
+    else:
+        for b in sorted(BAND_DB):
+            print(f"    {colorize(str(b), C.CYAN, C.BOLD):>12}  {colorize(BAND_DB[b]['name'], C.WHITE)}")
+        raw = ask(f"\n  {C.YELLOW}Bands to aggregate, e.g. '1 3' or '3 7 20': {C.RESET}")
+        if not raw:
+            warn("Cancelled.")
+            return
+        combo = [int(x) for x in raw.split() if x.isdigit()]
+    if len(combo) < 2:
+        err("CA needs at least 2 bands.")
+        return
+    names = "+".join("B" + str(b) for b in combo)
+    info(f"Locking {colorize(names, C.GOLD)} (mask {bands_to_lte_bitmask(combo)})")
+    if lock_bands(sess, combo):
+        wait_reconnect(10)
+        agg = active_ca_bands(sess)
+        if len(agg) >= 2:
+            ok(colorize(f"CA active: {'+'.join('B'+str(b) for b in agg)}", C.LIME + C.BOLD))
+        else:
+            warn(f"Bands locked, but tower is serving single carrier ({'+'.join('B'+str(b) for b in agg) or '?'}).")
+            info("The cell must support these bands together for CA to engage.")
+    else:
+        err("Failed to apply CA lock.")
+    sep()
+
+
+def cmd_ca_3cc(sess: H155Session, args):
+    """[62] Find and lock the best 3-carrier (4G+4G+4G) combination."""
+    from itertools import combinations
+    step("Best 3-Carrier Aggregation (4G+4G+4G)")
+    warn("Tests 3-band combos — can take several minutes.")
+    sep()
+    if not confirm(f"  {C.RED}Start 3CC search? (yes/no): {C.RESET}"):
+        warn("Cancelled.")
+        return
+    vis = visible_bands(sess)
+    if len(vis) < 3:
+        err(f"Only {len(vis)} band(s) visible — need 3+ for 3CC.")
+        return
+    triples = list(combinations(sorted(vis)[:5], 3))[:8]
+    info(f"Testing {len(triples)} triple combos...")
+    results = _benchmark_combos(sess, triples, samples=3, settle=12)
+    if not results:
+        err("No 3CC combo produced a usable signal.")
+        return
+    winner = results[0]
+    sep()
+    ok(f"Best 3CC: {colorize(winner['names'], C.LIME, C.BOLD)} (score {winner['score']:.0f})")
+    if lock_bands(sess, winner["combo"]):
+        ok(colorize("Locked best 3-carrier combination!", C.LIME + C.BOLD))
+    sep()
+
+
+def cmd_ca_live(sess: H155Session, args):
+    """[63] Live carrier-aggregation monitor (component carriers + bandwidth)."""
+    interval = getattr(args, "interval", 3) or 3
+    step(f"Live CA Monitor (every {interval}s, Ctrl+C to stop)")
+    sep()
+    try:
+        while True:
+            sig = sess.get_signal()
+            bf = str(sig.get("band", ""))
+            nums = sorted({int(x) for x in re.findall(r"B(\d+)", bf)})
+            total_bw = sum(int(x) for x in re.findall(r"(\d+)MHz", bf)) or 0
+            ts = datetime.now().strftime("%H:%M:%S")
+            rsrp_i = sig.get("rsrp_int")
+            bar = signal_bar(rsrp_i)
+            cc = colorize(f"{len(nums)}CC", C.LIME if len(nums) > 1 else C.DIM, C.BOLD)
+            blist = "+".join("B" + str(n) for n in nums) or "?"
+            print(f"\r  {C.DIM}{ts}{C.RESET}  {bar}  {cc}  "
+                  f"{colorize(blist, C.GOLD):<22}  "
+                  f"BW:{colorize(str(total_bw)+'MHz', C.TEAL)}  "
+                  f"RSRP:{colorize(sig.get('rsrp','?'), C.CYAN)}  "
+                  f"SINR:{colorize(sig.get('sinr','?'), C.CYAN)}   ", end="", flush=True)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()
+        ok("CA monitor stopped.")
+    sep()
+
+
+def cmd_ca_force(sess: H155Session, args):
+    """[64] Force-enable CA across all strong visible bands."""
+    step("Force-Enable Carrier Aggregation")
+    sep()
+    towers = visible_towers(sess)
+    strong = sorted({int(re.sub(r"[^\d]", "", t["band"]))
+                     for t in towers
+                     if re.sub(r"[^\d]", "", t["band"]) and t["rsrp_int"] >= -110})
+    if len(strong) < 2:
+        warn("Fewer than 2 strong bands available — CA cannot be forced now.")
+        sep()
+        return
+    info(f"Enabling all strong bands: {colorize('+'.join('B'+str(b) for b in strong), C.GOLD)}")
+    if lock_bands(sess, strong):
+        wait_reconnect(10)
+        agg = active_ca_bands(sess)
+        if len(agg) >= 2:
+            ok(colorize(f"CA engaged: {'+'.join('B'+str(b) for b in agg)}", C.LIME + C.BOLD))
+        else:
+            warn("Bands enabled; the serving cell is not aggregating right now.")
+    else:
+        err("Failed to apply band set.")
+    sep()
+
+
+def cmd_ca_speed(sess: H155Session, args):
+    """[65] Real download-speed test for each CA pair, ranked."""
+    from itertools import combinations
+    step("CA Pair Speed Ranking (real throughput)")
+    warn("Runs a real download per pair — uses data and takes a few minutes.")
+    sep()
+    if not confirm(f"  {C.RED}Start CA speed test? (yes/no): {C.RESET}"):
+        warn("Cancelled.")
+        return
+    vis = visible_bands(sess)
+    if len(vis) < 2:
+        err("Need 2+ visible bands.")
+        return
+    pairs = list(combinations(sorted(vis)[:4], 2))
+    results = _benchmark_combos(sess, pairs, samples=2, settle=10, speed=True)
+    ranked = [r for r in results if r["mbps"] is not None]
+    ranked.sort(key=lambda x: x["mbps"], reverse=True)
+    if not ranked:
+        err("No throughput measured (check data connection).")
+        return
+    sep()
+    for i, r in enumerate(ranked):
+        icon = f"{C.GOLD}★{C.RESET}" if i == 0 else f"{C.DIM}{i+1}.{C.RESET}"
+        mbps_s = "{:.1f} Mbps".format(r["mbps"])
+        print(f"  {icon} {colorize(r['names'], C.WHITE):<14} {colorize(mbps_s, C.LIME, C.BOLD)}")
+    winner = ranked[0]
+    if lock_bands(sess, winner["combo"]):
+        ok(colorize(f"Locked fastest CA pair: {winner['names']} ({winner['mbps']:.1f} Mbps)", C.LIME + C.BOLD))
+    sep()
+
+
+def cmd_ca_pilot(sess: H155Session, args):
+    """[66] Auto-pilot that keeps the best CA combo active continuously."""
+    interval = getattr(args, "interval", 30) or 30
+    step(f"CA Auto-Pilot — keeps aggregation healthy (check every {interval}s)")
+    info("Ctrl+C to stop.")
+    sep()
+    best_combo = sorted(active_ca_bands(sess))
+    if len(best_combo) < 2:
+        best_combo = visible_bands(sess)[:2]
+    info(f"Target CA set: {colorize('+'.join('B'+str(b) for b in best_combo) or 'auto', C.GOLD)}")
+    relocks = checks = 0
+    try:
+        while True:
+            checks += 1
+            agg = active_ca_bands(sess)
+            sig = sess.get_signal()
+            ts = datetime.now().strftime("%H:%M:%S")
+            healthy = len(agg) >= 2
+            if not healthy and best_combo:
+                lock_bands(sess, best_combo)
+                relocks += 1
+                status = colorize("re-applied CA", C.RED, C.BOLD)
+            else:
+                status = colorize("CA healthy", C.GREEN)
+            print(f"\r  {C.DIM}[{ts}] #{checks:>4}{C.RESET}  "
+                  f"{colorize(str(len(agg))+'CC', C.LIME if healthy else C.RED, C.BOLD)}  "
+                  f"{'+'.join('B'+str(b) for b in agg) or '?':<18}  "
+                  f"RSRP:{colorize(sig.get('rsrp','?'), C.CYAN)}  "
+                  f"relocks:{colorize(str(relocks), C.RED if relocks else C.DIM)}  {status}   ",
+                  end="", flush=True)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()
+        ok(f"CA auto-pilot stopped after {checks} checks, {relocks} re-locks.")
+    sep()
+
+
+# ─────────────────────────────────────────────────────────────
+#  GROUP J — CELL / TOWER TARGETING  (features 67-72)
+# ─────────────────────────────────────────────────────────────
+def _camp_on_pci(sess: H155Session, target_pci: str, band: int, earfcn: str, attempts: int = 6) -> bool:
+    """Software-enforced cell preference: narrow to the tower's band and
+    nudge the modem (data re-select) until it camps on the requested PCI.
+    (The H155 web API has no hard PCI lock — this is a best-effort preference.)"""
+    lock_bands(sess, [band])
+    for i in range(attempts):
+        wait_reconnect(8)
+        cur = str(sess.get_signal().get("pci", ""))
+        if cur == str(target_pci):
+            return True
+        info(f"  attempt {i+1}: on PCI {cur}, want {target_pci} — re-selecting...")
+        sess.api_post(EP["data_switch"], {"dataswitch": "0"})
+        time.sleep(2)
+        sess.api_post(EP["data_switch"], {"dataswitch": "1"})
+    return str(sess.get_signal().get("pci", "")) == str(target_pci)
+
+
+def cmd_cell_lock(sess: H155Session, args):
+    """[67] Lock toward a specific cell tower (PCI on its band/EARFCN)."""
+    step("Cell / Tower Lock (software-enforced preference)")
+    sep()
+    towers = visible_towers(sess)
+    if towers:
+        print(f"  {C.DIM}  Visible towers (PCI / band / EARFCN / RSRP):{C.RESET}")
+        for t in sorted(towers, key=lambda x: x["rsrp_int"], reverse=True)[:10]:
+            print(f"    PCI {colorize(t['pci'], C.CYAN, C.BOLD):<14} "
+                  f"B{colorize(t['band'], C.MAGENTA):<10} "
+                  f"EARFCN {colorize(t['earfcn'], C.DIM):<10} "
+                  f"RSRP {colorize(t['rsrp'], C.GOLD)}")
+    pci = ask(f"\n  {C.YELLOW}Target PCI: {C.RESET}")
+    if not pci:
+        warn("Cancelled.")
+        return
+    match = next((t for t in towers if str(t["pci"]) == pci), None)
+    try:
+        band = int(re.sub(r"[^\d]", "", match["band"])) if match else int(ask(f"  {C.YELLOW}Its band number: {C.RESET}") or 0)
+    except (ValueError, TypeError):
+        err("Could not determine band for that PCI.")
+        return
+    earfcn = match["earfcn"] if match else ""
+    info(f"Preferring PCI {colorize(pci, C.CYAN)} on {colorize(band_label(band), C.GOLD)}...")
+    warn("Note: H155 firmware has no hard PCI lock; using band-narrow + re-select.")
+    if _camp_on_pci(sess, pci, band, earfcn):
+        ok(colorize(f"Camped on tower PCI {pci} ({band_label(band)}).", C.LIME + C.BOLD))
+    else:
+        warn(f"Could not force PCI {pci}; modem is on the band but a different cell.")
+    sep()
+
+
+def cmd_cell_unlock(sess: H155Session, args):
+    """[68] Release any cell/tower preference (back to all LTE bands)."""
+    step("Release Cell / Tower Lock")
+    if sess.set_net_mode("03", "3FFFFFFF", "7FFFFFFFFFFFFFFF"):
+        ok(colorize("Cell preference cleared — all LTE bands enabled.", C.GREEN + C.BOLD))
+    else:
+        err("Failed to clear cell lock.")
+    sep()
+
+
+def cmd_best_tower_lock(sess: H155Session, args):
+    """[69] Scan towers and lock onto the strongest PCI/tower."""
+    step("Auto-Lock Best Cell Tower")
+    sep()
+    towers = visible_towers(sess)
+    if not towers:
+        err("No towers visible — ensure LTE mode + active data.")
+        return
+    towers.sort(key=lambda x: x["rsrp_int"], reverse=True)
+    best = towers[0]
+    try:
+        band = int(re.sub(r"[^\d]", "", best["band"]))
+    except ValueError:
+        err(f"Cannot parse band '{best['band']}'.")
+        return
+    ok(f"Best tower: PCI {colorize(best['pci'], C.GOLD, C.BOLD)} on {colorize(band_label(band), C.CYAN)} "
+       f"(RSRP {best['rsrp']})")
+    if not confirm(f"  {C.YELLOW}Lock onto it? (yes/no): {C.RESET}"):
+        warn("Cancelled.")
+        return
+    if _camp_on_pci(sess, best["pci"], band, best["earfcn"]):
+        ok(colorize(f"Locked onto best tower PCI {best['pci']}!", C.LIME + C.BOLD))
+    else:
+        warn(f"On {band_label(band)} but could not pin PCI {best['pci']} exactly.")
+    sep()
+
+
+def cmd_tower_rank(sess: H155Session, args):
+    """[70] Sample towers over several rounds and rank by strength + stability."""
+    rounds = max(3, getattr(args, "duration", 30) // 5)
+    step(f"Tower Stability Ranking ({rounds} sampling rounds)")
+    sep()
+    history = {}
+    for i in range(rounds):
+        for t in visible_towers(sess):
+            key = (t["pci"], t["band"])
+            history.setdefault(key, []).append(t["rsrp_int"])
+        print(f"\r  {C.DIM}sampling round {i+1}/{rounds}...{C.RESET}", end="", flush=True)
+        time.sleep(5)
+    print()
+    if not history:
+        err("No towers sampled.")
+        return
+    rows = []
+    for (pci, band), vals in history.items():
+        avg = sum(vals) / len(vals)
+        rows.append((pci, band, avg, stdev(vals), len(vals)))
+    rows.sort(key=lambda x: (x[2], x[4]), reverse=True)
+    print(f"  {C.DIM}  {'PCI':<8}{'Band':<8}{'Avg RSRP':<12}{'Jitter':<10}{'Seen'}{C.RESET}")
+    print(f"  {C.DIM}  {'─'*46}{C.RESET}")
+    for i, (pci, band, avg, jit, seen) in enumerate(rows):
+        star = f"{C.GOLD}★{C.RESET}" if i == 0 else " "
+        _, col = grade_rsrp(int(avg))
+        print(f"  {star} {colorize(pci, C.CYAN):<15}B{colorize(band, C.MAGENTA):<13}"
+              f"{colorize(f'{avg:.1f}', col):<20}{colorize(f'±{jit:.1f}', C.DIM):<18}{seen}")
+    sep()
+
+
+def cmd_pci_watch(sess: H155Session, args):
+    """[71] Live watch of serving PCI and neighbour PCIs."""
+    interval = getattr(args, "interval", 3) or 3
+    step(f"Live PCI / Neighbour Watch (every {interval}s, Ctrl+C to stop)")
+    sep()
+    try:
+        while True:
+            sig = sess.get_signal()
+            serving = sig.get("pci", "?")
+            neigh = sorted({t["pci"] for t in visible_towers(sess) if t["pci"] != serving})
+            ts = datetime.now().strftime("%H:%M:%S")
+            bar = signal_bar(sig.get("rsrp_int"))
+            print(f"\r  {C.DIM}{ts}{C.RESET}  {bar}  "
+                  f"serving PCI {colorize(str(serving), C.GOLD, C.BOLD)}  "
+                  f"RSRP {colorize(sig.get('rsrp','?'), C.CYAN)}  "
+                  f"neighbours: {colorize(', '.join(neigh[:6]) or '—', C.DIM)}     ",
+                  end="", flush=True)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()
+        ok("PCI watch stopped.")
+    sep()
+
+
+def cmd_earfcn_lock(sess: H155Session, args):
+    """[72] Lock to the band carrying a specific EARFCN (frequency)."""
+    step("EARFCN / Frequency Lock")
+    sep()
+    raw = ask(f"  {C.YELLOW}Target EARFCN: {C.RESET}")
+    if not raw or not raw.isdigit():
+        warn("Cancelled.")
+        return
+    earfcn = int(raw)
+    band = earfcn_to_band(earfcn)
+    if not band:
+        err(f"EARFCN {earfcn} is not within a known band range.")
+        return
+    freq = earfcn_to_freq_mhz(earfcn)
+    info(f"EARFCN {earfcn} → {colorize(band_label(band), C.GOLD)} "
+         f"({colorize(str(freq)+' MHz', C.TEAL) if freq else 'N/A'})")
+    warn("Hard EARFCN lock needs engineering mode; locking the parent band instead.")
+    if lock_bands(sess, [band]):
+        ok(colorize(f"Locked to {band_label(band)} (carries EARFCN {earfcn}).", C.LIME + C.BOLD))
+    else:
+        err("Lock failed.")
+    sep()
+
+
+# ─────────────────────────────────────────────────────────────
+#  GROUP K — AUTO-EVERYTHING / AUTOPILOT  (features 73-80)
+# ─────────────────────────────────────────────────────────────
+def cmd_autopilot(sess: H155Session, args):
+    """[73] AUTO-EVERYTHING daemon: keeps signal, CA and connection optimal."""
+    interval = getattr(args, "interval", 20) or 20
+    threshold = getattr(args, "threshold", -108) or -108
+    step("AUTO-EVERYTHING AUTOPILOT")
+    info("Monitors connection + signal + CA. Re-optimises when degraded.")
+    info(f"Check every {interval}s · RSRP floor {threshold} dBm · Ctrl+C to stop")
+    sep()
+    bad_streak = checks = fixes = 0
+    last_action = "—"
+    try:
+        while True:
+            checks += 1
+            ts = datetime.now().strftime("%H:%M:%S")
+            connected = is_connected(sess)
+            sig = sess.get_signal()
+            rsrp = sig.get("rsrp_int")
+            agg = active_ca_bands(sess)
+
+            action = None
+            if not connected:
+                bad_streak += 1
+                if bad_streak == 1:
+                    action = "reconnect"
+                    sess.api_post(EP["data_switch"], {"dataswitch": "0"})
+                    time.sleep(2)
+                    sess.api_post(EP["data_switch"], {"dataswitch": "1"})
+                elif bad_streak >= 4:
+                    action = "reboot-recover"
+                    sess.reboot()
+                    bad_streak = 0
+            elif rsrp is not None and rsrp < threshold:
+                bad_streak += 1
+                if bad_streak >= 2:
+                    # Re-optimise: enable strong bands to (re)build CA
+                    strong = sorted({int(re.sub(r"[^\d]", "", t["band"]))
+                                     for t in visible_towers(sess)
+                                     if re.sub(r"[^\d]", "", t["band"]) and t["rsrp_int"] >= -112})
+                    if len(strong) >= 2:
+                        lock_bands(sess, strong)
+                        action = "rebuild-CA"
+                    elif strong:
+                        lock_bands(sess, strong[:1])
+                        action = "lock-strongest"
+                    bad_streak = 0
+            else:
+                bad_streak = 0
+
+            if action:
+                fixes += 1
+                last_action = action
+
+            r_lbl, r_col = grade_rsrp(rsrp)
+            bar = signal_bar(rsrp)
+            cstat = colorize("UP", C.GREEN) if connected else colorize("DOWN", C.RED, C.BOLD)
+            print(f"\r  {C.DIM}[{ts}] #{checks:>4}{C.RESET} {bar} {cstat} "
+                  f"{colorize(str(len(agg))+'CC', C.LIME if len(agg)>1 else C.DIM)} "
+                  f"RSRP:{colorize(sig.get('rsrp','?'), r_col, C.BOLD)} "
+                  f"fixes:{colorize(str(fixes), C.YELLOW if fixes else C.DIM)} "
+                  f"last:{colorize(last_action, C.MAGENTA)}    ", end="", flush=True)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()
+        ok(f"Autopilot stopped — {checks} checks, {fixes} corrective actions.")
+    sep()
+
+
+def cmd_auto_failover(sess: H155Session, args):
+    """[74] Auto-failover to the next-best band when the current one degrades."""
+    interval = getattr(args, "interval", 15) or 15
+    threshold = getattr(args, "threshold", -110) or -110
+    step(f"Auto-Failover — switch band when RSRP < {threshold} dBm")
+    info(f"Check every {interval}s · Ctrl+C to stop")
+    sep()
+    candidates = sorted(visible_bands(sess), key=lambda b: 0)  # ordered by appearance
+    if not candidates:
+        candidates = sorted(BAND_DB.keys())
+    idx = 0
+    lock_bands(sess, [candidates[idx]])
+    info(f"Starting on {colorize(band_label(candidates[idx]), C.GOLD)}")
+    switches = checks = 0
+    try:
+        while True:
+            checks += 1
+            rsrp, _ = avg_signal(sess, samples=2, delay=1)
+            ts = datetime.now().strftime("%H:%M:%S")
+            if rsrp is not None and rsrp < threshold:
+                idx = (idx + 1) % len(candidates)
+                lock_bands(sess, [candidates[idx]])
+                switches += 1
+                wait_reconnect(8)
+            bar = signal_bar(int(rsrp) if rsrp is not None else None)
+            print(f"\r  {C.DIM}[{ts}] #{checks:>4}{C.RESET}  {bar}  "
+                  f"on {colorize(band_label(candidates[idx]), C.GOLD):<20}  "
+                  f"RSRP:{colorize(f'{rsrp:.0f}' if rsrp is not None else '?', C.CYAN)}  "
+                  f"switches:{colorize(str(switches), C.YELLOW)}    ", end="", flush=True)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()
+        ok(f"Failover stopped — {switches} band switches over {checks} checks.")
+    sep()
+
+
+def cmd_auto_recover(sess: H155Session, args):
+    """[75] Watch for dead data connection and auto reconnect/reboot to recover."""
+    interval = getattr(args, "interval", 20) or 20
+    step(f"Auto-Recovery Watchdog (check every {interval}s, Ctrl+C to stop)")
+    sep()
+    fails = recoveries = checks = 0
+    try:
+        while True:
+            checks += 1
+            ts = datetime.now().strftime("%H:%M:%S")
+            if is_connected(sess):
+                fails = 0
+                state = colorize("healthy", C.GREEN)
+            else:
+                fails += 1
+                if fails == 2:
+                    sess.api_post(EP["data_switch"], {"dataswitch": "0"})
+                    time.sleep(2)
+                    sess.api_post(EP["data_switch"], {"dataswitch": "1"})
+                    recoveries += 1
+                    state = colorize("reconnecting", C.YELLOW, C.BOLD)
+                elif fails >= 5:
+                    sess.reboot()
+                    recoveries += 1
+                    fails = 0
+                    state = colorize("REBOOTING", C.RED, C.BOLD)
+                else:
+                    state = colorize(f"down x{fails}", C.RED)
+            print(f"\r  {C.DIM}[{ts}] #{checks:>4}{C.RESET}  "
+                  f"recoveries:{colorize(str(recoveries), C.YELLOW if recoveries else C.DIM)}  "
+                  f"{state}     ", end="", flush=True)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()
+        ok(f"Recovery watchdog stopped — {recoveries} recovery action(s).")
+    sep()
+
+
+def cmd_auto_antenna(sess: H155Session, args):
+    """[76] Periodically A/B test antennas and keep the strongest."""
+    interval = getattr(args, "interval", 300) or 300
+    step(f"Auto-Antenna Optimiser (re-test every {interval}s, Ctrl+C to stop)")
+    sep()
+    cycles = 0
+    try:
+        while True:
+            cycles += 1
+            best_code, best_rsrp, best_label = None, -999, ""
+            for code, (label, col) in ANTENNA_MODES.items():
+                if code == "3":
+                    continue
+                sess._xml_post(ANTENNA_SET_EP,
+                               '<?xml version="1.0" encoding="UTF-8"?><request>'
+                               f"<antenna_type>{code}</antenna_type></request>")
+                time.sleep(5)
+                rsrp, _ = avg_signal(sess, samples=3, delay=1)
+                if rsrp is not None and rsrp > best_rsrp:
+                    best_code, best_rsrp, best_label = code, rsrp, label
+            if best_code is not None:
+                sess._xml_post(ANTENNA_SET_EP,
+                               '<?xml version="1.0" encoding="UTF-8"?><request>'
+                               f"<antenna_type>{best_code}</antenna_type></request>")
+                ok(f"[cycle {cycles}] Selected {colorize(best_label, C.GOLD, C.BOLD)} "
+                   f"(RSRP {best_rsrp:.1f} dBm)")
+            else:
+                warn(f"[cycle {cycles}] Antenna API unavailable — skipping.")
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()
+        ok(f"Auto-antenna stopped after {cycles} optimisation cycle(s).")
+    sep()
+
+
+def cmd_auto_band_rotate(sess: H155Session, args):
+    """[77] Rotate through candidate bands, measure each, keep the best."""
+    step("Auto Band Rotation")
+    sep()
+    bands = visible_bands(sess) or sorted(BAND_DB.keys())
+    info(f"Rotating through: {colorize(', '.join('B'+str(b) for b in bands), C.CYAN)}")
+    scores = {}
+    for b in bands:
+        print(f"\n  {C.MAGENTA}▶{C.RESET}  {colorize(band_label(b), C.GOLD)}")
+        if not lock_bands(sess, [b]):
+            warn("  lock failed — skip")
+            continue
+        wait_reconnect(8)
+        rsrp, sinr = avg_signal(sess, samples=3, delay=1)
+        if rsrp is None:
+            warn("  no signal")
+            continue
+        scores[b] = rsrp + (sinr or 0)
+        bar = signal_bar(int(rsrp))
+        print(f"  {bar}  RSRP {colorize(f'{rsrp:.1f}', C.CYAN)}  SINR {colorize(f'{sinr:.1f}' if sinr is not None else '?', C.CYAN)}")
+    if not scores:
+        err("No band produced a usable signal.")
+        return
+    best = max(scores, key=scores.get)
+    sep()
+    ok(f"Best band: {colorize(band_label(best), C.LIME, C.BOLD)}")
+    if lock_bands(sess, [best]):
+        ok(colorize(f"Locked {band_label(best)}.", C.LIME + C.BOLD))
+    sep()
+
+
+def cmd_smart_schedule(sess: H155Session, args):
+    """[78] Time-based profiles: stability band at night, CA speed by day."""
+    step("Smart Time-Based Scheduler")
+    info("Applies a 'day' profile and a 'night' profile automatically.")
+    sep()
+    day_raw = ask(f"  {C.YELLOW}DAY bands (speed/CA), e.g. '3 1 7' [auto-CA]: {C.RESET}")
+    night_raw = ask(f"  {C.YELLOW}NIGHT bands (stability), e.g. '20 28' [low-band]: {C.RESET}")
+    day_h = ask(f"  {C.YELLOW}Day starts at hour (0-23) [7]: {C.RESET}") or "7"
+    night_h = ask(f"  {C.YELLOW}Night starts at hour (0-23) [23]: {C.RESET}") or "23"
+    try:
+        day_start, night_start = int(day_h), int(night_h)
+    except ValueError:
+        err("Invalid hour.")
+        return
+    day_bands = [int(x) for x in (day_raw or "").split() if x.isdigit()] or visible_bands(sess)[:2]
+    night_bands = [int(x) for x in (night_raw or "").split() if x.isdigit()] or [b for b in (28, 20, 8) if b in visible_bands(sess)][:1] or [20]
+    interval = getattr(args, "interval", 60) or 60
+    info(f"DAY ({day_start}:00+): {colorize('+'.join('B'+str(b) for b in day_bands), C.GOLD)}")
+    info(f"NIGHT ({night_start}:00+): {colorize('+'.join('B'+str(b) for b in night_bands), C.CYAN)}")
+    info("Ctrl+C to stop.")
+    sep()
+    current = None
+    try:
+        while True:
+            h = datetime.now().hour
+            is_day = day_start <= h < night_start
+            want = "day" if is_day else "night"
+            if want != current:
+                lock_bands(sess, day_bands if is_day else night_bands)
+                current = want
+                ts = datetime.now().strftime("%H:%M:%S")
+                ok(f"[{ts}] Applied {colorize(want.upper(), C.GOLD, C.BOLD)} profile.")
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()
+        ok("Scheduler stopped.")
+    sep()
+
+
+def cmd_keepalive(sess: H155Session, args):
+    """[79] Keep-alive pinger that prevents idle drops and auto-reconnects."""
+    interval = getattr(args, "interval", 30) or 30
+    host = getattr(args, "target", None) or "8.8.8.8"
+    step(f"Connection Keep-Alive (ping {host} every {interval}s, Ctrl+C to stop)")
+    sep()
+    pings = reconnects = 0
+    try:
+        while True:
+            pings += 1
+            lat = measure_latency_ms(host, count=2)
+            ts = datetime.now().strftime("%H:%M:%S")
+            if lat is None:
+                if not is_connected(sess):
+                    sess.api_post(EP["data_switch"], {"dataswitch": "0"})
+                    time.sleep(2)
+                    sess.api_post(EP["data_switch"], {"dataswitch": "1"})
+                    reconnects += 1
+                state = colorize("no reply → reconnect", C.RED, C.BOLD)
+            else:
+                state = colorize(f"{lat:.0f} ms", C.GREEN)
+            print(f"\r  {C.DIM}[{ts}] #{pings:>4}{C.RESET}  {state:<28}  "
+                  f"reconnects:{colorize(str(reconnects), C.YELLOW if reconnects else C.DIM)}   ",
+                  end="", flush=True)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()
+        ok(f"Keep-alive stopped — {pings} probes, {reconnects} reconnect(s).")
+    sep()
+
+
+def cmd_scheduled_reboot(sess: H155Session, args):
+    """[80] Schedule a reboot (one-off at HH:MM, or after a delay)."""
+    step("Scheduled Reboot")
+    sep()
+    when = ask(f"  {C.YELLOW}Reboot at HH:MM, or '+Nm'/'+Nh' from now: {C.RESET}")
+    if not when:
+        warn("Cancelled.")
+        return
+    target = None
+    rel = re.match(r"\+(\d+)([mh])", when.strip())
+    if rel:
+        secs = int(rel.group(1)) * (60 if rel.group(2) == "m" else 3600)
+        target = time.time() + secs
+    elif re.match(r"^\d{1,2}:\d{2}$", when.strip()):
+        hh, mm = map(int, when.strip().split(":"))
+        now = datetime.now()
+        tgt = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        ts = tgt.timestamp()
+        if ts <= time.time():
+            ts += 86400  # tomorrow
+        target = ts
+    else:
+        err("Format must be HH:MM or +Nm / +Nh.")
+        return
+    eta = datetime.fromtimestamp(target).strftime("%Y-%m-%d %H:%M:%S")
+    ok(f"Reboot scheduled for {colorize(eta, C.GOLD, C.BOLD)}. Ctrl+C to cancel.")
+    try:
+        while time.time() < target:
+            remaining = int(target - time.time())
+            hrs, rem = divmod(remaining, 3600)
+            mins, secs = divmod(rem, 60)
+            print(f"\r  {C.DIM}Time to reboot: {hrs:02d}:{mins:02d}:{secs:02d}{C.RESET}   ",
+                  end="", flush=True)
+            time.sleep(1)
+        print()
+        warn("Rebooting now...")
+        if sess.reboot():
+            ok(colorize("Reboot command sent.", C.YELLOW + C.BOLD))
+        else:
+            err("Reboot failed.")
+    except KeyboardInterrupt:
+        print()
+        warn("Scheduled reboot cancelled.")
+    sep()
+
+
+# ─────────────────────────────────────────────────────────────
+#  GROUP L — THROUGHPUT / LATENCY OPTIMISATION  (features 81-86)
+# ─────────────────────────────────────────────────────────────
+def cmd_speed_per_band(sess: H155Session, args):
+    """[81] Real download speedtest locked to each band, ranked by Mbps."""
+    step("Speed-Per-Band Ranking (real downloads)")
+    warn("Runs a real download per band — takes a few minutes.")
+    sep()
+    if not confirm(f"  {C.RED}Start? (yes/no): {C.RESET}"):
+        warn("Cancelled.")
+        return
+    bands = visible_bands(sess) or sorted(BAND_DB.keys())
+    results = []
+    for b in bands:
+        print(f"\n  {C.MAGENTA}▶{C.RESET}  {colorize(band_label(b), C.GOLD)}")
+        if not lock_bands(sess, [b]):
+            continue
+        wait_reconnect(8)
+        mbps = measure_download_mbps(8, show=True)
+        if mbps is not None:
+            results.append((b, mbps))
+            print(f"  {colorize(f'{mbps:.1f} Mbps', C.LIME, C.BOLD)}")
+    if not results:
+        err("No throughput measured.")
+        return
+    results.sort(key=lambda x: x[1], reverse=True)
+    sep()
+    for i, (b, mbps) in enumerate(results):
+        icon = f"{C.GOLD}★{C.RESET}" if i == 0 else f"{C.DIM}{i+1}.{C.RESET}"
+        print(f"  {icon} {colorize(band_label(b), C.WHITE):<22} {colorize(f'{mbps:.1f} Mbps', C.LIME, C.BOLD)}")
+    best = results[0][0]
+    if lock_bands(sess, [best]):
+        ok(colorize(f"Locked fastest band: {band_label(best)} ({results[0][1]:.1f} Mbps)", C.LIME + C.BOLD))
+    sep()
+
+
+def cmd_optimize_speed(sess: H155Session, args):
+    """[82] Full optimiser that chooses by REAL throughput (band vs best CA)."""
+    from itertools import combinations
+    step("Throughput-Driven Optimiser")
+    warn("Measures real speed for top bands and the best CA pair, then locks the winner.")
+    sep()
+    if not confirm(f"  {C.RED}Start? (yes/no): {C.RESET}"):
+        warn("Cancelled.")
+        return
+    vis = visible_bands(sess)
+    if not vis:
+        err("No bands visible.")
+        return
+    trials = [[b] for b in vis[:3]]
+    if len(vis) >= 2:
+        trials += [list(p) for p in list(combinations(sorted(vis)[:3], 2))[:2]]
+    best = None
+    for combo in trials:
+        names = "+".join("B" + str(b) for b in combo)
+        print(f"\n  {C.MAGENTA}▶{C.RESET}  {colorize(names, C.GOLD)}")
+        if not lock_bands(sess, combo):
+            continue
+        wait_reconnect(9)
+        mbps = measure_download_mbps(8, show=True)
+        if mbps is None:
+            continue
+        agg = len(active_ca_bands(sess))
+        print(f"  {colorize(f'{mbps:.1f} Mbps', C.LIME, C.BOLD)}  ({agg}CC)")
+        if best is None or mbps > best[1]:
+            best = (combo, mbps, names)
+    if not best:
+        err("No measurable throughput.")
+        return
+    sep()
+    ok(f"Fastest config: {colorize(best[2], C.LIME, C.BOLD)} @ {best[1]:.1f} Mbps")
+    if lock_bands(sess, best[0]):
+        ok(colorize("Locked the fastest configuration!", C.LIME + C.BOLD))
+    sep()
+
+
+def cmd_latency_optimize(sess: H155Session, args):
+    """[83] Pick the band with the lowest ping latency."""
+    step("Latency-Optimised Band Selection")
+    sep()
+    host = getattr(args, "target", None) or "8.8.8.8"
+    bands = visible_bands(sess) or sorted(BAND_DB.keys())
+    results = []
+    for b in bands:
+        print(f"\n  {C.MAGENTA}▶{C.RESET}  {colorize(band_label(b), C.GOLD)}")
+        if not lock_bands(sess, [b]):
+            continue
+        wait_reconnect(8)
+        lat = measure_latency_ms(host, count=5)
+        if lat is not None:
+            results.append((b, lat))
+            print(f"  latency {colorize(f'{lat:.0f} ms', C.CYAN, C.BOLD)}")
+        else:
+            warn("  no ping reply")
+    if not results:
+        err("No latency measured.")
+        return
+    results.sort(key=lambda x: x[1])
+    sep()
+    for i, (b, lat) in enumerate(results):
+        icon = f"{C.GOLD}★{C.RESET}" if i == 0 else f"{C.DIM}{i+1}.{C.RESET}"
+        print(f"  {icon} {colorize(band_label(b), C.WHITE):<22} {colorize(f'{lat:.0f} ms', C.CYAN, C.BOLD)}")
+    best = results[0][0]
+    if lock_bands(sess, [best]):
+        ok(colorize(f"Locked lowest-latency band: {band_label(best)} ({results[0][1]:.0f} ms)", C.LIME + C.BOLD))
+    sep()
+
+
+def cmd_stability_score(sess: H155Session, args):
+    """[84] Score each band by signal stability (lower jitter = better)."""
+    samples = max(6, getattr(args, "duration", 30) // 3)
+    step(f"Band Stability Scoring ({samples} samples/band)")
+    sep()
+    bands = visible_bands(sess) or sorted(BAND_DB.keys())[:5]
+    rows = []
+    for b in bands:
+        print(f"\n  {C.MAGENTA}▶{C.RESET}  {colorize(band_label(b), C.GOLD)}")
+        if not lock_bands(sess, [b]):
+            continue
+        wait_reconnect(8)
+        vals = []
+        for _ in range(samples):
+            r = sess.get_signal().get("rsrp_int")
+            if r is not None:
+                vals.append(r)
+            time.sleep(1)
+        if len(vals) < 2:
+            warn("  insufficient samples")
+            continue
+        avg = sum(vals) / len(vals)
+        jit = stdev(vals)
+        rows.append((b, avg, jit))
+        print(f"  avg {colorize(f'{avg:.1f}', C.CYAN)}  jitter {colorize(f'±{jit:.2f}', C.GOLD)}")
+    if not rows:
+        err("No data.")
+        return
+    # Rank: high avg, low jitter
+    rows.sort(key=lambda x: (x[1] - x[2] * 3), reverse=True)
+    sep()
+    for i, (b, avg, jit) in enumerate(rows):
+        icon = f"{C.GOLD}★{C.RESET}" if i == 0 else f"{C.DIM}{i+1}.{C.RESET}"
+        print(f"  {icon} {colorize(band_label(b), C.WHITE):<22} "
+              f"avg {colorize(f'{avg:.1f}', C.CYAN)}  jitter {colorize(f'±{jit:.2f}', C.GOLD)}")
+    best = rows[0][0]
+    if lock_bands(sess, [best]):
+        ok(colorize(f"Locked most stable band: {band_label(best)}", C.LIME + C.BOLD))
+    sep()
+
+
+def cmd_band_block(sess: H155Session, args):
+    """[85] Blacklist a bad band — enable all known bands except it."""
+    step("Blacklist a Band")
+    sep()
+    for b in sorted(BAND_DB):
+        print(f"    {colorize(str(b), C.CYAN, C.BOLD):>12}  {colorize(BAND_DB[b]['name'], C.WHITE)}")
+    raw = ask(f"\n  {C.YELLOW}Band number(s) to BLOCK, e.g. '40 41': {C.RESET}")
+    if not raw:
+        warn("Cancelled.")
+        return
+    blocked = {int(x) for x in raw.split() if x.isdigit()}
+    keep = [b for b in BAND_DB if b not in blocked]
+    if not keep:
+        err("That would block every band.")
+        return
+    info(f"Blocking {colorize('+'.join('B'+str(b) for b in sorted(blocked)), C.RED)}; "
+         f"keeping {len(keep)} band(s).")
+    if lock_bands(sess, keep):
+        ok(colorize("Blacklist applied — modem will avoid the blocked band(s).", C.GREEN + C.BOLD))
+    else:
+        err("Failed to apply blacklist.")
+    sep()
+
+
+def cmd_band_priority(sess: H155Session, args):
+    """[86] Set a preferred band set (modem favours the strongest among them)."""
+    step("Preferred Band Set")
+    sep()
+    raw = getattr(args, "bands", None)
+    if raw:
+        pref = [int(b) for b in raw]
+    else:
+        for b in sorted(BAND_DB):
+            print(f"    {colorize(str(b), C.CYAN, C.BOLD):>12}  {colorize(BAND_DB[b]['name'], C.WHITE)}")
+        line = ask(f"\n  {C.YELLOW}Preferred bands in priority order, e.g. '3 1 7 20': {C.RESET}")
+        if not line:
+            warn("Cancelled.")
+            return
+        pref = [int(x) for x in line.split() if x.isdigit()]
+    if not pref:
+        err("No bands given.")
+        return
+    info(f"Preferring: {colorize(' > '.join('B'+str(b) for b in pref), C.GOLD)}")
+    if lock_bands(sess, pref):
+        ok(colorize(f"Locked to preferred set ({len(pref)} bands).", C.GREEN + C.BOLD))
+        info("The modem will camp on the strongest band within this set (and aggregate if able).")
+    else:
+        err("Failed to apply preference.")
+    sep()
+
+
+# ─────────────────────────────────────────────────────────────
+#  GROUP M — ANALYTICS & REPORTING  (features 87-92)
+# ─────────────────────────────────────────────────────────────
+def cmd_signal_heatmap(sess: H155Session, args):
+    """[87] Hour-of-day RSRP heatmap from a CSV signal log."""
+    import glob
+    import csv
+    step("Time-of-Day Signal Heatmap")
+    sep()
+    path = getattr(args, "file", None)
+    if not path:
+        logs = sorted(glob.glob("signal_log_*.csv"))
+        if not logs:
+            warn("No signal_log_*.csv found. Run 'log' first to collect data.")
+            sep()
+            return
+        path = logs[-1]
+    info(f"Reading {colorize(path, C.CYAN)}")
+    buckets = {h: [] for h in range(24)}
+    try:
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                try:
+                    h = datetime.strptime(row["timestamp"], "%Y-%m-%d %H:%M:%S").hour
+                    rsrp = int(re.sub(r"[^-\d]", "", row.get("rsrp", "")))
+                    buckets[h].append(rsrp)
+                except (ValueError, KeyError):
+                    continue
+    except OSError as e:
+        err(f"Cannot read file: {e}")
+        return
+    glyphs = " ░▒▓█"
+    print(f"\n  {C.GOLD}{C.BOLD}  Hour   Avg RSRP   Heat{C.RESET}")
+    for h in range(24):
+        vals = buckets[h]
+        if not vals:
+            continue
+        avg = sum(vals) / len(vals)
+        _, col = grade_rsrp(int(avg))
+        frac = max(0.0, min(1.0, (avg + 120) / 60))  # -120..-60 → 0..1
+        g = glyphs[min(len(glyphs) - 1, int(frac * (len(glyphs) - 1)))]
+        bar = colorize(g * 20, col)
+        print(f"  {h:02d}:00   {colorize(f'{avg:7.1f}', col)}   {bar}  ({len(vals)})")
+    sep()
+
+
+def cmd_band_history(sess: H155Session, args):
+    """[88] Track how much time is spent on each band (rolling sampler)."""
+    duration = getattr(args, "duration", 60) or 60
+    interval = getattr(args, "interval", 3) or 3
+    step(f"Band Usage History — sampling {duration}s every {interval}s")
+    sep()
+    counts = {}
+    end = time.time() + duration
+    samples = 0
+    try:
+        while time.time() < end:
+            bands = active_ca_bands(sess) or [0]
+            key = "+".join("B" + str(b) for b in bands) if bands != [0] else "unknown"
+            counts[key] = counts.get(key, 0) + 1
+            samples += 1
+            remaining = int(end - time.time())
+            print(f"\r  {C.DIM}sampling... {remaining}s left  current: {key}{C.RESET}   ",
+                  end="", flush=True)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        pass
+    print()
+    if not samples:
+        warn("No samples.")
+        return
+    sep()
+    print(f"  {C.GOLD}{C.BOLD}  Band/CA usage distribution:{C.RESET}")
+    for key, cnt in sorted(counts.items(), key=lambda x: x[1], reverse=True):
+        pct = cnt / samples * 100
+        bar = colorize("█" * int(pct / 5), C.LIME) + colorize("░" * (20 - int(pct / 5)), C.DIM)
+        print(f"  {colorize(key, C.CYAN):<26} [{bar}] {colorize(f'{pct:5.1f}%', C.GOLD, C.BOLD)}")
+    sep()
+
+
+def cmd_throughput_log(sess: H155Session, args):
+    """[89] Log live throughput (router rate counters) to CSV."""
+    import csv
+    duration = getattr(args, "duration", 60) or 60
+    interval = getattr(args, "interval", 3) or 3
+    fname = getattr(args, "file", None) or f"throughput_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    step(f"Throughput Logger — {duration}s every {interval}s → {colorize(fname, C.CYAN)}")
+    sep()
+    rows = []
+    end = time.time() + duration
+    try:
+        while time.time() < end:
+            mon = sess.get_monitoring()
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            dl = mon.get("dl_speed", "0")
+            ul = mon.get("ul_speed", "0")
+            rows.append({"timestamp": ts, "dl_bps": dl, "ul_bps": ul,
+                         "dl": speed_fmt(dl), "ul": speed_fmt(ul)})
+            remaining = int(end - time.time())
+            print(f"\r  {C.DIM}{ts}{C.RESET}  ↓{colorize(speed_fmt(dl), C.LIME)}  "
+                  f"↑{colorize(speed_fmt(ul), C.TEAL)}  {remaining}s left   ", end="", flush=True)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        pass
+    print()
+    if not rows:
+        warn("No data logged.")
+        return
+    try:
+        with open(fname, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=rows[0].keys())
+            w.writeheader()
+            w.writerows(rows)
+    except OSError as e:
+        err(f"Write failed: {e}")
+        return
+    peaks = [int(r["dl_bps"]) for r in rows if r["dl_bps"].isdigit()]
+    ok(f"Saved {len(rows)} rows → {colorize(fname, C.CYAN, C.BOLD)}")
+    if peaks:
+        info(f"Peak ↓ {colorize(speed_fmt(str(max(peaks))), C.LIME, C.BOLD)}")
+    sep()
+
+
+def cmd_daily_report(sess: H155Session, args):
+    """[90] Generate a Markdown daily summary report file."""
+    step("Daily Summary Report")
+    sep()
+    snap = _gather_status(sess)
+    sig = snap["signal"]
+    lat = measure_latency_ms()
+    mbps = measure_download_mbps(8)
+    fname = getattr(args, "file", None) or f"h155_report_{datetime.now().strftime('%Y%m%d')}.md"
+    lines = [
+        f"# Zain H155 Daily Report — {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "",
+        f"- **Model:** {snap['device'].get('model', 'N/A')}",
+        f"- **Software:** {snap['device'].get('software', 'N/A')}",
+        f"- **WAN IP:** {snap['device'].get('wan_ip', 'N/A')}",
+        f"- **Connection:** {'UP' if is_connected(sess) else 'DOWN'}",
+        "",
+        "## Signal",
+        f"- RSRP: {sig.get('rsrp', 'N/A')}",
+        f"- RSRQ: {sig.get('rsrq', 'N/A')}",
+        f"- SINR: {sig.get('sinr', 'N/A')}",
+        f"- Band: {sig.get('band', 'N/A')}",
+        f"- Active CA: {'+'.join('B'+str(b) for b in active_ca_bands(sess)) or 'single carrier'}",
+        "",
+        "## Performance",
+        f"- Latency: {f'{lat:.0f} ms' if lat is not None else 'N/A'}",
+        f"- Download: {f'{mbps:.1f} Mbps' if mbps is not None else 'N/A'}",
+        "",
+        f"_Generated by Zain H155 Manager v40 at {datetime.now().isoformat(timespec='seconds')}_",
+    ]
+    try:
+        with open(fname, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+    except OSError as e:
+        err(f"Write failed: {e}")
+        return
+    ok(colorize(f"Daily report written → {fname}", C.GREEN + C.BOLD))
+    sep()
+
+
+def cmd_html_report(sess: H155Session, args):
+    """[91] Export a styled HTML status report."""
+    step("HTML Status Report")
+    sep()
+    snap = _gather_status(sess)
+    sig, dev, mon = snap["signal"], snap["device"], snap["monitoring"]
+    rows = [
+        ("Model", dev.get("model", "N/A")), ("Software", dev.get("software", "N/A")),
+        ("WAN IP", dev.get("wan_ip", "N/A")), ("Connection", "UP" if is_connected(sess) else "DOWN"),
+        ("RSRP", sig.get("rsrp", "N/A")), ("RSRQ", sig.get("rsrq", "N/A")),
+        ("SINR", sig.get("sinr", "N/A")), ("Band", sig.get("band", "N/A")),
+        ("Active CA", "+".join("B" + str(b) for b in active_ca_bands(sess)) or "single"),
+        ("↓ rate", speed_fmt(mon.get("dl_speed", "0"))),
+        ("↑ rate", speed_fmt(mon.get("ul_speed", "0"))),
+    ]
+    tr = "".join(f"<tr><th>{k}</th><td>{v}</td></tr>" for k, v in rows)
+    html = (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<title>Zain H155 Report</title><style>"
+        "body{font-family:system-ui,Arial;background:#0f1115;color:#e6e6e6;padding:30px}"
+        "h1{color:#ffcc33}table{border-collapse:collapse;min-width:340px}"
+        "th,td{border:1px solid #333;padding:8px 14px;text-align:left}"
+        "th{background:#1b1f27;color:#8ad}td{background:#14171d}"
+        "footer{margin-top:18px;color:#777;font-size:12px}</style></head><body>"
+        f"<h1>Zain H155 Status</h1><table>{tr}</table>"
+        f"<footer>Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+        "by Zain H155 Manager v40</footer></body></html>"
+    )
+    fname = getattr(args, "file", None) or f"h155_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+    try:
+        with open(fname, "w", encoding="utf-8") as f:
+            f.write(html)
+    except OSError as e:
+        err(f"Write failed: {e}")
+        return
+    ok(colorize(f"HTML report written → {fname}", C.GREEN + C.BOLD))
+    info("Open it in any browser.")
+    sep()
+
+
+def cmd_profiles(sess: H155Session, args):
+    """[92] Named profile library — save/list/apply many band+CA setups."""
+    step("Profile Library")
+    sep()
+    try:
+        with open(PROFILES_FILE, "r", encoding="utf-8") as f:
+            store = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        store = {}
+    print(f"  {colorize('[l]', C.CYAN)} list   {colorize('[s]', C.CYAN)} save current   "
+          f"{colorize('[a]', C.CYAN)} apply   {colorize('[d]', C.CYAN)} delete")
+    action = ask(f"  {C.YELLOW}Action: {C.RESET}")
+    if action == "l":
+        if not store:
+            info("No saved profiles yet.")
+        for name, p in store.items():
+            bands = lte_bitmask_to_bands(p.get("lte_band", ""))
+            print(f"    {colorize(name, C.GOLD, C.BOLD):<20} "
+                  f"{colorize('+'.join('B'+str(b) for b in bands) or 'all', C.CYAN)}  "
+                  f"{colorize('(mode '+p.get('network_mode','?')+')', C.DIM)}")
+    elif action == "s":
+        name = ask(f"  {C.YELLOW}Profile name: {C.RESET}")
+        if not name:
+            warn("Cancelled.")
+            return
+        net = sess.get_net_mode() or {}
+        store[name] = {
+            "network_mode": net.get("network_mode", "00"),
+            "network_band": net.get("network_band", "3FFFFFFF"),
+            "lte_band": net.get("lte_band", "7FFFFFFFFFFFFFFF"),
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        with open(PROFILES_FILE, "w", encoding="utf-8") as f:
+            json.dump(store, f, indent=2)
+        ok(colorize(f"Saved profile '{name}'.", C.GREEN + C.BOLD))
+    elif action == "a":
+        name = ask(f"  {C.YELLOW}Profile to apply: {C.RESET}")
+        p = store.get(name)
+        if not p:
+            err("No such profile.")
+            return
+        if sess.set_net_mode(p["network_mode"], p["network_band"], p["lte_band"]):
+            bands = lte_bitmask_to_bands(p["lte_band"])
+            ok(colorize(f"Applied '{name}': {'+'.join('B'+str(b) for b in bands) or 'all bands'}", C.LIME + C.BOLD))
+        else:
+            err("Failed to apply profile.")
+    elif action == "d":
+        name = ask(f"  {C.YELLOW}Profile to delete: {C.RESET}")
+        if store.pop(name, None) is not None:
+            with open(PROFILES_FILE, "w", encoding="utf-8") as f:
+                json.dump(store, f, indent=2)
+            ok(colorize(f"Deleted '{name}'.", C.GREEN + C.BOLD))
+        else:
+            warn("No such profile.")
+    else:
+        warn("Cancelled.")
+    sep()
+
+
+# ─────────────────────────────────────────────────────────────
+#  GROUP N — ADVANCED & RESILIENCE  (features 93-98)
+# ─────────────────────────────────────────────────────────────
+def cmd_endc_optimize(sess: H155Session, args):
+    """[93] 5G NR + LTE (EN-DC / NSA) aggregation optimiser."""
+    step("5G EN-DC (NR + LTE) Optimiser")
+    sep()
+    towers = visible_towers(sess)
+    strong_lte = sorted({int(re.sub(r"[^\d]", "", t["band"]))
+                         for t in towers
+                         if re.sub(r"[^\d]", "", t["band"]) and t["rsrp_int"] >= -110})
+    if not strong_lte:
+        strong_lte = visible_bands(sess) or [3]
+    lte_mask = bands_to_lte_bitmask(strong_lte)
+    nr_mask = nr_bands_to_bitmask(sorted(NR_BAND_DB.keys()))
+    info(f"LTE anchor bands: {colorize('+'.join('B'+str(b) for b in strong_lte), C.GOLD)}")
+    info(f"Enabling all NR bands for EN-DC: {colorize('n'+', n'.join(str(b) for b in sorted(NR_BAND_DB)), C.MAGENTA)}")
+    body = {"NetworkMode": "0803", "NetworkBand": "3FFFFFFF",
+            "LTEBand": lte_mask, "NRBand": nr_mask}
+    resp = sess.api_post(EP["net_mode"], body)
+    if sess.post_ok(resp):
+        wait_reconnect(10)
+        sig = sess.get_signal()
+        ntype = network_type_name(sess.get_monitoring().get("network_type", "0"))
+        nr_active = "5G" in ntype or "NR" in str(sig.get("band", "")).upper()
+        if nr_active:
+            ok(colorize(f"EN-DC active — {ntype}", C.LIME + C.BOLD))
+        else:
+            warn(f"EN-DC requested; currently on {ntype} (no 5G coverage here, or LTE-only device).")
+    else:
+        err(explain_error(resp) or "Failed to set EN-DC mode (router may be LTE-only).")
+    sep()
+
+
+def cmd_mimo_info(sess: H155Session, args):
+    """[94] Show MIMO / multi-antenna diagnostic fields from the signal API."""
+    step("MIMO / Antenna Diagnostics")
+    sep()
+    xml = sess.api_get(EP["signal"])
+    if not xml:
+        err("No signal data.")
+        return
+    fields = [
+        ("mode", "Radio mode"), ("rsrp", "RSRP"), ("rsrq", "RSRQ"),
+        ("sinr", "SINR"), ("rssi", "RSSI"), ("cqi0", "CQI (codeword 0)"),
+        ("cqi1", "CQI (codeword 1)"), ("ulfrequency", "UL frequency"),
+        ("dlfrequency", "DL frequency"), ("txpower", "TX power (per chain)"),
+        ("earfcn", "EARFCN"), ("pci", "PCI"), ("nrrsrp", "5G NR RSRP"),
+        ("nrsinr", "5G NR SINR"), ("nrdlbandwidth", "5G NR DL bandwidth"),
+    ]
+    shown = 0
+    for tag, label in fields:
+        val = xval(xml, tag, "")
+        if val and val != "N/A":
+            print(f"  {colorize(label+':', C.DIM):<26} {colorize(val, C.CYAN, C.BOLD)}")
+            shown += 1
+    # MIMO layer hint from TX power chains
+    tx = xval(xml, "txpower", "")
+    chains = len([p for p in re.findall(r"[A-Z]+:[-\d]+", tx)]) if tx else 0
+    if chains:
+        print(f"  {colorize('TX chains (MIMO):', C.DIM):<26} {colorize(str(chains)+'x', C.GOLD, C.BOLD)}")
+    if not shown:
+        warn("Firmware did not expose extended MIMO fields.")
+    sep()
+
+
+def cmd_auto_apn_test(sess: H155Session, args):
+    """[95] Test each APN profile's real speed and keep the fastest."""
+    step("Auto APN Speed Test")
+    warn("Switches APN profiles and downloads on each — uses data.")
+    sep()
+    if not confirm(f"  {C.RED}Start? (yes/no): {C.RESET}"):
+        warn("Cancelled.")
+        return
+    xml = sess.api_get(EP["profiles"])
+    profs = re.findall(r"<Profile>(.*?)</Profile>", xml, re.DOTALL)
+    if not profs:
+        err("No APN profiles to test.")
+        return
+    original = xval(xml, "CurrentProfile", "")
+    results = []
+    for blk in profs:
+        idx = xval(blk, "Index")
+        name = xval(blk, "Name", idx)
+        print(f"\n  {C.MAGENTA}▶{C.RESET}  Profile {colorize(name, C.GOLD)}")
+        sess.api_post(EP["profiles"], {"SetDefault": idx, "Modify": 0, "Delete": 0})
+        sess.api_post(EP["data_switch"], {"dataswitch": "0"})
+        time.sleep(2)
+        sess.api_post(EP["data_switch"], {"dataswitch": "1"})
+        wait_reconnect(8)
+        mbps = measure_download_mbps(8, show=True)
+        if mbps is not None:
+            results.append((idx, name, mbps))
+            print(f"  {colorize(f'{mbps:.1f} Mbps', C.LIME, C.BOLD)}")
+    if not results:
+        err("No measurable throughput on any APN.")
+        sess.api_post(EP["profiles"], {"SetDefault": original, "Modify": 0, "Delete": 0})
+        return
+    results.sort(key=lambda x: x[2], reverse=True)
+    best = results[0]
+    sep()
+    for i, (idx, name, mbps) in enumerate(results):
+        icon = f"{C.GOLD}★{C.RESET}" if i == 0 else f"{C.DIM}{i+1}.{C.RESET}"
+        print(f"  {icon} {colorize(name, C.WHITE):<20} {colorize(f'{mbps:.1f} Mbps', C.LIME, C.BOLD)}")
+    sess.api_post(EP["profiles"], {"SetDefault": best[0], "Modify": 0, "Delete": 0})
+    ok(colorize(f"Kept fastest APN: {best[1]} ({best[2]:.1f} Mbps)", C.LIME + C.BOLD))
+    sep()
+
+
+def cmd_self_test(sess: H155Session, args):
+    """[96] Probe every read endpoint and report which the router supports."""
+    step("API Self-Test")
+    sep()
+    checks = [
+        ("Device info", EP["device_info"]), ("Signal", EP["signal"]),
+        ("Monitoring", EP["monitoring"]), ("Traffic stats", EP["traffic"]),
+        ("Monthly stats", EP["month_stat"]), ("SMS count", EP["sms_count"]),
+        ("WLAN basic", EP["wlan_basic"]), ("Host list", EP["host_list"]),
+        ("Data switch", EP["data_switch"]), ("Dial connection", EP["dial_conn"]),
+        ("APN profiles", EP["profiles"]), ("Current PLMN", EP["current_plmn"]),
+        ("PIN status", EP["pin_status"]), ("DMZ", EP["dmz"]),
+        ("Virtual servers", EP["vservers"]), ("Firewall", EP["firewall"]),
+        ("UPnP", EP["upnp"]), ("DHCP", EP["dhcp"]),
+        ("Firmware check", EP["fw_check"]), ("LED", EP["led"]),
+    ]
+    okc = 0
+    for label, ep in checks:
+        xml = sess.api_get(ep)
+        if not xml:
+            res = colorize("✘ no response", C.RED)
+        elif "<error>" in xml:
+            res = colorize(f"⚠ {explain_error(xml) or 'error'}", C.YELLOW)
+        else:
+            res = colorize("✔ OK", C.GREEN)
+            okc += 1
+        print(f"  {colorize(label, C.DIM):<22} {res}")
+    sep()
+    pct = okc / len(checks) * 100
+    col = C.LIME if pct >= 80 else (C.YELLOW if pct >= 50 else C.RED)
+    ok(f"Supported endpoints: {colorize(f'{okc}/{len(checks)} ({pct:.0f}%)', col, C.BOLD)}")
+    sep()
+
+
+def cmd_setup_wizard(sess: H155Session, args):
+    """[97] Guided first-time optimal setup wizard."""
+    step("Guided Optimal Setup Wizard")
+    sep()
+    print(f"  {C.GOLD}{C.BOLD}  This wizard will, step by step:{C.RESET}")
+    print(f"  {C.DIM}  1. Switch to LTE for a clean baseline")
+    print(f"  {C.DIM}  2. Pick the best antenna (if supported)")
+    print(f"  {C.DIM}  3. Build the strongest carrier-aggregation set")
+    print(f"  {C.DIM}  4. Verify and report the result{C.RESET}\n")
+    if not confirm(f"  {C.YELLOW}Begin wizard? (yes/no): {C.RESET}"):
+        warn("Cancelled.")
+        return
+    # 1) LTE baseline
+    print(f"\n  {C.CYAN}{C.BOLD}[1/4] LTE baseline{C.RESET}")
+    sess.set_net_mode("03", "3FFFFFFF", "7FFFFFFFFFFFFFFF")
+    time.sleep(4)
+    ok("LTE-only baseline set.")
+    # 2) Antenna
+    print(f"\n  {C.CYAN}{C.BOLD}[2/4] Antenna selection{C.RESET}")
+    best_code, best_rsrp, best_label = None, -999, ""
+    for code, (label, col) in ANTENNA_MODES.items():
+        if code == "3":
+            continue
+        sess._xml_post(ANTENNA_SET_EP,
+                       '<?xml version="1.0" encoding="UTF-8"?><request>'
+                       f"<antenna_type>{code}</antenna_type></request>")
+        time.sleep(5)
+        rsrp, _ = avg_signal(sess, samples=3, delay=1)
+        if rsrp is not None and rsrp > best_rsrp:
+            best_code, best_rsrp, best_label = code, rsrp, label
+    if best_code is not None:
+        sess._xml_post(ANTENNA_SET_EP,
+                       '<?xml version="1.0" encoding="UTF-8"?><request>'
+                       f"<antenna_type>{best_code}</antenna_type></request>")
+        ok(f"Selected antenna: {colorize(best_label, C.GOLD)} (RSRP {best_rsrp:.1f})")
+    else:
+        info("Antenna API not available — leaving as-is.")
+    # 3) Best CA
+    print(f"\n  {C.CYAN}{C.BOLD}[3/4] Carrier aggregation{C.RESET}")
+    strong = sorted({int(re.sub(r"[^\d]", "", t["band"]))
+                     for t in visible_towers(sess)
+                     if re.sub(r"[^\d]", "", t["band"]) and t["rsrp_int"] >= -112})
+    if len(strong) >= 2:
+        lock_bands(sess, strong)
+        wait_reconnect(10)
+        agg = active_ca_bands(sess)
+        ok(f"CA set: {colorize('+'.join('B'+str(b) for b in (agg or strong)), C.LIME, C.BOLD)}")
+    elif strong:
+        lock_bands(sess, strong[:1])
+        ok(f"Single strong band: {colorize(band_label(strong[0]), C.GOLD)}")
+    else:
+        info("No strong bands detected — left on all-band auto.")
+    # 4) Verify
+    print(f"\n  {C.CYAN}{C.BOLD}[4/4] Verification{C.RESET}")
+    time.sleep(4)
+    sig = sess.get_signal()
+    r_lbl, r_col = grade_rsrp(sig.get("rsrp_int"))
+    bar = signal_bar(sig.get("rsrp_int"))
+    sep()
+    print(f"  {C.LIME}{C.BOLD}  ╔══  SETUP COMPLETE  ══════════════════════════╗{C.RESET}")
+    print(f"  {C.LIME}║{C.RESET}  Signal : {bar}  {colorize(sig.get('rsrp','N/A'), r_col, C.BOLD)} ({r_lbl})")
+    print(f"  {C.LIME}║{C.RESET}  SINR   : {colorize(sig.get('sinr','N/A'), C.CYAN)}")
+    print(f"  {C.LIME}║{C.RESET}  CA     : {colorize('+'.join('B'+str(b) for b in active_ca_bands(sess)) or 'single', C.GOLD)}")
+    print(f"  {C.LIME}{C.BOLD}  ╚════════════════════════════════════════════════╝{C.RESET}")
+    sep()
+
+
+def cmd_live_dashboard(sess: H155Session, args):
+    """[98] All-in-one live dashboard (signal + CA + connection + health)."""
+    interval = getattr(args, "interval", 3) or 3
+    step(f"Live Dashboard (every {interval}s, Ctrl+C to stop)")
+    sep()
+    try:
+        while True:
+            sig = sess.get_signal()
+            mon = sess.get_monitoring()
+            agg = active_ca_bands(sess)
+            ts = datetime.now().strftime("%H:%M:%S")
+            rsrp_i = sig.get("rsrp_int")
+            sinr_i = sig.get("sinr_int")
+            r_lbl, r_col = grade_rsrp(rsrp_i)
+            s_lbl, s_col = grade_sinr(sinr_i)
+            bar = signal_bar(rsrp_i)
+            conn = mon.get("connection_status", "0") == "901"
+            ntype = network_type_name(mon.get("network_type", "0"))
+            dl = speed_fmt(mon.get("dl_speed", "0"))
+            ul = speed_fmt(mon.get("ul_speed", "0"))
+            # clear screen for a stable dashboard view
+            print("\033[2J\033[H", end="")
+            print(f"  {C.GOLD}{C.BOLD}╔═══  ZAIN H155 LIVE DASHBOARD  ═══╗{C.RESET}   {C.DIM}{ts}{C.RESET}")
+            print(f"  Connection : {colorize('UP' if conn else 'DOWN', C.GREEN if conn else C.RED, C.BOLD)}   "
+                  f"Type: {colorize(ntype, C.TEAL)}")
+            print(f"  Signal     : {bar}  RSRP {colorize(sig.get('rsrp','?'), r_col, C.BOLD)} ({r_lbl})")
+            print(f"  Quality    : SINR {colorize(sig.get('sinr','?'), s_col, C.BOLD)} ({s_lbl})  "
+                  f"RSRQ {colorize(sig.get('rsrq','?'), C.CYAN)}")
+            print(f"  Aggregation: {colorize(str(len(agg))+'CC', C.LIME if len(agg)>1 else C.DIM, C.BOLD)}  "
+                  f"{colorize('+'.join('B'+str(b) for b in agg) or '?', C.GOLD)}")
+            print(f"  Cell       : PCI {colorize(sig.get('pci','?'), C.WHITE)}  "
+                  f"EARFCN {colorize(sig.get('earfcn','?'), C.DIM)}")
+            print(f"  Throughput : ↓{colorize(dl, C.LIME)}   ↑{colorize(ul, C.TEAL)}")
+            print(f"  {C.DIM}Ctrl+C to exit{C.RESET}")
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()
+        ok("Dashboard closed.")
+    sep()
+
+
 # ─────────────────────────────────────────────────────────────
 #  MAIN CLI  –  NUMBERED INTERACTIVE MENU
 # ─────────────────────────────────────────────────────────────
@@ -3513,6 +5151,47 @@ MENU_ITEMS = [
     (56, "alert",      cmd_signal_alert,    "Alert when signal drops below threshold",    C.GOLD),
     (57, "graph",      cmd_signal_graph,    "Live RSRP ASCII graph",                      C.CYAN),
     (58, "health",     cmd_health_report,   "Health report: score + advice",              C.LIME),
+    # ── v40.2 automation & carrier-aggregation suite ───────────────────────
+    (59, "ca-combos",  cmd_ca_combos,       "Discover candidate CA band combos",          C.LIME),
+    (60, "ca-best",    cmd_ca_best,         "Benchmark 4G+4G CA pairs → lock best",       C.LIME),
+    (61, "ca-lock",    cmd_ca_lock,         "Manually lock a CA combo (e.g. 1+3)",        C.LIME),
+    (62, "ca-3cc",     cmd_ca_3cc,          "Find & lock best 4G+4G+4G (3CC) combo",      C.LIME),
+    (63, "ca-live",    cmd_ca_live,         "Live carrier-aggregation monitor",           C.LIME),
+    (64, "ca-force",   cmd_ca_force,        "Force-enable CA across strong bands",        C.LIME),
+    (65, "ca-speed",   cmd_ca_speed,        "Real speedtest per CA pair → lock fastest",  C.LIME),
+    (66, "ca-pilot",   cmd_ca_pilot,        "Auto-keep best CA active (daemon)",          C.LIME),
+    (67, "cell-lock",  cmd_cell_lock,       "Lock toward a specific tower (PCI)",         C.GOLD),
+    (68, "cell-unlock",cmd_cell_unlock,     "Release cell/tower lock",                    C.GOLD),
+    (69, "tower-best", cmd_best_tower_lock, "Scan & lock the strongest tower",            C.GOLD),
+    (70, "tower-rank", cmd_tower_rank,      "Rank towers by strength + stability",        C.GOLD),
+    (71, "pci-watch",  cmd_pci_watch,       "Live PCI / neighbour watch",                 C.GOLD),
+    (72, "earfcn-lock",cmd_earfcn_lock,     "Lock the band carrying an EARFCN",           C.GOLD),
+    (73, "autopilot",  cmd_autopilot,       "AUTO-EVERYTHING daemon (signal+CA+recover)", C.MAGENTA),
+    (74, "auto-fail",  cmd_auto_failover,   "Auto-failover to next-best band",            C.MAGENTA),
+    (75, "auto-recover",cmd_auto_recover,   "Auto reconnect/reboot on dead link",         C.MAGENTA),
+    (76, "auto-antenna",cmd_auto_antenna,   "Periodic auto antenna A/B selection",        C.MAGENTA),
+    (77, "auto-rotate",cmd_auto_band_rotate,"Rotate bands → keep best",                   C.MAGENTA),
+    (78, "schedule",   cmd_smart_schedule,  "Time-based day/night band profiles",         C.MAGENTA),
+    (79, "keepalive",  cmd_keepalive,       "Keep-alive + auto reconnect",                C.MAGENTA),
+    (80, "sched-reboot",cmd_scheduled_reboot,"Schedule a reboot (HH:MM or +Nm)",          C.MAGENTA),
+    (81, "speed-bands",cmd_speed_per_band,  "Real speedtest per band → lock fastest",     C.ORANGE),
+    (82, "opt-speed",  cmd_optimize_speed,  "Optimise by REAL throughput (band vs CA)",   C.ORANGE),
+    (83, "opt-latency",cmd_latency_optimize,"Optimise by lowest ping latency",            C.ORANGE),
+    (84, "stability",  cmd_stability_score, "Score bands by signal stability",            C.ORANGE),
+    (85, "band-block", cmd_band_block,      "Blacklist a bad band",                       C.ORANGE),
+    (86, "band-prio",  cmd_band_priority,   "Set preferred band priority set",            C.ORANGE),
+    (87, "heatmap",    cmd_signal_heatmap,  "Time-of-day signal heatmap (from log)",      C.TEAL),
+    (88, "band-hist",  cmd_band_history,    "Track % time per band/CA",                   C.TEAL),
+    (89, "tput-log",   cmd_throughput_log,  "Log live throughput to CSV",                 C.TEAL),
+    (90, "daily",      cmd_daily_report,    "Generate a daily Markdown report",           C.TEAL),
+    (91, "html",       cmd_html_report,     "Export a styled HTML status report",         C.TEAL),
+    (92, "profiles",   cmd_profiles,        "Named profile library (save/apply)",         C.TEAL),
+    (93, "endc",       cmd_endc_optimize,   "5G NR+LTE EN-DC (NSA) optimiser",            C.PINK),
+    (94, "mimo",       cmd_mimo_info,       "MIMO / multi-antenna diagnostics",           C.PINK),
+    (95, "apn-test",   cmd_auto_apn_test,   "Test APNs by speed → keep fastest",          C.PINK),
+    (96, "selftest",   cmd_self_test,       "Probe which API endpoints work",             C.PINK),
+    (97, "wizard",     cmd_setup_wizard,    "Guided optimal setup wizard",                C.PINK),
+    (98, "dashboard",  cmd_live_dashboard,  "All-in-one live dashboard",                  C.PINK),
     ( 0, "exit",      None,                "Exit",                                        C.DIM),
 ]
 
@@ -3537,6 +5216,12 @@ def show_numbered_menu():
         ("🔒  SECURITY / NAT",  [14, 42, 43, 44, 45, 46]),
         ("🩺  DIAGNOSTICS",     [47, 48, 49, 50]),
         ("💾  BACKUP / EXPORT", [51, 52, 53, 54, 55]),
+        ("🧩  CARRIER AGGREGATION", [59, 60, 61, 62, 63, 64, 65, 66]),
+        ("🗼  CELL / TOWER",    [67, 68, 69, 70, 71, 72]),
+        ("🤖  AUTO-EVERYTHING", [73, 74, 75, 76, 77, 78, 79, 80]),
+        ("🚀  SPEED / LATENCY", [81, 82, 83, 84, 85, 86]),
+        ("📈  ANALYTICS",       [87, 88, 89, 90, 91, 92]),
+        ("🧪  ADVANCED / RESILIENCE", [93, 94, 95, 96, 97, 98]),
         ("⚡  OPTIMIZER",       [15]),
         ("⚙️   SYSTEM",          [16, 0]),
     ]
