@@ -1,0 +1,9 @@
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Tool output files generated at runtime
+signal_log_*.csv
+h155_status_*.json
+h155_backup_*.json
