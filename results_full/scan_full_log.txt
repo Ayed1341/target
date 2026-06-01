@@ -17,3 +17,5 @@
 [0;35m[SKILL] DNS-01: Resolving target + ASN + wildcard check[0m
 [0;32m[+]   ehub.ejada.com → 34.111.193.103 (Unknown)[0m
 [2m      www.ejada.com → 34.8.198.205[0m
+[2m      mail.ejada.com → 88.85.226.102[0m
+[2m      smtp.ejada.com → 88.85.226.102[0m

