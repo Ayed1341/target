@@ -4131,20 +4131,107 @@ def cmd_earfcn_lock(sess: H155Session, args):
 # ─────────────────────────────────────────────────────────────
 #  GROUP K — AUTO-EVERYTHING / AUTOPILOT  (features 73-80)
 # ─────────────────────────────────────────────────────────────
+def _optimize_now(sess: H155Session, mode: str = "auto", want_5g: bool = False):
+    """One optimisation pass shared by the autopilot (initial + on-degrade).
+    Heals IP conflicts, then picks the best band/CA/tower (and 5G EN-DC if
+    requested). Returns a list of human-readable action strings."""
+    actions = []
+
+    # 1) Heal LAN IP conflicts (shorten lease → forces conflict-free renew)
+    conflicts = find_ip_conflicts(parse_hosts(sess))
+    if conflicts:
+        cur = sess.api_get(EP["dhcp"])
+        body = {
+            "DhcpIPAddress": xval(cur, "DhcpIPAddress", router_lan_ip(sess)),
+            "DhcpLanNetmask": xval(cur, "DhcpLanNetmask", "255.255.255.0"),
+            "DhcpStatus": "1",
+            "DhcpStartIPAddress": xval(cur, "DhcpStartIPAddress", "192.168.8.100"),
+            "DhcpEndIPAddress": xval(cur, "DhcpEndIPAddress", "192.168.8.200"),
+            "DhcpLeaseTime": "1800",
+            "DnsStatus": xval(cur, "DnsStatus", "1"),
+            "PrimaryDns": xval(cur, "PrimaryDns", "192.168.8.1"),
+            "SecondaryDns": xval(cur, "SecondaryDns", "192.168.8.1"),
+        }
+        if sess.post_ok(sess.api_post(EP["dhcp"], body)):
+            actions.append(f"ip-fix×{len(conflicts)}")
+
+    # 2) Band / CA / tower selection
+    towers = visible_towers(sess)
+
+    def bnum(t):
+        d = re.sub(r"[^\d]", "", t["band"])
+        return int(d) if d else 0
+
+    strong = sorted({bnum(t) for t in towers if bnum(t) and t["rsrp_int"] >= -112})
+    rsrp = sess.get_signal().get("rsrp_int")
+    use_stability = mode == "stability" or (mode == "auto" and rsrp is not None and rsrp < -105)
+
+    if use_stability and towers:
+        # Lock the strongest tower's band (prefer a low band for penetration)
+        best = max(towers, key=lambda t: t["rsrp_int"])
+        low = [b for b in strong if b in (28, 20, 8)]
+        target = low[0] if low else (bnum(best) or (strong[0] if strong else 3))
+        if lock_bands(sess, [target]):
+            actions.append(f"tower B{target}/PCI{best['pci']}")
+    elif want_5g:
+        # 5G EN-DC (NSA): LTE anchor bands + all NR bands
+        lte_mask = bands_to_lte_bitmask(strong or [3])
+        nr_mask = nr_bands_to_bitmask(sorted(NR_BAND_DB))
+        body = {"NetworkMode": "0803", "NetworkBand": "3FFFFFFF",
+                "LTEBand": lte_mask, "NRBand": nr_mask}
+        if sess.post_ok(sess.api_post(EP["net_mode"], body)):
+            actions.append("5G EN-DC")
+    elif len(strong) >= 2:
+        # Best 4G+4G carrier aggregation across the strong bands
+        if lock_bands(sess, strong):
+            actions.append("CA " + "+".join("B" + str(b) for b in strong))
+    elif strong:
+        if lock_bands(sess, strong[:1]):
+            actions.append(f"lock B{strong[0]}")
+    return actions
+
+
+# ─────────────────────────────────────────────────────────────
 def cmd_autopilot(sess: H155Session, args):
-    """[73] AUTO-EVERYTHING daemon: keeps signal, CA and connection optimal."""
+    """[73] AUTO-EVERYTHING daemon: IP-conflict heal + best CA/5G/tower +
+    connection recovery + auto re-login (and optional best-WAN-IP)."""
     interval = getattr(args, "interval", 20) or 20
     threshold = getattr(args, "threshold", -108) or -108
     best_wan = getattr(args, "best_wan", False)
+    want_5g = getattr(args, "five_g", False)
+    mode = (getattr(args, "mode", None) or "auto").lower()
+    if mode not in ("speed", "stability", "auto"):
+        mode = "auto"
+    do_init = not getattr(args, "no_init", False)
+
     step("AUTO-EVERYTHING AUTOPILOT")
-    info("Monitors connection + signal + CA. Re-optimises when degraded.")
-    if best_wan:
-        info("Best-WAN-IP enabled: will fish for a public IP when stuck on CGNAT/private.")
+    info(f"Mode: {colorize(mode, C.GOLD, C.BOLD)}  ·  5G EN-DC: "
+         f"{colorize('on' if want_5g else 'off', C.LIME if want_5g else C.DIM)}  ·  "
+         f"Best-WAN: {colorize('on' if best_wan else 'off', C.LIME if best_wan else C.DIM)}")
+    info("Heals IP conflicts · builds best CA/tower · recovers drops · auto re-login")
     info(f"Check every {interval}s · RSRP floor {threshold} dBm · Ctrl+C to stop")
     sep()
+
+    # ── INITIAL FULL OPTIMIZATION PASS ──────────────────────────────────────
+    if do_init and is_connected(sess):
+        print(f"  {C.CYAN}{C.BOLD}  [INIT] Running full optimization pass...{C.RESET}")
+        acts = _optimize_now(sess, mode, want_5g)
+        if best_wan:
+            wk = classify_wan_ip(sess.get_device_info().get("wan_ip", "N/A"))[0]
+            if wk in ("cgnat", "private", "none"):
+                newip = _cycle_wan_once(sess)
+                acts.append("wan→" + classify_wan_ip(newip)[0])
+        if acts:
+            for a in acts:
+                ok(colorize("✔ " + a, C.GREEN))
+        else:
+            info("Already optimal — nothing to change.")
+        time.sleep(3)
+        sep()
+
     bad_streak = checks = fixes = 0
     wan_streak = wan_fixes = 0
-    last_action = "—"
+    last_action = "init" if do_init else "—"
     try:
         while True:
             checks += 1
@@ -4171,22 +4258,21 @@ def cmd_autopilot(sess: H155Session, args):
             elif rsrp is not None and rsrp < threshold:
                 bad_streak += 1
                 if bad_streak >= 2:
-                    # Re-optimise: enable strong bands to (re)build CA
-                    strong = sorted({int(re.sub(r"[^\d]", "", t["band"]))
-                                     for t in visible_towers(sess)
-                                     if re.sub(r"[^\d]", "", t["band"]) and t["rsrp_int"] >= -112})
-                    if len(strong) >= 2:
-                        lock_bands(sess, strong)
-                        action = "rebuild-CA"
-                    elif strong:
-                        lock_bands(sess, strong[:1])
-                        action = "lock-strongest"
+                    # Full re-optimisation: best CA / tower / 5G for current site
+                    acts = _optimize_now(sess, mode, want_5g)
+                    action = acts[0] if acts else "re-opt"
                     bad_streak = 0
             else:
                 bad_streak = 0
 
-            # ── Best-WAN-IP: when healthy but stuck behind CGNAT/private, fish
-            #    for a public IP (bounded so it never loops forever) ──────────
+            # Periodic IP-conflict heal while healthy (every ~15 checks)
+            if connected and action is None and checks % 15 == 0:
+                if find_ip_conflicts(parse_hosts(sess)):
+                    _optimize_now(sess, mode, want_5g)
+                    action = "ip-fix"
+
+            # Best-WAN-IP: when healthy but stuck behind CGNAT/private, fish
+            # for a public IP (bounded so it never loops forever)
             if best_wan and connected and action is None:
                 if wan_kind in ("cgnat", "private", "none"):
                     wan_streak += 1
@@ -6075,6 +6161,12 @@ def main():
     parser.add_argument("--file",       default=None, help="File path for export/backup/restore")
     parser.add_argument("--best-wan",   dest="best_wan", action="store_true",
                         help="In autopilot: fish for a public WAN IP when on CGNAT/private")
+    parser.add_argument("--mode",       default="auto", choices=["speed", "stability", "auto"],
+                        help="Autopilot strategy: speed (best CA), stability (lock best tower), or auto")
+    parser.add_argument("--5g",         dest="five_g", action="store_true",
+                        help="In autopilot: enable 5G NR EN-DC aggregation")
+    parser.add_argument("--no-init",    dest="no_init", action="store_true",
+                        help="In autopilot: skip the initial full optimization pass")
     parser.add_argument("--help", "-h", action="store_true")
 
     args = parser.parse_args()
