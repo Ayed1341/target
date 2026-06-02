@@ -3879,20 +3879,24 @@ def lock_bands(sess: H155Session, bands, mode: str = "03") -> bool:
 
 def enable_endc(sess: H155Session, nr_bands=None, lte_bands=None) -> bool:
     """Enable 5G NR + LTE aggregation (EN-DC / NSA).
-    NetworkMode 0803 = LTE+NR; LTEBand = anchor 4G bands, NRBand = 5G bands.
-    nr_bands defaults to all known NR bands; lte_bands defaults to strongest
-    visible (or all LTE)."""
+
+    IMPORTANT: locking LTE-only mode ('03') disables 5G. To use NR the modem
+    must be in a mode that includes NR. We try:
+      1) full AUTO ('00') with all LTE + all NR bands  → most compatible; lets
+         the modem add the NR carrier (NSA) on its own. This also UNDOES any
+         prior LTE-only band lock that was blocking 5G.
+      2) explicit LTE+NR ('0803') as a fallback.
+    Returns True if the router accepts a mode that allows NR."""
     nr = sorted(nr_bands) if nr_bands else sorted(NR_BAND_DB.keys())
-    if lte_bands:
-        lte_mask = bands_to_lte_bitmask(sorted(lte_bands))
-    else:
-        strong, _ = _strong_bands(sess)
-        lte_mask = bands_to_lte_bitmask(strong) if strong else "7FFFFFFFFFFFFFFF"
-    body = {
-        "NetworkMode": "0803", "NetworkBand": "3FFFFFFF",
-        "LTEBand": lte_mask, "NRBand": nr_bands_to_bitmask(nr),
-    }
-    return sess.post_ok(sess.api_post(EP["net_mode"], body))
+    nr_mask = nr_bands_to_bitmask(nr)
+    lte_all = "7FFFFFFFFFFFFFFF"
+    lte_pick = bands_to_lte_bitmask(sorted(lte_bands)) if lte_bands else lte_all
+    for mode, lteb in (("00", lte_all), ("0803", lte_pick), ("0803", lte_all)):
+        body = {"NetworkMode": mode, "NetworkBand": "3FFFFFFF",
+                "LTEBand": lteb, "NRBand": nr_mask}
+        if sess.post_ok(sess.api_post(EP["net_mode"], body)):
+            return True
+    return False
 
 
 def nr_active(sess: H155Session) -> bool:

@@ -264,16 +264,25 @@ class H155App(App):
             return
 
         def work():
-            self.put("Enabling 5G NR EN-DC (n40 + n41 + n78 with 4G anchor)...")
+            self.put("Enabling 5G (auto NSA mode — also clears any LTE-only lock that blocks 5G)...")
             okk = engine.enable_endc(self.sess, nr_bands=[40, 41, 78])
-            if not okk:
-                self.put("Router rejected EN-DC (firmware may be LTE-only or band not allowed).")
+            self.put("Mode set ✔" if okk else "Router rejected the mode change.")
             engine.time.sleep(6)
-            if engine.nr_active(self.sess):
-                self.put("✔ 5G NR is ACTIVE.")
+            # NSA attaches the NR carrier only under load — push a quick download.
+            self.put("Triggering NR leg with a short download...")
+            engine.measure_download_mbps(15)
+            engine.time.sleep(2)
+            sig = self.sess.get_signal()
+            nrp = sig.get("nrrsrp_int")
+            band = str(sig.get("nrband", "N/A"))
+            attached = band not in ("N/A", "", "0") or "NR" in str(sig.get("band", "")).upper()
+            if attached:
+                self.put("✔ 5G NR AGGREGATED — band %s, RSRP %s" % (band, sig.get("nrrsrp", "?")))
+            elif nrp is not None:
+                self.put("5G cell IN RANGE (NR RSRP %s) but not aggregated yet — "
+                         "NSA adds it under heavy load. Try a big download/Speed Test." % sig.get("nrrsrp", "?"))
             else:
-                self.put("EN-DC enabled, but not attached to NR right now "
-                         "(needs 5G coverage on n40/n41/n78 at your location).")
+                self.put("No NR signal right now (no 5G coverage on n40/n41/n78 here, or SIM not 5G).")
             self.on_status()
         self.run_bg(work)
 
