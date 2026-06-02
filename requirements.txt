@@ -1,0 +1,13 @@
+# Core
+pandas>=2.0
+numpy>=1.24
+python-dotenv>=1.0
+
+# Market data
+yfinance>=0.2.40
+
+# Live trading (Alpaca paper/live)
+alpaca-py>=0.21
+
+# Alerts (Telegram). requests covers webhook/Telegram without extra SDKs.
+requests>=2.31

@@ -1,0 +1,16 @@
+# Secrets — never commit real credentials
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Data / logs
+*.log
+*.csv
+data_cache/
+.DS_Store
