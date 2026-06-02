@@ -307,6 +307,15 @@ class H155Session:
         url = self.base_url + endpoint
         try:
             r = self.session.get(url, timeout=10)
+            # Huawei rotates the CSRF token per response. Capture it so the next
+            # protected GET (signal/device/cell-info) is accepted instead of
+            # returning an error that parses to N/A.
+            new_tok = (r.headers.get("__RequestVerificationToken")
+                       or r.headers.get("__RequestVerificationTokenone"))
+            if new_tok:
+                tok = new_tok.split("#")[0]
+                self._token = tok
+                self.session.headers["__RequestVerificationToken"] = tok
             return r.text
         except requests.exceptions.ConnectionError:
             err("Connection refused – router unreachable.")
@@ -460,7 +469,7 @@ class H155Session:
                     "wan_ip":   d.get("WanIPAddress",     "N/A"),
                 }
 
-        xml = self._xml_get(self.BASE_ENDPOINTS["device_info"])
+        xml = self.api_get(self.BASE_ENDPOINTS["device_info"])
         if not xml:
             return {}
         return {
@@ -504,7 +513,7 @@ class H155Session:
                 raw["sinr_int"] = safe_int(raw["sinr"])
                 return raw
 
-        xml = self._xml_get(self.BASE_ENDPOINTS["signal"])
+        xml = self.api_get(self.BASE_ENDPOINTS["signal"])
         if not xml:
             return {}
         raw = {
@@ -547,7 +556,7 @@ class H155Session:
                     "ul_total":          d.get("TotalUpload",           "0"),
                 }
 
-        xml = self._xml_get(self.BASE_ENDPOINTS["monitoring"])
+        xml = self.api_get(self.BASE_ENDPOINTS["monitoring"])
         if not xml:
             return {}
         return {
@@ -574,7 +583,7 @@ class H155Session:
                     "lte_band":      d.get("LTEBand",     "N/A"),
                 }
 
-        xml = self._xml_get(self.BASE_ENDPOINTS["net_mode"])
+        xml = self.api_get(self.BASE_ENDPOINTS["net_mode"])
         if not xml:
             return {}
         return {
@@ -627,11 +636,11 @@ class H155Session:
                     parts.append(f"<Cell>{fields}</Cell>")
                 if parts:
                     return "<response>" + "".join(parts) + "</response>"
-        return self._xml_get(self.BASE_ENDPOINTS["cell_info"]) or ""
+        return self.api_get(self.BASE_ENDPOINTS["cell_info"]) or ""
 
     def get_plmn_list(self) -> str:
         """Trigger network scan (blocking, ~60s)."""
-        return self._xml_get(self.BASE_ENDPOINTS["plmn_list"]) or ""
+        return self.api_get(self.BASE_ENDPOINTS["plmn_list"]) or ""
 
     def reboot(self) -> bool:
         xml = '<?xml version="1.0" encoding="UTF-8"?><request><Control>1</Control></request>'
