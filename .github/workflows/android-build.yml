@@ -1,8 +1,8 @@
 name: Build Android APK
 
 # Builds an installable .apk for the Zain H155 Manager and uploads it as a
-# downloadable artifact. Trigger it manually from the Actions tab, or it runs
-# automatically when the Android app / engine changes.
+# downloadable artifact. Self-contained build on ubuntu-latest (no third-party
+# build action, so it doesn't break on stale base images).
 
 on:
   workflow_dispatch:
@@ -20,20 +20,47 @@ permissions:
 jobs:
   build-apk:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ccache git zip unzip openjdk-17-jdk \
+            autoconf libtool pkg-config zlib1g-dev libncurses-dev \
+            cmake libffi-dev libssl-dev automake
+
+      - name: Install Buildozer & Cython
+        run: |
+          python -m pip install --upgrade pip
+          pip install "cython==0.29.36" buildozer
+
       - name: Copy shared engine into the app
         run: cp zain_h155_manager.py android/engine.py
 
-      - name: Build the APK with Buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1
+      - name: Cache Buildozer SDK/NDK & build dirs
+        uses: actions/cache@v4
         with:
-          command: buildozer android debug
-          workdir: android
-          buildozer_version: stable
+          path: |
+            ~/.buildozer
+            android/.buildozer
+          key: buildozer-${{ runner.os }}-${{ hashFiles('android/buildozer.spec') }}
+          restore-keys: |
+            buildozer-${{ runner.os }}-
+
+      - name: Build the APK (debug)
+        working-directory: android
+        run: |
+          export ANDROID_ACCEPT_SDK_LICENSE=1
+          yes | buildozer -v android debug
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

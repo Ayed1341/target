@@ -23,11 +23,12 @@ fullscreen = 0
 # ── Android ──
 # Cleartext HTTP to the router (192.168.8.1) is required; the python-for-android
 # SDL2 manifest enables android:usesCleartextTraffic by default.
+# targetSdk 34 installs and runs fine on Android 14/15/16 (S24 Ultra = arm64-v8a).
 android.permissions = INTERNET,ACCESS_NETWORK_STATE,ACCESS_WIFI_STATE
 android.api = 34
 android.minapi = 24
 android.ndk_api = 24
-android.archs = arm64-v8a,armeabi-v7a
+android.archs = arm64-v8a
 android.allow_backup = True
 android.accept_sdk_license = True
 
