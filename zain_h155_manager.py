@@ -181,6 +181,8 @@ class H155Session:
         self._manual_login  = None    # (password_value, password_type) that worked
         self._reauth_count  = 0       # how many times the session was rebuilt
         self._last_login_code = ""    # error code from the most recent login attempt
+        self._last_reauth_ts = 0.0    # throttle: avoid re-login storms / lockouts
+        self._reauth_min_interval = 25.0
 
     # ── SESSION-EXPIRY DETECTION & AUTO RE-AUTH ─────────────
     # Huawei routers drop the web session after a while; subsequent calls fail
@@ -196,9 +198,17 @@ class H155Session:
         return any(mark in s for mark in cls._SESSION_ERR_MARKERS)
 
     def _reauth(self) -> bool:
-        """Rebuild the router session using the remembered credentials."""
+        """Rebuild the router session using the remembered credentials.
+        Throttled so a burst of failing reads (e.g. when the router briefly
+        blips) can't trigger a login storm that re-locks the device."""
         if not self._password:
             return False
+        now = time.monotonic()
+        if now - self._last_reauth_ts < self._reauth_min_interval:
+            return False   # too soon since last attempt — skip, don't hammer
+        self._last_reauth_ts = now
+        if self._last_login_code in ("108007", "108003", "125002"):
+            return False   # router locked — never hammer it
         self._reauth_count += 1
         # Preferred: rebuild the huawei-lte-api connection (handles SCRAM).
         if HUAWEI_LIB:
@@ -6524,16 +6534,28 @@ def router_lan_ip(sess: H155Session) -> str:
 
 
 def parse_hosts(sess: H155Session):
-    """Connected clients as dicts: ip, mac, name, active."""
+    """Connected clients as dicts: ip, mac, name, active, via (Wi-Fi/Ethernet)."""
     xml = sess.api_get(EP["host_list"])
     out = []
     for h in re.finditer(r"<Host>(.*?)</Host>", xml, re.DOTALL):
         b = h.group(1)
+        ip = xval(b, "IpAddress", "").split(";")[0].strip()   # drop appended IPv6
+        ssid = xval(b, "AssociatedSsid", "")
+        l2 = xval(b, "Layer2Interface", "")
+        # Huawei marks Wi-Fi clients with an SSID / wlan interface; LAN ports
+        # report no SSID and an "LAN"/"eth" interface.
+        if ssid and ssid != "N/A":
+            via = "Wi-Fi"
+        elif "lan" in l2.lower() or "eth" in l2.lower():
+            via = "Ethernet"
+        else:
+            via = "Ethernet" if not ssid else "Wi-Fi"
         out.append({
-            "ip":   xval(b, "IpAddress", ""),
+            "ip":   ip,
             "mac":  xval(b, "MacAddress", "").upper(),
             "name": xval(b, "HostName", "?"),
             "active": xval(b, "Active", "1") == "1",
+            "via":  via,
         })
     return [d for d in out if d["ip"]]
 

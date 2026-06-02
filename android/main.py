@@ -364,11 +364,13 @@ class H155App(App):
             if not hosts:
                 self.put("No connected devices reported by the router.")
                 return
-            self.put("── CONNECTED DEVICES (%d) ──" % len(hosts))
+            eth = sum(1 for h in hosts if h.get("via") == "Ethernet")
+            wifi = len(hosts) - eth
+            self.put("── CONNECTED DEVICES (%d: %d Ethernet, %d Wi-Fi) ──" % (len(hosts), eth, wifi))
             for h in hosts:
-                tag = "" if h.get("active") else "  (idle)"
-                self.put("%-15s  %s  %s%s" % (h.get("ip", "?"), h.get("mac", "?"),
-                                              h.get("name", "?"), tag))
+                tag = "" if h.get("active") else " (idle)"
+                self.put("[%s] %-15s %s  %s%s" % (h.get("via", "?")[:4], h.get("ip", "?"),
+                                                  h.get("mac", "?"), h.get("name", "?"), tag))
         self.run_bg(work)
 
     def on_reconnect(self, *_):
