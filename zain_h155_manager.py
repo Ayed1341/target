@@ -179,6 +179,7 @@ class H155Session:
         self._password      = None    # remembered so we can re-login on expiry
         self._manual_login  = None    # (password_value, password_type) that worked
         self._reauth_count  = 0       # how many times the session was rebuilt
+        self._last_login_code = ""    # error code from the most recent login attempt
 
     # ── SESSION-EXPIRY DETECTION & AUTO RE-AUTH ─────────────
     # Huawei routers drop the web session after a while; subsequent calls fail
@@ -328,7 +329,8 @@ class H155Session:
                 self._token = tok.split("#")[0]
                 self.session.headers["__RequestVerificationToken"] = self._token
             return True
-        warn(f"Token login rejected (code {self._parse_xml_val(r.text, 'code', '?')})")
+        self._last_login_code = self._parse_xml_val(r.text, "code", "?")
+        warn(f"Token login rejected (code {self._last_login_code})")
         return False
 
     # ── SCRAM-SHA-256 LOGIN (modern H155/H115 firmware) ─────
@@ -411,7 +413,10 @@ class H155Session:
                     self.session.headers["__RequestVerificationToken"] = self._token
                 info(f"SCRAM login OK (variant: {variant})")
                 return True
-            last_code = self._parse_xml_val(r2.text, "code", "?")
+            last_code = self._parse_xml_val(r2.text, "code", last_code)
+            if last_code in ("108007", "108003"):
+                break   # locked / already-in — stop hammering
+        self._last_login_code = last_code
         warn(f"SCRAM login rejected (code {last_code})")
         return False
 
@@ -515,12 +520,24 @@ class H155Session:
                 ok("Stale session cleared, fresh token acquired")
 
         # ── Standard HiLink token login (username + token mixed SHA256) ──
+        # This is THE correct Huawei web-UI algorithm. We try it once; if the
+        # router reports a lockout we STOP immediately (firing more attempts
+        # only extends the "try again in N minutes" lockout).
         info("Trying token-based SHA256 login...")
         if self._login_token(password):
             ok(colorize("Authenticated via token SHA256 login!", C.GREEN + C.BOLD))
             self.authenticated = True
             self._manual_login = ("__token__", "")
             return True
+        if self._last_login_code == "108007":
+            err("Router is temporarily LOCKED (too many attempts, code 108007).")
+            warn("Wait ~5 minutes WITHOUT tapping Connect, then try the correct admin password.")
+            return False
+        if self._last_login_code == "108006":
+            err("Password rejected (code 108006 = wrong admin password).")
+            warn("Use the Web-UI/Admin password from http://192.168.8.1 (often ≠ Wi-Fi key).")
+            warn("Avoid repeated tries — the router locks after a few wrong attempts.")
+            return False
         # ── SCRAM challenge-response (alternative modern scheme) ──
         info("Trying SCRAM challenge-response login...")
         if self._scram_login(password):
@@ -528,7 +545,10 @@ class H155Session:
             self.authenticated = True
             self._manual_login = ("__scram__", "")
             return True
-        warn("Modern logins failed – trying legacy password variants...")
+        if self._last_login_code in ("108007", "108003"):
+            err("Router is temporarily LOCKED (code %s). Wait ~5 min before retrying." % self._last_login_code)
+            return False
+        warn("Modern logins failed – trying ONE legacy variant (avoiding lockout)...")
         self._get_token()
 
         # Build password variants for older firmware
@@ -573,8 +593,15 @@ class H155Session:
             last_resp = resp
             if resp:
                 code = self._parse_xml_val(resp, "code")
-                if code == "125002":
-                    err("Account locked! Too many failed attempts.")
+                # Stop immediately on lockout / wrong-password so we don't keep
+                # firing attempts and extend the router's lockout timer.
+                if code in ("125002", "108007", "108003"):
+                    err("Router LOCKED (code %s) — wait ~5 min, don't retry." % code)
+                    self._last_login_code = code
+                    return False
+                if code == "108006":
+                    err("Wrong admin password (code 108006). Verify it at http://192.168.8.1.")
+                    self._last_login_code = code
                     return False
 
         err("Authentication failed – all methods exhausted.")
