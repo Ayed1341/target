@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -85,6 +87,7 @@ jobs:
 
       - name: Commit the built APK into the branch
         run: |
+          set -e
           mkdir -p apk
           cp android/bin/*.apk apk/zain-h155-manager.apk
           git config user.name "github-actions[bot]"
@@ -92,4 +95,13 @@ jobs:
           git add -f apk/zain-h155-manager.apk
           # [skip ci] keeps this commit from re-triggering the build
           git commit -m "Add built APK (arm64) for S24 Ultra [skip ci]" || { echo "no change"; exit 0; }
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          # Resilient push: rebase onto any newer branch tip and retry a few times
+          for i in 1 2 3 4 5; do
+            git fetch origin "${GITHUB_REF_NAME}"
+            git rebase "origin/${GITHUB_REF_NAME}" || git rebase --abort || true
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              echo "pushed APK to branch"; exit 0
+            fi
+            echo "push rejected, retrying ($i)..."; sleep $((i * 3))
+          done
+          echo "::warning::could not push APK to branch after retries"
