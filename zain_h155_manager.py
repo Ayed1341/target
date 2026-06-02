@@ -297,71 +297,83 @@ class H155Session:
     # huawei-lte-api library uses). Implemented natively here so it works in the
     # APK without that dependency.
     @staticmethod
-    def _scram_client_proof(client_nonce, server_nonce, password, salt, iterations):
+    def _scram_client_proof(client_nonce, server_nonce, password, salt, iterations, variant):
         import hmac
         salt_bytes = bytes.fromhex(salt)
         msg = ("%s,%s,%s" % (client_nonce, server_nonce, server_nonce)).encode("utf-8")
         salted = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt_bytes, iterations)
-        # NOTE: Huawei's quirky argument order — key is the literal label/message.
-        client_key = hmac.new(b"Client Key", salted, hashlib.sha256).digest()
-        stored_key = hashlib.sha256(client_key).digest()
-        signature = hmac.new(msg, stored_key, hashlib.sha256).digest()
+        if variant == "rfc":
+            # RFC 5802 argument order: HMAC(key=secret, msg=label)
+            client_key = hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+            stored_key = hashlib.sha256(client_key).digest()
+            signature = hmac.new(stored_key, msg, hashlib.sha256).digest()
+        else:
+            # Huawei web-UI reversed order: HMAC(key=label, msg=secret)
+            client_key = hmac.new(b"Client Key", salted, hashlib.sha256).digest()
+            stored_key = hashlib.sha256(client_key).digest()
+            signature = hmac.new(msg, stored_key, hashlib.sha256).digest()
         return bytes(a ^ b for a, b in zip(client_key, signature)).hex()
 
     def _scram_login(self, password, username="admin") -> bool:
+        """SCRAM-SHA-256 login. Tries both the RFC-5802 and the Huawei-reversed
+        HMAC orderings (firmware varies) — whichever the router accepts wins."""
         import secrets
-        if not self._get_token():
-            return False
-        client_nonce = secrets.token_hex(32)
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "__RequestVerificationToken": self._token or "",
-            "X-Requested-With": "XMLHttpRequest",
-        }
-        ch_body = (
-            '<?xml version="1.0" encoding="UTF-8"?><request>'
-            f"<username>{username}</username>"
-            f"<firstnonce>{client_nonce}</firstnonce>"
-            "<mode>1</mode></request>"
-        )
-        try:
-            r1 = self.session.post(self.base_url + "/api/user/challenge_login",
-                                   data=ch_body, headers=headers, timeout=10)
-        except Exception as e:
-            warn(f"SCRAM challenge failed: {e}")
-            return False
-        salt = self._parse_xml_val(r1.text, "salt", "")
-        server_nonce = self._parse_xml_val(r1.text, "servernonce", "")
-        iters = self._parse_xml_val(r1.text, "iterations", "")
-        if not (salt and server_nonce and iters.isdigit()):
-            return False
-        new_tok = (r1.headers.get("__RequestVerificationToken")
-                   or r1.headers.get("__RequestVerificationTokenone"))
-        if new_tok:
-            self._token = new_tok.split("#")[0]
-            headers["__RequestVerificationToken"] = self._token
-        proof = self._scram_client_proof(client_nonce, server_nonce, password, salt, int(iters))
-        auth_body = (
-            '<?xml version="1.0" encoding="UTF-8"?><request>'
-            f"<clientproof>{proof}</clientproof>"
-            f"<finalnonce>{server_nonce}</finalnonce></request>"
-        )
-        try:
-            r2 = self.session.post(self.base_url + "/api/user/authentication_login",
-                                   data=auth_body, headers=headers, timeout=10)
-        except Exception as e:
-            warn(f"SCRAM auth failed: {e}")
-            return False
-        if "<error>" in r2.text or "<response" not in r2.text:
-            code = self._parse_xml_val(r2.text, "code", "?")
-            warn(f"SCRAM login rejected (code {code})")
-            return False
-        tok2 = (r2.headers.get("__RequestVerificationTokenone")
-                or r2.headers.get("__RequestVerificationToken"))
-        if tok2:
-            self._token = tok2.split("#")[0]
-            self.session.headers["__RequestVerificationToken"] = self._token
-        return True
+        last_code = "?"
+        for variant in ("rfc", "huawei"):
+            if not self._get_token():
+                return False
+            client_nonce = secrets.token_hex(32)
+            headers = {
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "__RequestVerificationToken": self._token or "",
+                "X-Requested-With": "XMLHttpRequest",
+            }
+            ch_body = (
+                '<?xml version="1.0" encoding="UTF-8"?><request>'
+                f"<username>{username}</username>"
+                f"<firstnonce>{client_nonce}</firstnonce>"
+                "<mode>1</mode></request>"
+            )
+            try:
+                r1 = self.session.post(self.base_url + "/api/user/challenge_login",
+                                       data=ch_body, headers=headers, timeout=10)
+            except Exception as e:
+                warn(f"SCRAM challenge failed: {e}")
+                return False
+            salt = self._parse_xml_val(r1.text, "salt", "")
+            server_nonce = self._parse_xml_val(r1.text, "servernonce", "")
+            iters = self._parse_xml_val(r1.text, "iterations", "")
+            if not (salt and server_nonce and iters.isdigit()):
+                continue
+            new_tok = (r1.headers.get("__RequestVerificationToken")
+                       or r1.headers.get("__RequestVerificationTokenone"))
+            if new_tok:
+                self._token = new_tok.split("#")[0]
+                headers["__RequestVerificationToken"] = self._token
+            proof = self._scram_client_proof(client_nonce, server_nonce, password,
+                                             salt, int(iters), variant)
+            auth_body = (
+                '<?xml version="1.0" encoding="UTF-8"?><request>'
+                f"<clientproof>{proof}</clientproof>"
+                f"<finalnonce>{server_nonce}</finalnonce></request>"
+            )
+            try:
+                r2 = self.session.post(self.base_url + "/api/user/authentication_login",
+                                       data=auth_body, headers=headers, timeout=10)
+            except Exception as e:
+                warn(f"SCRAM auth failed: {e}")
+                return False
+            if "<error>" not in r2.text and "<response" in r2.text:
+                tok2 = (r2.headers.get("__RequestVerificationTokenone")
+                        or r2.headers.get("__RequestVerificationToken"))
+                if tok2:
+                    self._token = tok2.split("#")[0]
+                    self.session.headers["__RequestVerificationToken"] = self._token
+                info(f"SCRAM login OK (variant: {variant})")
+                return True
+            last_code = self._parse_xml_val(r2.text, "code", "?")
+        warn(f"SCRAM login rejected (code {last_code})")
+        return False
 
     def _xml_post(self, endpoint: str, xml_body: str) -> Optional[str]:
         """POST XML to router endpoint, auto-refresh token on 401/403."""
