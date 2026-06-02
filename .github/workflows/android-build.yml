@@ -15,7 +15,7 @@ on:
       - '.github/workflows/android-build.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-apk:
@@ -71,3 +71,14 @@ jobs:
           name: h155-manager-apk
           path: android/bin/*.apk
           if-no-files-found: error
+
+      - name: Publish APK to a GitHub Release (permanent download link)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-latest
+          name: Zain H155 Manager — Android APK (latest)
+          body: |
+            Installable debug APK for the Zain H155 Manager (arm64-v8a, Android 14/15/16).
+            Download the .apk below, copy to your phone, allow "install unknown apps", install.
+          files: android/bin/*.apk
+          fail_on_unmatched_files: true
