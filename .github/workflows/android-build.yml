@@ -82,3 +82,14 @@ jobs:
             Download the .apk below, copy to your phone, allow "install unknown apps", install.
           files: android/bin/*.apk
           fail_on_unmatched_files: true
+
+      - name: Commit the built APK into the branch
+        run: |
+          mkdir -p apk
+          cp android/bin/*.apk apk/zain-h155-manager.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f apk/zain-h155-manager.apk
+          # [skip ci] keeps this commit from re-triggering the build
+          git commit -m "Add built APK (arm64) for S24 Ultra [skip ci]" || { echo "no change"; exit 0; }
+          git push origin "HEAD:${GITHUB_REF_NAME}"
