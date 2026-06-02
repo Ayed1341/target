@@ -12,6 +12,7 @@ import json
 import re
 import sys
 import time
+import html
 import hashlib
 import base64
 import argparse
@@ -463,7 +464,7 @@ class H155Session:
 
     def _parse_xml_val(self, xml: str, tag: str, default="N/A") -> str:
         m = re.search(rf"<{tag}>(.*?)</{tag}>", xml, re.DOTALL)
-        return m.group(1).strip() if m else default
+        return html.unescape(m.group(1).strip()) if m else default
 
     # ── AUTHENTICATION ──────────────────────────────────────
     def connect(self, password: str) -> bool:
@@ -1065,7 +1066,7 @@ def confirm(prompt_text: str) -> bool:
 def xval(xml: str, tag: str, default: str = "N/A") -> str:
     """Extract a single XML tag value from a response string."""
     m = re.search(rf"<{tag}>(.*?)</{tag}>", xml or "", re.DOTALL)
-    return m.group(1).strip() if m else default
+    return html.unescape(m.group(1).strip()) if m else default
 
 def xml_error_code(xml: str) -> Optional[str]:
     """Return the <code> from an <error> response, or None if not an error."""
