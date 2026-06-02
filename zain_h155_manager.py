@@ -211,12 +211,12 @@ class H155Session:
             except Exception:
                 self._hw_conn = None
                 self._hw_client = None
-        # Manual re-login: SCRAM first (modern firmware), then legacy variants.
-        if self._manual_login and self._manual_login[0] == "__scram__":
-            if self._scram_login(self._password):
-                self.authenticated = True
-                return True
-        elif self._scram_login(self._password):
+        # Manual re-login: token login first (modern), then SCRAM, then legacy.
+        if self._login_token(self._password):
+            self.authenticated = True
+            self._manual_login = ("__token__", "")
+            return True
+        if self._scram_login(self._password):
             self.authenticated = True
             self._manual_login = ("__scram__", "")
             return True
@@ -289,6 +289,46 @@ class H155Session:
                 return True
         except Exception as e:
             err(f"Token fetch failed: {e}")
+        return False
+
+    # ── STANDARD HiLink TOKEN LOGIN (password_type 4) ───────
+    # The real algorithm used by Huawei's web UI / huawei-lte-api:
+    #   pw = base64( SHA256hex( username + base64(SHA256hex(password)) + token ) )
+    # The username + CSRF-token mixing is what the legacy variants were missing
+    # (causing 108006/125003). Pure hashlib/base64 — no crypto dependency.
+    def _login_token(self, password, username="admin") -> bool:
+        if not self._get_token():
+            return False
+        token = self._token or ""
+        inner = base64.b64encode(
+            hashlib.sha256(password.encode()).hexdigest().encode()).decode()
+        outer = hashlib.sha256((username + inner + token).encode()).hexdigest()
+        pw_field = base64.b64encode(outer.encode()).decode()
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?><request>'
+            f"<Username>{username}</Username>"
+            f"<Password>{pw_field}</Password>"
+            "<password_type>4</password_type></request>"
+        )
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "__RequestVerificationToken": token,
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        try:
+            r = self.session.post(self.base_url + self.BASE_ENDPOINTS["login"],
+                                  data=body, headers=headers, timeout=10)
+        except Exception as e:
+            warn(f"Token login failed: {e}")
+            return False
+        if "<response>OK</response>" in r.text:
+            tok = (r.headers.get("__RequestVerificationTokenone")
+                   or r.headers.get("__RequestVerificationToken"))
+            if tok:
+                self._token = tok.split("#")[0]
+                self.session.headers["__RequestVerificationToken"] = self._token
+            return True
+        warn(f"Token login rejected (code {self._parse_xml_val(r.text, 'code', '?')})")
         return False
 
     # ── SCRAM-SHA-256 LOGIN (modern H155/H115 firmware) ─────
@@ -474,14 +514,21 @@ class H155Session:
                 self._get_token()
                 ok("Stale session cleared, fresh token acquired")
 
-        # ── Modern firmware: SCRAM challenge-response (fixes 125003) ──
+        # ── Standard HiLink token login (username + token mixed SHA256) ──
+        info("Trying token-based SHA256 login...")
+        if self._login_token(password):
+            ok(colorize("Authenticated via token SHA256 login!", C.GREEN + C.BOLD))
+            self.authenticated = True
+            self._manual_login = ("__token__", "")
+            return True
+        # ── SCRAM challenge-response (alternative modern scheme) ──
         info("Trying SCRAM challenge-response login...")
         if self._scram_login(password):
             ok(colorize("Authenticated via SCRAM-SHA-256!", C.GREEN + C.BOLD))
             self.authenticated = True
             self._manual_login = ("__scram__", "")
             return True
-        warn("SCRAM login failed – trying legacy password variants...")
+        warn("Modern logins failed – trying legacy password variants...")
         self._get_token()
 
         # Build password variants for older firmware
