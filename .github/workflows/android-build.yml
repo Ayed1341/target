@@ -33,10 +33,13 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
+          # libltdl-dev + libtool-bin provide the libtool m4 macros
+          # (LT_SYS_SYMBOL_USCORE) that p4a's libffi autoreconf needs.
           sudo apt-get install -y --no-install-recommends \
             build-essential ccache git zip unzip openjdk-17-jdk \
-            autoconf libtool pkg-config zlib1g-dev libncurses-dev \
-            cmake libffi-dev libssl-dev automake
+            autoconf automake libtool libtool-bin libltdl-dev \
+            gettext autopoint pkg-config zlib1g-dev libncurses-dev \
+            cmake libffi-dev libssl-dev
 
       - name: Install Buildozer & Cython
         run: |
