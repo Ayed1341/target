@@ -184,6 +184,8 @@ class H155Session:
         self._last_login_code = ""    # error code from the most recent login attempt
         self._last_reauth_ts = 0.0    # throttle: avoid re-login storms / lockouts
         self._reauth_min_interval = 25.0
+        self._writes_need_encryption = False  # firmware requires encrypted SETs
+        self._enc_warned = False
 
     # ── SESSION-EXPIRY DETECTION & AUTO RE-AUTH ─────────────
     # Huawei routers drop the web session after a while; subsequent calls fail
@@ -540,6 +542,7 @@ class H155Session:
             ok(colorize("Authenticated via token SHA256 login!", C.GREEN + C.BOLD))
             self.authenticated = True
             self._manual_login = ("__token__", "")
+            self._detect_encryption()
             return True
         if self._last_login_code == "108007":
             err("Router is temporarily LOCKED (too many attempts, code 108007).")
@@ -556,6 +559,7 @@ class H155Session:
             ok(colorize("Authenticated via SCRAM-SHA-256!", C.GREEN + C.BOLD))
             self.authenticated = True
             self._manual_login = ("__scram__", "")
+            self._detect_encryption()
             return True
         if self._last_login_code in ("108007", "108003"):
             err("Router is temporarily LOCKED (code %s). Wait ~5 min before retrying." % self._last_login_code)
@@ -601,6 +605,7 @@ class H155Session:
                 ok(colorize(f"Authenticated! [{label}]", C.GREEN + C.BOLD))
                 self.authenticated = True
                 self._manual_login = (pw_val, pw_type)   # reuse on re-auth
+                self._detect_encryption()
                 return True
             last_resp = resp
             if resp:
@@ -883,6 +888,20 @@ class H155Session:
                 return None
         return obj if callable(obj) else None
 
+    def _detect_encryption(self):
+        """After login, check whether this firmware requires encrypted config
+        writes (state-login rsapadingtype != 0). If so — and we have no library
+        to do RSA+AES — flag it so we don't hammer the router with rejected SETs."""
+        if self._hw_client is not None:
+            return   # library performs encrypted transmission itself
+        try:
+            xml = self._xml_get("/api/user/state-login")
+            pad = self._parse_xml_val(xml, "rsapadingtype", "0")
+            if pad and pad not in ("0", "N/A"):
+                self._writes_need_encryption = True
+        except Exception:
+            pass
+
     def api_get(self, endpoint: str, _retry: bool = True) -> str:
         """Authenticated GET → raw XML text ('' on failure). In library mode it
         reuses the library's authenticated session; otherwise the manual one.
@@ -908,6 +927,19 @@ class H155Session:
         <key>value</key> pairs in document order) or a ready XML body string.
         Returns the raw XML response text ('' on failure). Auto re-authenticates
         and retries once if the session has expired."""
+        # Network-mode changes (5G enable / LTE band lock) are the writes this
+        # firmware rejects unless RSA+AES-encrypted. Without the library we can't
+        # encrypt them, so short-circuit ONLY that endpoint to avoid the rejected-
+        # write -> 100003 -> re-auth thrash seen on this firmware. Other writes
+        # (data toggle, DNS, etc.) are still attempted normally.
+        if (self._writes_need_encryption and self._hw_client is None
+                and "net-mode" in endpoint):
+            if not self._enc_warned:
+                self._enc_warned = True
+                warn("This firmware needs ENCRYPTED config writes (rsapadingtype=1).")
+                warn("Band/5G mode changes need the huawei-lte-api library — run via")
+                warn("Termux (TERMUX_SETUP.md). Monitoring + reads work in the app.")
+            return "<error><code>100003</code><message>encrypted-write-required</message></error>"
         if isinstance(fields, dict):
             body = ('<?xml version="1.0" encoding="UTF-8"?><request>'
                     + "".join(f"<{k}>{v}</{k}>" for k, v in fields.items())
