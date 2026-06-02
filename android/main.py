@@ -111,8 +111,9 @@ class H155App(App):
         root.add_widget(self.connect_btn)
 
         # Action buttons
-        grid = GridLayout(cols=2, size_hint_y=None, height=dp(196), spacing=dp(4))
+        grid = GridLayout(cols=2, size_hint_y=None, height=dp(244), spacing=dp(4))
         for label, cb in (
+            ("Diagnose Login", self.on_diagnostics),
             ("Status", self.on_status),
             ("Auto-Tune", self.on_autotune),
             ("Best CA (4G+4G)", self.on_best_ca),
@@ -322,6 +323,36 @@ class H155App(App):
                 self.put("Reboot command sent — router offline ~60s.")
             else:
                 self.put("Reboot failed.")
+        self.run_bg(work)
+
+    def on_diagnostics(self, *_):
+        # Dumps raw firmware responses so we can see the exact login/encryption
+        # scheme. Works WITHOUT a successful login (uses a fresh token only).
+        gw = self.gw.text.strip() or "192.168.8.1"
+
+        def work():
+            s = engine.H155Session(gateway=gw)
+            try:
+                s._get_token()
+            except Exception:
+                pass
+            self.put("══════ LOGIN DIAGNOSTICS ══════")
+            self.put("(copy this whole block and send it)")
+            endpoints = [
+                ("SesTokInfo", "/api/webserver/SesTokInfo"),
+                ("state-login", "/api/user/state-login"),
+                ("publickey", "/api/webserver/publickey"),
+                ("device-info", "/api/device/information"),
+                ("signal", "/api/device/signal"),
+            ]
+            for label, ep in endpoints:
+                try:
+                    r = s.session.get(s.base_url + ep, timeout=8)
+                    body = " ".join(r.text.split())
+                    self.put("[%s] (%d) %s" % (label, r.status_code, body[:500]))
+                except Exception as e:
+                    self.put("[%s] ERROR %r" % (label, e))
+            self.put("══════ END DIAGNOSTICS ══════")
         self.run_bg(work)
 
     def on_devices(self, *_):
