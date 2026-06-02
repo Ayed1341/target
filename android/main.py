@@ -475,12 +475,28 @@ class H155App(App):
         ctx.mark_relock()
 
         cycles = 0
+        unreach = 0
         while self.ap_running:
             cycles += 1
             try:
                 ctx.snap = engine._snapshot(sess)
             except Exception:
                 ctx.snap = {}
+            snap = ctx.snap or {}
+            # ── Reachability gate: if the router can't be read (usually a phone
+            #    Wi-Fi blip on a stationary router), DON'T run tactics — that would
+            #    needlessly toggle data / storm logins. Back off and re-check.
+            reachable = bool(snap) and (snap.get("rsrp") is not None or snap.get("connected"))
+            if not reachable:
+                unreach += 1
+                self.set_status_line("AP#%d  router unreachable — backing off (x%d)" % (cycles, unreach))
+                wait = min(self.interval * (1 + unreach), 120)
+                for _ in range(int(wait)):
+                    if not self.ap_running:
+                        break
+                    engine.time.sleep(1)
+                continue
+            unreach = 0
             acts = []
             for key, fn, cad in engine.SMART_TACTICS:
                 if not ctx.due(key, cad):
@@ -493,7 +509,6 @@ class H155App(App):
                     acts.append(r)
             if acts:
                 ctx.actions += len(acts)
-            snap = ctx.snap or {}
             agg = snap.get("agg", []) or []
             line = ("AP#%d  %s  %dCC  RSRP %s  WAN %s  DL %s UL %s LAT %s  fix:%d%s"
                     % (cycles,
