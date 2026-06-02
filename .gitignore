@@ -18,3 +18,5 @@ android/.buildozer/
 android/bin/
 android/engine.py
 *.apk
+android/icon.png
+android/presplash.png

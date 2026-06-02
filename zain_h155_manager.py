@@ -211,9 +211,18 @@ class H155Session:
             except Exception:
                 self._hw_conn = None
                 self._hw_client = None
+        # Manual re-login: SCRAM first (modern firmware), then legacy variants.
+        if self._manual_login and self._manual_login[0] == "__scram__":
+            if self._scram_login(self._password):
+                self.authenticated = True
+                return True
+        elif self._scram_login(self._password):
+            self.authenticated = True
+            self._manual_login = ("__scram__", "")
+            return True
         # Fallback: manual XML re-login (reuse the variant that worked before).
         if self._get_token():
-            if self._manual_login:
+            if self._manual_login and self._manual_login[0] != "__scram__":
                 pw_val, pw_type = self._manual_login
             else:
                 pw_val = base64.b64encode(self._password.encode()).decode()
@@ -281,6 +290,78 @@ class H155Session:
         except Exception as e:
             err(f"Token fetch failed: {e}")
         return False
+
+    # ── SCRAM-SHA-256 LOGIN (modern H155/H115 firmware) ─────
+    # Newer firmware rejects the legacy plaintext/base64 login with error
+    # 125003 and requires a SCRAM challenge-response handshake (the scheme the
+    # huawei-lte-api library uses). Implemented natively here so it works in the
+    # APK without that dependency.
+    @staticmethod
+    def _scram_client_proof(client_nonce, server_nonce, password, salt, iterations):
+        import hmac
+        salt_bytes = bytes.fromhex(salt)
+        msg = ("%s,%s,%s" % (client_nonce, server_nonce, server_nonce)).encode("utf-8")
+        salted = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt_bytes, iterations)
+        # NOTE: Huawei's quirky argument order — key is the literal label/message.
+        client_key = hmac.new(b"Client Key", salted, hashlib.sha256).digest()
+        stored_key = hashlib.sha256(client_key).digest()
+        signature = hmac.new(msg, stored_key, hashlib.sha256).digest()
+        return bytes(a ^ b for a, b in zip(client_key, signature)).hex()
+
+    def _scram_login(self, password, username="admin") -> bool:
+        import secrets
+        if not self._get_token():
+            return False
+        client_nonce = secrets.token_hex(32)
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "__RequestVerificationToken": self._token or "",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        ch_body = (
+            '<?xml version="1.0" encoding="UTF-8"?><request>'
+            f"<username>{username}</username>"
+            f"<firstnonce>{client_nonce}</firstnonce>"
+            "<mode>1</mode></request>"
+        )
+        try:
+            r1 = self.session.post(self.base_url + "/api/user/challenge_login",
+                                   data=ch_body, headers=headers, timeout=10)
+        except Exception as e:
+            warn(f"SCRAM challenge failed: {e}")
+            return False
+        salt = self._parse_xml_val(r1.text, "salt", "")
+        server_nonce = self._parse_xml_val(r1.text, "servernonce", "")
+        iters = self._parse_xml_val(r1.text, "iterations", "")
+        if not (salt and server_nonce and iters.isdigit()):
+            return False
+        new_tok = (r1.headers.get("__RequestVerificationToken")
+                   or r1.headers.get("__RequestVerificationTokenone"))
+        if new_tok:
+            self._token = new_tok.split("#")[0]
+            headers["__RequestVerificationToken"] = self._token
+        proof = self._scram_client_proof(client_nonce, server_nonce, password, salt, int(iters))
+        auth_body = (
+            '<?xml version="1.0" encoding="UTF-8"?><request>'
+            f"<clientproof>{proof}</clientproof>"
+            f"<finalnonce>{server_nonce}</finalnonce></request>"
+        )
+        try:
+            r2 = self.session.post(self.base_url + "/api/user/authentication_login",
+                                   data=auth_body, headers=headers, timeout=10)
+        except Exception as e:
+            warn(f"SCRAM auth failed: {e}")
+            return False
+        if "<error>" in r2.text or "<response" not in r2.text:
+            code = self._parse_xml_val(r2.text, "code", "?")
+            warn(f"SCRAM login rejected (code {code})")
+            return False
+        tok2 = (r2.headers.get("__RequestVerificationTokenone")
+                or r2.headers.get("__RequestVerificationToken"))
+        if tok2:
+            self._token = tok2.split("#")[0]
+            self.session.headers["__RequestVerificationToken"] = self._token
+        return True
 
     def _xml_post(self, endpoint: str, xml_body: str) -> Optional[str]:
         """POST XML to router endpoint, auto-refresh token on 401/403."""
@@ -380,6 +461,16 @@ class H155Session:
                 time.sleep(1)
                 self._get_token()
                 ok("Stale session cleared, fresh token acquired")
+
+        # ── Modern firmware: SCRAM challenge-response (fixes 125003) ──
+        info("Trying SCRAM challenge-response login...")
+        if self._scram_login(password):
+            ok(colorize("Authenticated via SCRAM-SHA-256!", C.GREEN + C.BOLD))
+            self.authenticated = True
+            self._manual_login = ("__scram__", "")
+            return True
+        warn("SCRAM login failed – trying legacy password variants...")
+        self._get_token()
 
         # Build password variants for older firmware
         pw_b64_plain = base64.b64encode(password.encode()).decode()

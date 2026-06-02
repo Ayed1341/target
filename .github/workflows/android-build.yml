@@ -51,6 +51,11 @@ jobs:
       - name: Copy shared engine into the app
         run: cp zain_h155_manager.py android/engine.py
 
+      - name: Generate branded launcher icon & splash
+        run: |
+          python -m pip install --upgrade pillow
+          python android/make_icon.py
+
       - name: Cache Buildozer SDK/NDK & build dirs
         uses: actions/cache@v4
         with:
