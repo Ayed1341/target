@@ -3899,7 +3899,7 @@ def visible_towers(sess: H155Session):
         out.append({
             "pci": v("Pci"), "band": v("Band"), "earfcn": v("Earfcn"),
             "rsrp": v("Rsrp"), "rsrp_int": ri, "sinr": v("Sinr"),
-            "cell_id": v("CellId"),
+            "rsrq": v("Rsrq"), "cell_id": v("CellId"),
         })
     return out
 
@@ -7230,6 +7230,537 @@ def cmd_wan_quality(sess: H155Session, args):
     sep()
 
 
+# ═════════════════════════════════════════════════════════════
+#  ★★★★★  v40.5 — TERMUX ADVANCED SUITE (15 features)  ★★★★★
+#  Best run in Termux where huawei-lte-api loads (writes/5G/band work) and
+#  full Python is available (sqlite3, http.server, etc.). Real logic only.
+# ═════════════════════════════════════════════════════════════
+
+AYED_DB = "ayed_signal.db"
+
+
+def _signal_db(path=AYED_DB):
+    import sqlite3
+    c = sqlite3.connect(path)
+    c.execute("CREATE TABLE IF NOT EXISTS signal("
+              "ts TEXT, hour INT, rsrp INTEGER, sinr INTEGER, rsrq TEXT, "
+              "band TEXT, pci TEXT, dl INTEGER, ul INTEGER)")
+    return c
+
+
+def _enb_sector(cell_id):
+    """LTE: global Cell ID = eNodeB-ID * 256 + Sector-ID."""
+    try:
+        cid = int(re.sub(r"[^\d]", "", str(cell_id)))
+    except (ValueError, TypeError):
+        return None, None, None
+    return cid, cid // 256, cid % 256
+
+
+# 1 ─ Full cell report (serving + neighbours, decoded)
+def cmd_full_cell_report(sess: H155Session, args):
+    """[120] Full serving + neighbour cell report with eNB/sector + frequency."""
+    step("Full Cell Report")
+    sep()
+    sig = sess.get_signal()
+    cid, enb, sec = _enb_sector(sig.get("cell_id"))
+    earf = sig.get("earfcn", "N/A")
+    freq = None
+    try:
+        freq = earfcn_to_freq_mhz(int(re.sub(r"[^\d]", "", str(earf))))
+    except (ValueError, TypeError):
+        pass
+    print(f"  {C.GOLD}{C.BOLD}  SERVING CELL{C.RESET}")
+    print(f"  {colorize('Band:', C.DIM):<16} {colorize(str(sig.get('band','?')), C.GOLD)}")
+    print(f"  {colorize('PCI:', C.DIM):<16} {colorize(str(sig.get('pci','?')), C.CYAN)}")
+    print(f"  {colorize('Cell ID:', C.DIM):<16} {colorize(str(sig.get('cell_id','?')), C.WHITE)}"
+          + (f"  → eNodeB {colorize(str(enb), C.LIME)} / Sector {colorize(str(sec), C.LIME)}" if enb is not None else ""))
+    print(f"  {colorize('EARFCN:', C.DIM):<16} {colorize(str(earf), C.DIM)}"
+          + (f"  ({colorize(str(freq) + ' MHz', C.TEAL)})" if freq else ""))
+    print(f"  {colorize('TAC:', C.DIM):<16} {colorize(str(sig.get('tac','?')), C.DIM)}")
+    print(f"  {colorize('RSRP/RSRQ/SINR:', C.DIM):<16} "
+          f"{colorize(str(sig.get('rsrp','?')), C.CYAN)} / {colorize(str(sig.get('rsrq','?')), C.CYAN)} / "
+          f"{colorize(str(sig.get('sinr','?')), C.CYAN)}")
+    if str(sig.get("nrrsrp", "N/A")) not in ("N/A", ""):
+        print(f"  {colorize('5G NR:', C.DIM):<16} band {colorize(str(sig.get('nrband','?')), C.MAGENTA)}  "
+              f"RSRP {colorize(str(sig.get('nrrsrp','?')), C.MAGENTA)}  SINR {colorize(str(sig.get('nrsinr','?')), C.MAGENTA)}")
+    towers = visible_towers(sess)
+    sep()
+    print(f"  {C.GOLD}{C.BOLD}  NEIGHBOUR CELLS ({len(towers)}){C.RESET}")
+    if towers:
+        print(f"  {C.DIM}  {'PCI':<7}{'Band':<7}{'EARFCN':<9}{'RSRP':<9}{'RSRQ':<8}{'SINR'}{C.RESET}")
+        for t in sorted(towers, key=lambda x: x["rsrp_int"], reverse=True):
+            _, col = grade_rsrp(t["rsrp_int"])
+            print(f"  {colorize(t['pci'], C.CYAN):<16}B{colorize(t['band'], C.MAGENTA):<15}"
+                  f"{colorize(t['earfcn'], C.DIM):<18}{colorize(t['rsrp'], col):<18}"
+                  f"{colorize(t.get('rsrq', '?'), C.DIM):<17}{colorize(t.get('sinr', '?'), C.DIM)}")
+    sep()
+
+
+# 2 ─ eNodeB / sector decode
+def cmd_enodeb_decode(sess: H155Session, args):
+    """[121] Decode the serving Cell ID into eNodeB ID + Sector ID."""
+    step("eNodeB / Sector Decode")
+    sep()
+    sig = sess.get_signal()
+    cid, enb, sec = _enb_sector(sig.get("cell_id"))
+    if cid is None:
+        err("No Cell ID available.")
+        return
+    print(f"  {colorize('Global Cell ID:', C.DIM):<18} {colorize(str(cid), C.WHITE, C.BOLD)}")
+    print(f"  {colorize('eNodeB ID:', C.DIM):<18} {colorize(str(enb), C.LIME, C.BOLD)}  (the physical tower)")
+    print(f"  {colorize('Sector ID:', C.DIM):<18} {colorize(str(sec), C.CYAN, C.BOLD)}  (the cell/face on that tower)")
+    print(f"  {colorize('PCI:', C.DIM):<18} {colorize(str(sig.get('pci','?')), C.CYAN)}")
+    info("All sectors with the same eNodeB ID are the same physical tower.")
+    sep()
+
+
+# 3 ─ SQLite signal logger
+def cmd_signal_db_logger(sess: H155Session, args):
+    """[122] Log signal + throughput to a SQLite DB (with summary)."""
+    duration = getattr(args, "duration", 120) or 120
+    interval = getattr(args, "interval", 5) or 5
+    step(f"SQLite Signal Logger → {colorize(AYED_DB, C.CYAN)} ({duration}s, every {interval}s)")
+    sep()
+    con = _signal_db()
+    end = time.time() + duration
+    n = 0
+    try:
+        while time.time() < end:
+            sig = sess.get_signal()
+            mon = sess.get_monitoring()
+            now = datetime.now()
+            con.execute("INSERT INTO signal VALUES (?,?,?,?,?,?,?,?,?)", (
+                now.isoformat(timespec="seconds"), now.hour,
+                sig.get("rsrp_int"), sig.get("sinr_int"), sig.get("rsrq", ""),
+                str(sig.get("band", "")), str(sig.get("pci", "")),
+                int(re.sub(r"[^\d]", "", mon.get("dl_speed", "0")) or 0),
+                int(re.sub(r"[^\d]", "", mon.get("ul_speed", "0")) or 0)))
+            con.commit()
+            n += 1
+            print(f"\r  {C.DIM}logged {n} rows  RSRP {sig.get('rsrp','?')}  {int(end-time.time())}s left {C.RESET}",
+                  end="", flush=True)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        pass
+    print()
+    row = con.execute("SELECT COUNT(*),AVG(rsrp),MIN(rsrp),MAX(rsrp),AVG(sinr) FROM signal").fetchone()
+    con.close()
+    if row and row[0]:
+        ok(f"Saved {row[0]} rows. Avg RSRP {row[1]:.1f} (min {row[2]}, max {row[3]}), avg SINR {row[4]:.1f}")
+    sep()
+
+
+# 4 ─ Outage detector / logger
+def cmd_outage_log(sess: H155Session, args):
+    """[123] Detect and log connection outages (start/end/duration)."""
+    interval = getattr(args, "interval", 5) or 5
+    step(f"Outage Logger → outages.csv (check every {interval}s, Ctrl+C to stop)")
+    sep()
+    down_since = None
+    outages = 0
+    checks = 0
+    try:
+        while True:
+            up = is_connected(sess) and measure_latency_ms("8.8.8.8", 1) is not None
+            ts = datetime.now()
+            checks += 1
+            if not up and down_since is None:
+                down_since = ts
+                warn(f"[{ts.strftime('%H:%M:%S')}] OUTAGE started")
+            elif up and down_since is not None:
+                dur = (ts - down_since).total_seconds()
+                outages += 1
+                with open("outages.csv", "a", encoding="utf-8") as f:
+                    f.write(f"{down_since.isoformat(timespec='seconds')},{ts.isoformat(timespec='seconds')},{dur:.0f}\n")
+                ok(f"[{ts.strftime('%H:%M:%S')}] back UP after {dur:.0f}s (outage #{outages})")
+                down_since = None
+            print(f"\r  {C.DIM}#{checks}  {'UP' if up else 'DOWN'}  outages:{outages}{C.RESET}   ",
+                  end="", flush=True)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()
+        ok(f"Stopped — {outages} outage(s) logged to outages.csv")
+    sep()
+
+
+# 5 ─ Uptime SLA
+def cmd_uptime_sla(sess: H155Session, args):
+    """[124] Measure connection uptime % (SLA) over a session."""
+    duration = getattr(args, "duration", 120) or 120
+    interval = getattr(args, "interval", 5) or 5
+    step(f"Uptime SLA monitor ({duration}s, every {interval}s)")
+    sep()
+    up = total = 0
+    end = time.time() + duration
+    try:
+        while time.time() < end:
+            total += 1
+            if is_connected(sess):
+                up += 1
+            pct = up / total * 100
+            print(f"\r  {C.DIM}samples {total}  uptime {pct:.2f}%  {int(end-time.time())}s left{C.RESET}   ",
+                  end="", flush=True)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        pass
+    print()
+    if total:
+        pct = up / total * 100
+        col = C.LIME if pct >= 99 else (C.YELLOW if pct >= 95 else C.RED)
+        ok(f"Uptime: {colorize(f'{pct:.2f}%', col, C.BOLD)} ({up}/{total} samples up)")
+    sep()
+
+
+# 6 ─ Speed consistency
+def cmd_speed_consistency(sess: H155Session, args):
+    """[125] Run several speed tests → min/median/max/jitter/percentiles."""
+    runs = max(3, getattr(args, "duration", 5) if getattr(args, "duration", 5) <= 12 else 5)
+    step(f"Speed Consistency Test ({runs} download runs)")
+    warn("Uses data — runs several real downloads.")
+    sep()
+    vals = []
+    for i in range(int(runs)):
+        mb = measure_download_mbps(8)
+        if mb is not None:
+            vals.append(mb)
+            print(f"  run {i+1}: {colorize(f'{mb:.1f} Mbps', C.LIME)}")
+        time.sleep(1)
+    if not vals:
+        err("No measurements.")
+        return
+    vals.sort()
+    med = vals[len(vals) // 2]
+    p10 = vals[max(0, int(len(vals) * 0.1) - 0)]
+    sep()
+    print(f"  {colorize('Min / Median / Max:', C.DIM):<22} "
+          f"{colorize(f'{vals[0]:.1f}', C.RED)} / {colorize(f'{med:.1f}', C.GOLD, C.BOLD)} / {colorize(f'{vals[-1]:.1f}', C.LIME)} Mbps")
+    print(f"  {colorize('Jitter (stdev):', C.DIM):<22} {colorize(f'±{stdev(vals):.1f} Mbps', C.CYAN)}")
+    print(f"  {colorize('Worst-10% floor:', C.DIM):<22} {colorize(f'{p10:.1f} Mbps', C.ORANGE)}")
+    cons = 100 - min(100, stdev(vals) / (sum(vals)/len(vals)) * 100) if sum(vals) else 0
+    print(f"  {colorize('Consistency:', C.DIM):<22} {colorize(f'{cons:.0f}%', C.LIME if cons>80 else C.YELLOW, C.BOLD)}")
+    sep()
+
+
+# 7 ─ Band capacity (theoretical vs measured)
+def cmd_band_capacity(sess: H155Session, args):
+    """[126] Theoretical max throughput per active band vs measured."""
+    step("Band Capacity Analysis")
+    sep()
+    sig = sess.get_signal()
+    bf = str(sig.get("band", ""))
+    pairs = re.findall(r"(\d+)MHz@\d+\(B(\d+)\)", bf)
+    total_bw = 0
+    if not pairs:
+        nums = sorted({int(x) for x in re.findall(r"B(\d+)", bf)})
+        pairs = [("20", str(b)) for b in nums]  # assume 20 MHz if not reported
+    # LTE 256QAM 4x4 ≈ 6 bps/Hz practical peak
+    SPECTRAL = 6.0
+    print(f"  {C.DIM}  {'Band':<8}{'BW':<8}{'Theoretical peak'}{C.RESET}")
+    for bw, b in pairs:
+        bwi = int(bw)
+        total_bw += bwi
+        peak = bwi * SPECTRAL
+        print(f"  B{colorize(b, C.MAGENTA):<15}{colorize(bw+'MHz', C.TEAL):<16}"
+              f"{colorize(f'~{peak:.0f} Mbps', C.GOLD)}")
+    theo = total_bw * SPECTRAL
+    print(f"\n  {colorize('Aggregate BW:', C.DIM):<20} {colorize(str(total_bw)+' MHz', C.LIME, C.BOLD)}")
+    print(f"  {colorize('Theoretical peak:', C.DIM):<20} {colorize(f'~{theo:.0f} Mbps', C.GOLD, C.BOLD)}")
+    info("Measuring actual download...")
+    dl = measure_download_mbps(10)
+    if dl:
+        eff = dl / theo * 100 if theo else 0
+        print(f"  {colorize('Measured:', C.DIM):<20} {colorize(f'{dl:.1f} Mbps', C.LIME, C.BOLD)}  "
+              f"({colorize(f'{eff:.0f}% of theoretical', C.CYAN)})")
+    sep()
+
+
+# 8 ─ Handover advice
+def cmd_handover_advice(sess: H155Session, args):
+    """[127] Compare serving cell vs strongest neighbour, advise handover."""
+    step("Handover Advisor")
+    sep()
+    sig = sess.get_signal()
+    serving_pci = str(sig.get("pci", "?"))
+    serving_rsrp = sig.get("rsrp_int")
+    towers = [t for t in visible_towers(sess) if str(t["pci"]) != serving_pci]
+    print(f"  Serving PCI {colorize(serving_pci, C.CYAN)}  RSRP {colorize(str(sig.get('rsrp','?')), C.WHITE)}")
+    if not towers or serving_rsrp is None:
+        info("No neighbour data to compare.")
+        sep()
+        return
+    best = max(towers, key=lambda t: t["rsrp_int"])
+    diff = best["rsrp_int"] - serving_rsrp
+    print(f"  Best neighbour PCI {colorize(best['pci'], C.GOLD)} (B{best['band']})  RSRP {colorize(best['rsrp'], C.WHITE)}")
+    if diff >= 6:
+        warn(f"Neighbour is {diff} dB stronger → handover would likely help.")
+        info(f"Try 'tower-best' or lock B{best['band']} toward PCI {best['pci']}.")
+    else:
+        ok(f"Serving cell is fine (neighbour only {diff:+d} dB) — stay put.")
+    sep()
+
+
+# 9 ─ Tower distance estimate
+def cmd_distance_estimate(sess: H155Session, args):
+    """[128] Rough tower distance estimate from RSRP path loss."""
+    import math
+    step("Tower Distance Estimate (rough)")
+    sep()
+    sig = sess.get_signal()
+    rsrp = sig.get("rsrp_int")
+    earf = sig.get("earfcn", "")
+    freq = None
+    try:
+        freq = earfcn_to_freq_mhz(int(re.sub(r"[^\d]", "", str(earf))))
+    except (ValueError, TypeError):
+        pass
+    if rsrp is None or not freq:
+        err("Need RSRP + a known band/EARFCN.")
+        return
+    # Assume eNB EIRP ~ 62 dBm over the cell; path loss = EIRP - RSRP(per-RE approx)
+    eirp = 62.0
+    pl = eirp - rsrp
+    # FSPL: PL = 20log10(d_km) + 20log10(f_MHz) + 32.44  → solve d
+    d_km = 10 ** ((pl - 32.44 - 20 * math.log10(freq)) / 20)
+    print(f"  {colorize('RSRP:', C.DIM):<16} {colorize(str(sig.get('rsrp','?')), C.CYAN)}")
+    print(f"  {colorize('Frequency:', C.DIM):<16} {colorize(f'{freq:.0f} MHz', C.TEAL)}")
+    print(f"  {colorize('Path loss:', C.DIM):<16} {colorize(f'{pl:.0f} dB', C.GOLD)}")
+    print(f"  {colorize('Est. distance:', C.DIM):<16} {colorize(f'~{d_km:.2f} km', C.LIME, C.BOLD)}")
+    warn("Rough free-space estimate; walls/terrain make real distance shorter.")
+    sep()
+
+
+# 10 ─ Live LAN web dashboard
+def cmd_web_dashboard(sess: H155Session, args):
+    """[129] Serve a live web dashboard on the LAN (open from any device)."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import socket as _sock
+    port = getattr(args, "port", 8088) or 8088
+    page = ("<!doctype html><html><head><meta charset='utf-8'><title>AYED NET MASTER</title>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<style>body{background:#0b0f14;color:#dfe;font-family:system-ui;margin:0;padding:18px}"
+            "h1{color:#3cf}.g{display:grid;grid-template-columns:1fr 1fr;gap:10px}"
+            ".c{background:#121821;border:1px solid #243;border-radius:12px;padding:14px}"
+            ".v{font-size:26px;font-weight:700;color:#7fd}</style></head><body>"
+            "<h1>AYED NETWORK MASTER PRO</h1><div id=t>connecting…</div><div class='g' id=g></div>"
+            "<script>async function u(){let r=await fetch('/api');let d=await r.json();"
+            "document.getElementById('t').textContent=d.time+'  ·  '+d.type+'  ·  '+d.conn;"
+            "let f=[['RSRP',d.rsrp],['SINR',d.sinr],['Band',d.band],['CC',d.cc],"
+            "['DL',d.dl],['UL',d.ul],['PCI',d.pci],['WAN',d.wan]];"
+            "document.getElementById('g').innerHTML=f.map(x=>`<div class=c>${x[0]}<div class=v>${x[1]}</div></div>`).join('');}"
+            "u();setInterval(u,2000);</script></body></html>")
+
+    def snap():
+        sig = sess.get_signal(); mon = sess.get_monitoring(); dev = sess.get_device_info()
+        agg = active_ca_bands(sess)
+        return {
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "conn": "UP" if mon.get("connection_status") == "901" else "DOWN",
+            "type": network_type_name(mon.get("network_type", "0")),
+            "rsrp": sig.get("rsrp", "-"), "sinr": sig.get("sinr", "-"),
+            "band": "+".join("B"+str(b) for b in agg) or sig.get("band", "-"),
+            "cc": str(len(agg)) + "CC", "pci": sig.get("pci", "-"),
+            "dl": speed_fmt(mon.get("dl_speed", "0")), "ul": speed_fmt(mon.get("ul_speed", "0")),
+            "wan": dev.get("wan_ip", "-"),
+        }
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+        def do_GET(self):
+            if self.path.startswith("/api"):
+                body = json.dumps(snap()).encode()
+                self.send_response(200); self.send_header("Content-Type", "application/json")
+                self.end_headers(); self.wfile.write(body)
+            else:
+                self.send_response(200); self.send_header("Content-Type", "text/html")
+                self.end_headers(); self.wfile.write(page.encode())
+    try:
+        s2 = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM); s2.connect(("8.8.8.8", 80))
+        ip = s2.getsockname()[0]; s2.close()
+    except OSError:
+        ip = "127.0.0.1"
+    srv = ThreadingHTTPServer(("0.0.0.0", port), H)
+    step("Live Web Dashboard")
+    ok(f"Open {colorize(f'http://{ip}:{port}', C.LIME, C.BOLD)} on any device on this network. Ctrl+C to stop.")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        srv.shutdown()
+        print()
+        ok("Dashboard stopped.")
+    sep()
+
+
+# 11 ─ Telegram alerts
+def cmd_telegram_notify(sess: H155Session, args):
+    """[130] Send signal/outage alerts to Telegram (bot API)."""
+    step("Telegram Alerts")
+    sep()
+    token = ask(f"  {C.YELLOW}Bot token: {C.RESET}")
+    chat = ask(f"  {C.YELLOW}Chat ID: {C.RESET}")
+    if not token or not chat:
+        warn("Cancelled.")
+        return
+    thr = getattr(args, "threshold", -110) or -110
+
+    def send(msg):
+        try:
+            requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                          json={"chat_id": chat, "text": msg}, timeout=10)
+            return True
+        except requests.exceptions.RequestException:
+            return False
+    if not send("✅ AYED NET MASTER connected — alerts on (RSRP < %d dBm)." % thr):
+        err("Could not reach Telegram (check token/chat ID/internet).")
+        return
+    ok("Test message sent. Monitoring — Ctrl+C to stop.")
+    interval = getattr(args, "interval", 30) or 30
+    below = False
+    try:
+        while True:
+            sig = sess.get_signal()
+            r = sig.get("rsrp_int")
+            if not is_connected(sess):
+                if not below:
+                    below = True
+                    send("⚠️ Connection DOWN.")
+            elif r is not None and r < thr:
+                if not below:
+                    below = True
+                    send(f"⚠️ Weak signal: RSRP {r} dBm (band {sig.get('band','?')}).")
+            elif below:
+                below = False
+                send(f"✅ Recovered: RSRP {sig.get('rsrp','?')}.")
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()
+        ok("Telegram alerts stopped.")
+    sep()
+
+
+# 12 ─ Prometheus metrics export
+def cmd_prometheus_export(sess: H155Session, args):
+    """[131] Write current metrics in Prometheus text format."""
+    step("Prometheus Metrics Export")
+    sep()
+    sig = sess.get_signal(); mon = sess.get_monitoring()
+    agg = active_ca_bands(sess)
+    def num(v):
+        try: return int(re.sub(r"[^-\d]", "", str(v)))
+        except (ValueError, TypeError): return 0
+    metrics = {
+        "h155_rsrp_dbm": sig.get("rsrp_int") if sig.get("rsrp_int") is not None else 0,
+        "h155_sinr_db": sig.get("sinr_int") if sig.get("sinr_int") is not None else 0,
+        "h155_rsrq_db": num(sig.get("rsrq")),
+        "h155_carriers": len(agg),
+        "h155_connected": 1 if mon.get("connection_status") == "901" else 0,
+        "h155_dl_bps": num(mon.get("dl_speed")),
+        "h155_ul_bps": num(mon.get("ul_speed")),
+    }
+    fname = getattr(args, "file", None) or "ayed_metrics.prom"
+    with open(fname, "w", encoding="utf-8") as f:
+        for k, v in metrics.items():
+            f.write(f"# TYPE {k} gauge\n{k} {v}\n")
+    ok(f"Wrote {len(metrics)} metrics → {colorize(fname, C.CYAN, C.BOLD)}")
+    for k, v in metrics.items():
+        print(f"  {colorize(k, C.DIM):<26} {colorize(str(v), C.LIME)}")
+    info("Point Prometheus node_exporter textfile collector at this file, or serve it.")
+    sep()
+
+
+# 13 ─ Auto max carrier aggregation (writes — Termux/library)
+def cmd_auto_ca_max(sess: H155Session, args):
+    """[132] Enable maximum aggregation: all strong LTE bands + 5G EN-DC."""
+    step("Auto Max Aggregation (LTE CA + 5G EN-DC)")
+    sep()
+    if sess._hw_client is None and getattr(sess, "_writes_need_encryption", False):
+        warn("This firmware needs encrypted writes — run in Termux with huawei-lte-api.")
+        sep()
+        return
+    strong, _ = _strong_bands(sess)
+    info(f"Strong LTE bands: {colorize('+'.join('B'+str(b) for b in strong) or 'auto', C.GOLD)}")
+    info("Enabling LTE+NR (EN-DC) across all strong bands + all NR bands...")
+    if enable_endc(sess, nr_bands=sorted(NR_BAND_DB.keys()), lte_bands=strong or None):
+        wait_reconnect(10)
+        agg = active_ca_bands(sess)
+        nr = "yes" if nr_active(sess) else "no"
+        ok(colorize(f"Applied. Active CA: {'+'.join('B'+str(b) for b in agg) or '?'}  ·  5G: {nr}", C.LIME + C.BOLD))
+    else:
+        err("Router rejected the mode change.")
+    sep()
+
+
+# 14 ─ Peak hours analysis (from the SQLite DB)
+def cmd_peak_hours(sess: H155Session, args):
+    """[133] Best/worst hours of day from the logged signal database."""
+    import os
+    step("Peak-Hours Analysis")
+    sep()
+    if not os.path.exists(AYED_DB):
+        warn("No data yet — run 'db-log' (option 122) for a while first.")
+        sep()
+        return
+    con = _signal_db()
+    rows = con.execute("SELECT hour, COUNT(*), AVG(rsrp), AVG(sinr), AVG(dl) "
+                       "FROM signal GROUP BY hour ORDER BY hour").fetchall()
+    con.close()
+    if not rows:
+        warn("Database is empty.")
+        sep()
+        return
+    print(f"  {C.DIM}  {'Hour':<7}{'Samples':<9}{'Avg RSRP':<11}{'Avg SINR':<10}{'Avg DL'}{C.RESET}")
+    best = max(rows, key=lambda r: (r[2] or -999))
+    worst = min(rows, key=lambda r: (r[2] or 0))
+    for h, c, rsrp, sinr, dl in rows:
+        mark = ""
+        if h == best[0]: mark = colorize("  ★ best", C.LIME)
+        elif h == worst[0]: mark = colorize("  ✘ worst", C.RED)
+        _, col = grade_rsrp(int(rsrp) if rsrp else -999)
+        print(f"  {h:02d}:00  {c:<9}{colorize(f'{rsrp:.0f}' if rsrp else '?', col):<20}"
+              f"{(f'{sinr:.0f}' if sinr else '?'):<10}{speed_fmt(str(int(dl or 0)))}{mark}")
+    sep()
+
+
+# 15 ─ Quality trend predictor
+def cmd_quality_trend(sess: H155Session, args):
+    """[134] Sample RSRP and predict the trend (improving / degrading)."""
+    samples = max(6, (getattr(args, "duration", 30) or 30) // 3)
+    step(f"Signal Quality Trend ({samples} samples)")
+    sep()
+    ys = []
+    for i in range(int(samples)):
+        r = sess.get_signal().get("rsrp_int")
+        if r is not None:
+            ys.append(r)
+            bar = signal_bar(r)
+            print(f"\r  {bar}  sample {i+1}/{int(samples)}  RSRP {r}   ", end="", flush=True)
+        time.sleep(3)
+    print()
+    if len(ys) < 4:
+        err("Not enough samples.")
+        return
+    n = len(ys)
+    xs = list(range(n))
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    denom = sum((x - mx) ** 2 for x in xs) or 1
+    slope = sum((xs[i] - mx) * (ys[i] - my) for i in range(n)) / denom  # dBm per sample
+    per_min = slope * (60 / 3)
+    if slope > 0.3:
+        trend, col = "IMPROVING ↑", C.LIME
+    elif slope < -0.3:
+        trend, col = "DEGRADING ↓", C.RED
+    else:
+        trend, col = "STABLE →", C.GREEN
+    print(f"  {colorize('Current RSRP:', C.DIM):<18} {colorize(str(ys[-1]), C.CYAN)}")
+    print(f"  {colorize('Trend:', C.DIM):<18} {colorize(trend, col, C.BOLD)}  ({per_min:+.1f} dBm/min)")
+    if slope < -0.3:
+        eta = (ys[-1] - (-110)) / (-slope) * 3 / 60
+        warn(f"At this rate, RSRP hits -110 dBm in ~{eta:.0f} min. Consider re-optimising.")
+    sep()
+
+
 # ─────────────────────────────────────────────────────────────
 #  MAIN CLI  –  NUMBERED INTERACTIVE MENU
 # ─────────────────────────────────────────────────────────────
@@ -7359,6 +7890,22 @@ MENU_ITEMS = [
     (117, "max-tput",   cmd_max_throughput,        "Max throughput optimizer (DL+UL)",      C.LIME),
     (118, "auto-tune",  cmd_auto_tune,             "One-shot smart tune (CA/5G+MTU+DNS)",   C.MAGENTA),
     (119, "tactics",    cmd_list_tactics,          "List the 50+ autopilot tactics",        C.DIM),
+    # ── v40.5 Termux advanced suite ────────────────────────────────────────
+    (120, "full-cell",  cmd_full_cell_report,      "Full serving+neighbour cell report",    C.CYAN),
+    (121, "enodeb",     cmd_enodeb_decode,         "Decode Cell ID → eNodeB + sector",      C.CYAN),
+    (122, "db-log",     cmd_signal_db_logger,      "Log signal to SQLite database",         C.TEAL),
+    (123, "outage",     cmd_outage_log,            "Detect & log outages",                  C.TEAL),
+    (124, "sla",        cmd_uptime_sla,            "Uptime % (SLA) monitor",                C.TEAL),
+    (125, "speed-cons", cmd_speed_consistency,     "Speed consistency (min/med/max/jitter)",C.ORANGE),
+    (126, "band-cap",   cmd_band_capacity,         "Band capacity: theoretical vs measured",C.ORANGE),
+    (127, "handover",   cmd_handover_advice,       "Handover advisor (serving vs neighbour)",C.GOLD),
+    (128, "distance",   cmd_distance_estimate,     "Estimate tower distance from RSRP",     C.GOLD),
+    (129, "webdash",    cmd_web_dashboard,         "Live web dashboard on the LAN",         C.LIME),
+    (130, "telegram",   cmd_telegram_notify,       "Telegram signal/outage alerts",         C.LIME),
+    (131, "prometheus", cmd_prometheus_export,     "Export Prometheus metrics",             C.LIME),
+    (132, "max-ca",     cmd_auto_ca_max,           "Max aggregation: LTE CA + 5G EN-DC",    C.MAGENTA),
+    (133, "peak-hours", cmd_peak_hours,            "Best/worst hours from the signal DB",   C.MAGENTA),
+    (134, "trend",      cmd_quality_trend,         "Predict signal trend (improve/degrade)",C.MAGENTA),
     ( 0, "exit",      None,                "Exit",                                        C.DIM),
 ]
 
@@ -7392,6 +7939,8 @@ def show_numbered_menu():
         ("🛜  IP CONFLICT / LAN", [14, 99, 100, 101, 102, 103, 104, 105, 106, 112]),
         ("🌍  WAN IP",          [107, 108, 109, 110, 111, 113]),
         ("🚀  THROUGHPUT MAX",  [114, 115, 116, 117, 118, 119]),
+        ("🛰️   CELL & TERMUX PRO", [120, 121, 122, 123, 124, 125, 126, 127, 128]),
+        ("📊  TELEMETRY / 5G",  [129, 130, 131, 132, 133, 134]),
         ("⚡  OPTIMIZER",       [15]),
         ("⚙️   SYSTEM",          [16, 0]),
     ]

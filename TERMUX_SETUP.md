@@ -10,13 +10,30 @@ runs with real data.
 Install **Termux from F-Droid** (https://f-droid.org/packages/com.termux/) —
 NOT the Play Store version (it's outdated).
 
-## 2. One-time setup (paste into Termux)
+## 2. One-time setup — ONE command (paste into Termux)
+```bash
+curl -L -o run_termux.sh https://raw.githubusercontent.com/Ayed1341/target/claude/upgrade-v40-s4y1i/run_termux.sh && bash run_termux.sh
+```
+This installs Python + `huawei-lte-api` (which pulls `pycryptodomex`, compiled
+in Termux) — so **SCRAM+RSA login, 5G/band WRITES, and full Autopilot all
+work** here, unlike the APK. It then downloads and launches the tool.
+
+<details><summary>Manual steps (if you prefer)</summary>
+
 ```bash
 pkg update -y && pkg install -y python
 pip install huawei-lte-api requests
 curl -L -o h155.py \
   https://raw.githubusercontent.com/Ayed1341/target/claude/upgrade-v40-s4y1i/zain_h155_manager.py
 ```
+</details>
+
+### What works in Termux that the APK can't
+- **Enable 5G (EN-DC)** and **LTE/5G band lock** (encrypted writes) — `max-ca`, `endc`, `nr-lock`, `ca-best`…
+- **Full Smart Autopilot** that actually *changes* bands/CA/5G, not just monitors.
+- 15 new PRO tools: `full-cell`, `enodeb`, `db-log`, `outage`, `sla`,
+  `speed-cons`, `band-cap`, `handover`, `distance`, `webdash` (LAN web
+  dashboard), `telegram`, `prometheus`, `max-ca`, `peak-hours`, `trend`.
 
 ## 3. Run it
 Connect the phone to the **router's Wi-Fi**, then:
