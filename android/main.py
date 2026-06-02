@@ -135,7 +135,21 @@ class H155App(App):
             self.put("ENGINE IMPORT FAILED:\n" + ENGINE_ERR +
                      "\nThe build did not include engine.py correctly.")
         else:
-            self.put("Ready. Enter the router admin password and tap Connect.\n"
+            # Tee the engine's log helpers into the on-screen log so read
+            # failures (e.g. "Library signal read failed: ...") are visible.
+            import re as _re
+            _ansi = _re.compile(r"\x1b\[[0-9;]*m")
+
+            def _mklog(tag):
+                def _fn(msg=""):
+                    self.put("[%s] %s" % (tag, _ansi.sub("", str(msg))))
+                return _fn
+            engine.warn = _mklog("warn")
+            engine.err = _mklog("err")
+            engine.info = _mklog("info")
+            lib_state = "available" if getattr(engine, "HUAWEI_LIB", False) else "NOT installed (manual login)"
+            self.put("Ready. huawei-lte-api: " + lib_state)
+            self.put("Enter the router admin password and tap Connect.\n"
                      "Tip: connect this phone to the router's Wi-Fi first.")
         return root
 

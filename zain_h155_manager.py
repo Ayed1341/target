@@ -263,8 +263,20 @@ class H155Session:
                 self._session_id = ses.group(1)
                 self.session.headers.update({
                     "__RequestVerificationToken": self._token,
-                    "Cookie": self._session_id,
                 })
+                # Put SessionID in the cookie JAR rather than pinning a static
+                # "Cookie" header. A pinned header keeps sending the pre-login
+                # session id even after the router issues a fresh one at login
+                # (via Set-Cookie), which makes protected GETs — signal, device
+                # info, cell-info — return N/A while unprotected ones (monitoring)
+                # still work. Using the jar lets the post-login cookie take over.
+                self.session.headers.pop("Cookie", None)
+                if "=" in self._session_id:
+                    cname, _, cval = self._session_id.partition("=")
+                    try:
+                        self.session.cookies.set(cname.strip(), cval.strip())
+                    except Exception:
+                        pass
                 return True
         except Exception as e:
             err(f"Token fetch failed: {e}")
