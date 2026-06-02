@@ -32,6 +32,14 @@ android.archs = arm64-v8a
 android.allow_backup = True
 android.accept_sdk_license = True
 
+# Pin python-for-android to a release that builds Python 3.11 (the latest p4a
+# builds Python 3.14, whose changed C-API breaks Kivy 2.3.0's Cython output:
+#   error: too few arguments to function '_PyLong_AsByteArray'
+#   call to undeclared function '_PyUnicode_FastCopyCharacters'
+# 2024.1.21 + Kivy 2.3.0 + Cython 0.29.36 is a known-good combination.
+p4a.fork = kivy
+p4a.branch = 2024.1.21
+
 # Misc
 log_level = 2
 
