@@ -38,7 +38,7 @@ android.accept_sdk_license = True
 #   call to undeclared function '_PyUnicode_FastCopyCharacters'
 # 2024.1.21 + Kivy 2.3.0 + Cython 0.29.36 is a known-good combination.
 p4a.fork = kivy
-p4a.branch = 2024.1.21
+p4a.branch = v2024.01.21
 
 # Misc
 log_level = 2
