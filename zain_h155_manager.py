@@ -494,20 +494,40 @@ class H155Session:
         # ── Preferred path: maintained library ──────────────────
         if HUAWEI_LIB:
             info("Using huawei-lte-api (auto SCRAM/firmware detection)")
-            try:
-                url = f"http://admin:{password}@{self.gateway}/"
-                self._hw_conn   = _HuaweiConnection(url)
-                self._hw_client = _HuaweiClient(self._hw_conn)
-                # Verify by reading device info
-                _ = self._hw_client.device.information()
+            info("(if this stalls, it falls back to manual login after ~25s)")
+            # The library's Connection() has no network timeout and can hang
+            # forever if the router is slow/locked or the phone isn't on the
+            # router's Wi-Fi. Run it in a worker thread with a hard timeout.
+            import threading
+            box = {}
+
+            def _lib_connect():
+                try:
+                    url = f"http://admin:{password}@{self.gateway}/"
+                    conn = _HuaweiConnection(url)
+                    cli = _HuaweiClient(conn)
+                    cli.device.information()      # verify
+                    box["conn"] = conn
+                    box["cli"] = cli
+                except Exception as e:
+                    box["err"] = e
+
+            th = threading.Thread(target=_lib_connect, daemon=True)
+            th.start()
+            th.join(25)
+            if "cli" in box:
+                self._hw_conn = box["conn"]
+                self._hw_client = box["cli"]
                 ok(colorize("Authenticated via huawei-lte-api!", C.GREEN + C.BOLD))
                 self.authenticated = True
                 return True
-            except Exception as e:
-                warn(f"Library login failed ({type(e).__name__}): {e}")
-                warn("Falling back to manual XML login...")
-                self._hw_conn = None
-                self._hw_client = None
+            if th.is_alive():
+                warn("Library login timed out (router slow/locked or wrong Wi-Fi).")
+            else:
+                warn(f"Library login failed: {box.get('err')}")
+            warn("Falling back to manual login...")
+            self._hw_conn = None
+            self._hw_client = None
         else:
             warn("huawei-lte-api not installed – using manual login.")
             info("For best results:  " + colorize("pip install huawei-lte-api", C.CYAN, C.BOLD))
