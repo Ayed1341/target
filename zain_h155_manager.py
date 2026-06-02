@@ -116,8 +116,9 @@ NR_BAND_DB = {
     1:  {"name": "n1  5G (2100 MHz)",  "dl_range": (2110, 2170), "op": "STC 5G",  "tech": "5G"},
     3:  {"name": "n3  5G (1800 MHz)",  "dl_range": (1805, 1880), "op": "STC 5G",  "tech": "5G"},
     28: {"name": "n28 5G (700 MHz)",   "dl_range": (758,  803),  "op": "STC 5G",  "tech": "5G"},
-    41: {"name": "n41 5G (2500 MHz)",  "dl_range": (2496, 2690), "op": "STC 5G",  "tech": "5G"},
-    78: {"name": "n78 5G (3500 MHz)",  "dl_range": (3300, 3800), "op": "STC 5G",  "tech": "5G"},  # primary STC 5G band
+    40: {"name": "n40 5G (2300 MHz)",  "dl_range": (2300, 2400), "op": "STC/Zain 5G", "tech": "5G"},
+    41: {"name": "n41 5G (2500 MHz)",  "dl_range": (2496, 2690), "op": "STC/Zain 5G", "tech": "5G"},
+    78: {"name": "n78 5G (3500 MHz)",  "dl_range": (3300, 3800), "op": "STC/Zain 5G", "tech": "5G"},  # primary 5G band
 }
 
 # Signal quality thresholds
@@ -693,12 +694,21 @@ class H155Session:
                     "txpower":d.get("txpower","N/A"),
                     "tac":    d.get("tac",    "N/A"),
                     "plmn":   d.get("plmn",   "N/A"),
+                    # 5G NR (NSA/SA) fields, when the modem reports them
+                    "nrrsrp": d.get("nrrsrp", "N/A"),
+                    "nrsinr": d.get("nrsinr", "N/A"),
+                    "nrrsrq": d.get("nrrsrq", "N/A"),
+                    "nrband": d.get("nrband", "N/A"),
+                    "narfcn": d.get("narfcn", "N/A"),
+                    "nrdlbandwidth": d.get("nrdlbandwidth", "N/A"),
+                    "nrcellid": d.get("nrcellid", "N/A"),
                 }
                 def safe_int(v):
                     try: return int(re.sub(r"[^-\d]", "", str(v)))
                     except: return None
                 raw["rsrp_int"] = safe_int(raw["rsrp"])
                 raw["sinr_int"] = safe_int(raw["sinr"])
+                raw["nrrsrp_int"] = safe_int(raw.get("nrrsrp"))
                 return raw
 
         xml = self.api_get(self.BASE_ENDPOINTS["signal"])
@@ -717,6 +727,14 @@ class H155Session:
             "txpower":self._parse_xml_val(xml, "txpower"),
             "tac":    self._parse_xml_val(xml, "tac"),
             "plmn":   self._parse_xml_val(xml, "plmn"),
+            # 5G NR (NSA/SA) fields, when the modem reports them
+            "nrrsrp": self._parse_xml_val(xml, "nrrsrp"),
+            "nrsinr": self._parse_xml_val(xml, "nrsinr"),
+            "nrrsrq": self._parse_xml_val(xml, "nrrsrq"),
+            "nrband": self._parse_xml_val(xml, "nrband"),
+            "narfcn": self._parse_xml_val(xml, "narfcn"),
+            "nrdlbandwidth": self._parse_xml_val(xml, "nrdlbandwidth"),
+            "nrcellid": self._parse_xml_val(xml, "nrcellid"),
         }
         # Parse numeric values
         def safe_int(v):
@@ -725,6 +743,7 @@ class H155Session:
 
         raw["rsrp_int"] = safe_int(raw["rsrp"])
         raw["sinr_int"] = safe_int(raw["sinr"])
+        raw["nrrsrp_int"] = safe_int(raw.get("nrrsrp"))
         return raw
 
     def get_monitoring(self) -> dict:
@@ -3856,6 +3875,35 @@ def visible_towers(sess: H155Session):
 def lock_bands(sess: H155Session, bands, mode: str = "03") -> bool:
     """Lock the modem to the given LTE band set (enables CA across them)."""
     return sess.set_net_mode(mode, "3FFFFFFF", bands_to_lte_bitmask(bands))
+
+
+def enable_endc(sess: H155Session, nr_bands=None, lte_bands=None) -> bool:
+    """Enable 5G NR + LTE aggregation (EN-DC / NSA).
+    NetworkMode 0803 = LTE+NR; LTEBand = anchor 4G bands, NRBand = 5G bands.
+    nr_bands defaults to all known NR bands; lte_bands defaults to strongest
+    visible (or all LTE)."""
+    nr = sorted(nr_bands) if nr_bands else sorted(NR_BAND_DB.keys())
+    if lte_bands:
+        lte_mask = bands_to_lte_bitmask(sorted(lte_bands))
+    else:
+        strong, _ = _strong_bands(sess)
+        lte_mask = bands_to_lte_bitmask(strong) if strong else "7FFFFFFFFFFFFFFF"
+    body = {
+        "NetworkMode": "0803", "NetworkBand": "3FFFFFFF",
+        "LTEBand": lte_mask, "NRBand": nr_bands_to_bitmask(nr),
+    }
+    return sess.post_ok(sess.api_post(EP["net_mode"], body))
+
+
+def nr_active(sess: H155Session) -> bool:
+    """True if the modem currently reports a 5G NR connection."""
+    sig = sess.get_signal()
+    if sig.get("nrrsrp_int") is not None:
+        return True
+    if "NR" in str(sig.get("band", "")).upper() or re.search(r"\bn\d+\b", str(sig.get("band", ""))):
+        return True
+    nt = network_type_name(sess.get_monitoring().get("network_type", "0"))
+    return "5G" in nt or "NR" in nt
 
 
 def wait_reconnect(seconds: int = 12, step: int = 2):

@@ -117,6 +117,7 @@ class H155App(App):
             ("Status", self.on_status),
             ("Auto-Tune", self.on_autotune),
             ("Best CA (4G+4G)", self.on_best_ca),
+            ("Enable 5G (EN-DC)", self.on_enable_5g),
             ("Best Tower", self.on_best_tower),
             ("Speed Test", self.on_speedtest),
             ("Devices", self.on_devices),
@@ -251,7 +252,29 @@ class H155App(App):
                 "PCI/EARFCN: %s / %s" % (sig.get("pci", "?"), sig.get("earfcn", "?")),
                 "WAN IP    : %s  (%s)" % (wan, wk),
             ]
+            # 5G NR line only when the modem actually reports NR
+            if sig.get("nrrsrp_int") is not None or str(sig.get("nrband", "N/A")) not in ("N/A", ""):
+                lines.append("5G NR     : band %s  RSRP %s  SINR %s" % (
+                    sig.get("nrband", "?"), sig.get("nrrsrp", "?"), sig.get("nrsinr", "?")))
             self.put("\n".join(lines))
+        self.run_bg(work)
+
+    def on_enable_5g(self, *_):
+        if not self.require_session():
+            return
+
+        def work():
+            self.put("Enabling 5G NR EN-DC (n40 + n41 + n78 with 4G anchor)...")
+            okk = engine.enable_endc(self.sess, nr_bands=[40, 41, 78])
+            if not okk:
+                self.put("Router rejected EN-DC (firmware may be LTE-only or band not allowed).")
+            engine.time.sleep(6)
+            if engine.nr_active(self.sess):
+                self.put("✔ 5G NR is ACTIVE.")
+            else:
+                self.put("EN-DC enabled, but not attached to NR right now "
+                         "(needs 5G coverage on n40/n41/n78 at your location).")
+            self.on_status()
         self.run_bg(work)
 
     def on_autotune(self, *_):
