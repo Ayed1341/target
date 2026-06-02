@@ -12,3 +12,9 @@ h155_profiles.json
 h155_report_*.md
 h155_report_*.html
 autopilot_health.csv
+
+# Android build (Buildozer) — generated, not committed
+android/.buildozer/
+android/bin/
+android/engine.py
+*.apk

@@ -1,0 +1,43 @@
+name: Build Android APK
+
+# Builds an installable .apk for the Zain H155 Manager and uploads it as a
+# downloadable artifact. Trigger it manually from the Actions tab, or it runs
+# automatically when the Android app / engine changes.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - claude/upgrade-v40-s4y1i
+    paths:
+      - 'android/**'
+      - 'zain_h155_manager.py'
+      - '.github/workflows/android-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Copy shared engine into the app
+        run: cp zain_h155_manager.py android/engine.py
+
+      - name: Build the APK with Buildozer
+        uses: ArtemSBulgakov/buildozer-action@v1
+        with:
+          command: buildozer android debug
+          workdir: android
+          buildozer_version: stable
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: h155-manager-apk
+          path: android/bin/*.apk
+          if-no-files-found: error
