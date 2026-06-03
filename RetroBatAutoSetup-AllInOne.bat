@@ -17,6 +17,7 @@ REM ===========================================================================
 set "ROOT=%~dp0"
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 title RetroBat Auto Setup (All-in-One)
+chcp 65001 >nul 2>&1
 
 echo.
 echo  ============================================================
@@ -54,10 +55,14 @@ set "EXTRA="
 if "%~1"=="" goto run
 if /i "%~1"=="/watch"     set "MODE=Watch"
 if /i "%~1"=="-watch"     set "MODE=Watch"
+if /i "%~1"=="/restore"   set "MODE=Restore"
+if /i "%~1"=="-restore"   set "MODE=Restore"
 if /i "%~1"=="/noinstall" set "EXTRA=!EXTRA! -SkipInstall"
 if /i "%~1"=="-noinstall" set "EXTRA=!EXTRA! -SkipInstall"
 if /i "%~1"=="/nogit"     set "EXTRA=!EXTRA! -SkipGit"
 if /i "%~1"=="-nogit"     set "EXTRA=!EXTRA! -SkipGit"
+if /i "%~1"=="/dryrun"    set "EXTRA=!EXTRA! -DryRun"
+if /i "%~1"=="-dryrun"    set "EXTRA=!EXTRA! -DryRun"
 shift
 goto parse_args
 
@@ -80,13 +85,21 @@ endlocal & exit /b %RC%
 [CmdletBinding()]
 param(
     [string] $RetroBatRoot,
-    [ValidateSet("Setup","Watch")] [string] $Mode = "Setup",
+    [ValidateSet("Setup","Watch","Restore")] [string] $Mode = "Setup",
     [switch] $SkipInstall,
     [switch] $SkipGit,
+    [switch] $DryRun,
     [int] $WatchIntervalSeconds = 5
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+try {
+    $enUS = [System.Globalization.CultureInfo]::GetCultureInfo("en-US")
+    [System.Threading.Thread]::CurrentThread.CurrentCulture   = $enUS
+    [System.Threading.Thread]::CurrentThread.CurrentUICulture = $enUS
+    [System.Globalization.CultureInfo]::DefaultThreadCurrentCulture   = $enUS
+    [System.Globalization.CultureInfo]::DefaultThreadCurrentUICulture = $enUS
+} catch { }
 
 $script:EmbeddedEmulatorJson = @'
 {
@@ -347,7 +360,7 @@ $script:EmbeddedEmulatorJson = @'
         "045E": "Microsoft (Xbox)",
         "054C": "Sony (PlayStation)",
         "057E": "Nintendo",
-        "28DE": "Valve",
+        "28DE": "Valve (Steam)",
         "2DC8": "8BitDo",
         "0F0D": "Hori",
         "146B": "BigBen / Nacon",
@@ -356,7 +369,36 @@ $script:EmbeddedEmulatorJson = @'
         "24C6": "PowerA",
         "0E6F": "PDP",
         "1689": "Razer Onza",
-        "2563": " ShanWan Generic"
+        "2563": "ShanWan / Generic",
+        "20D6": "PowerA / BDA",
+        "0E8F": "GreenAsia / Generic",
+        "11C0": "Betop",
+        "1A34": "Afterglow / PDP",
+        "06A3": "Saitek",
+        "044F": "ThrustMaster",
+        "0738": "Mad Catz",
+        "1BAD": "Mad Catz (Rock Band)",
+        "045B": "Hitachi",
+        "0810": "Personal Communication Systems",
+        "0B05": "ASUS (ROG)",
+        "1038": "SteelSeries",
+        "1B1C": "Corsair",
+        "320F": "Generic / 8BitDo-compatible",
+        "048D": "ITE (built-in HID)",
+        "045A": "Logitech",
+        "046D": "Logitech",
+        "0955": "NVIDIA (Shield)",
+        "18D1": "Google (Stadia)",
+        "2DC8 ": "8BitDo",
+        "3537": "GuliKit",
+        "3250": "GameSir",
+        "3285": "Nacon",
+        "0C12": "Zeroplus",
+        "12BD": "Generic USB Gamepad",
+        "25F0": "ShanWan / SZMY-Power",
+        "2C22": "Qanba (Arcade Stick)",
+        "0D62": "Darfon",
+        "1345": "Sino Lite / Generic"
     }
 }
 
@@ -1220,11 +1262,43 @@ function Find-EmulatorExecutable {
         $direct = Join-Path $Folder $exe
         if (Test-Path -LiteralPath $direct) { return $direct }
     }
-    # Fall back to a recursive search (handles versioned sub-folders).
+    # UPGRADE (performance): fall back to a DEPTH-LIMITED search instead of a full
+    # recursive scan. RetroBat emulators keep their executable at the root or one
+    # or two levels down, so capping depth turns a multi-second scan over large
+    # installs (100+ emulators) into a near-instant lookup.
     foreach ($exe in $Executables) {
-        $found = Get-ChildItem -LiteralPath $Folder -Filter $exe -Recurse -File -ErrorAction SilentlyContinue |
-                 Select-Object -First 1
-        if ($found) { return $found.FullName }
+        $found = Find-FileDepthLimited -Root $Folder -FileName $exe -MaxDepth 3
+        if ($found) { return $found }
+    }
+    return $null
+}
+
+function Find-FileDepthLimited {
+    <#
+    .SYNOPSIS
+        Breadth-first search for a file name up to a maximum directory depth.
+    .OUTPUTS
+        Full path of the first match, or $null.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [string] $Root,
+        [Parameter(Mandatory = $true)] [string] $FileName,
+        [int] $MaxDepth = 3
+    )
+    if (-not (Test-Path -LiteralPath $Root)) { return $null }
+
+    $queue = [System.Collections.Generic.Queue[object]]::new()
+    $queue.Enqueue([pscustomobject]@{ Path = $Root; Depth = 0 })
+    while ($queue.Count -gt 0) {
+        $node = $queue.Dequeue()
+        $hit  = Join-Path $node.Path $FileName
+        if (Test-Path -LiteralPath $hit -PathType Leaf) { return $hit }
+        if ($node.Depth -lt $MaxDepth) {
+            foreach ($sub in (Get-ChildItem -LiteralPath $node.Path -Directory -ErrorAction SilentlyContinue)) {
+                $queue.Enqueue([pscustomobject]@{ Path = $sub.FullName; Depth = $node.Depth + 1 })
+            }
+        }
     }
     return $null
 }
@@ -1275,7 +1349,9 @@ function Get-InstalledEmulators {
             if ($accountedDirs.Contains($dirName)) { return }
 
             # Treat a folder containing at least one .exe as a candidate emulator.
-            $exe = Get-ChildItem -LiteralPath $_.FullName -Filter '*.exe' -Recurse -File -ErrorAction SilentlyContinue |
+            # UPGRADE (performance): cap recursion depth so discovery over very
+            # large RetroBat installs stays fast.
+            $exe = Get-ChildItem -LiteralPath $_.FullName -Filter '*.exe' -File -Recurse -Depth 2 -ErrorAction SilentlyContinue |
                    Where-Object { $_.Name -notmatch '(?i)(unins|setup|vc_redist|crash|update|helper)\b' } |
                    Sort-Object Length -Descending |
                    Select-Object -First 1
@@ -1644,7 +1720,8 @@ function Invoke-EmulatorOptimization {
         [Parameter(Mandatory = $true)] [int]    $TargetWidth,
         [Parameter(Mandatory = $true)] [int]    $TargetHeight,
         [Parameter(Mandatory = $true)] [string] $BackupRoot,
-        [Parameter(Mandatory = $true)] [scriptblock] $Logger
+        [Parameter(Mandatory = $true)] [scriptblock] $Logger,
+        [string] $GpuVendor = 'Unknown'
     )
 
     $log = { param($m, $l) & $Logger $m $l }
@@ -1705,11 +1782,14 @@ function Resolve-ConfigPath {
 # RetroArch (flat key = "value")
 # ----------------------------------------------------------------------------
 function Optimize-RetroArch {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Join-Path $Emulator.FolderPath 'retroarch.cfg'
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
 
     $smooth = if ($Tier -eq 'LowEnd') { 'false' } else { 'true' }
+    # GPU-aware backend: Vulkan for NVIDIA/AMD; glcore for Intel iGPUs where
+    # Vulkan drivers are historically less reliable in RetroArch.
+    $raDriver = if ($GpuVendor -eq 'Intel') { 'glcore' } else { 'vulkan' }
     $map = [ordered]@{
         'video_fullscreen'         = 'true'
         'video_windowed_fullscreen'= 'true'
@@ -1719,7 +1799,7 @@ function Optimize-RetroArch {
         'video_hard_sync'          = 'false'
         'video_smooth'             = $smooth
         'video_threaded'           = 'true'
-        'video_driver'             = 'vulkan'
+        'video_driver'             = $raDriver
         'video_shader_enable'      = 'true'
         'video_max_swapchain_images' = '3'
         'video_aspect_ratio_auto'  = 'true'
@@ -1734,14 +1814,18 @@ function Optimize-RetroArch {
 # PCSX2 (INI)
 # ----------------------------------------------------------------------------
 function Optimize-PCSX2 {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
     $ini = Read-IniFile -Path $cfg
 
     $scale = Get-TierScale -Tier $Tier -Max 8 -Min 1   # upscale_multiplier
+    # PCSX2 Renderer: 14=Vulkan, 12=Direct3D11. Intel iGPUs run most reliably on
+    # D3D11; discrete NVIDIA/AMD get Vulkan.
+    $pcsxRenderer = if ($GpuVendor -eq 'Intel') { '12' } else { '14' }
+    $pcsxBackend  = if ($GpuVendor -eq 'Intel') { 'Direct3D11' } else { 'Vulkan' }
     Set-IniValue -Data $ini -Section 'EmuCore/GS' -Key 'upscale_multiplier' -Value ("{0}" -f $scale)
-    Set-IniValue -Data $ini -Section 'EmuCore/GS' -Key 'Renderer'            -Value '14'   # 14 = Vulkan
+    Set-IniValue -Data $ini -Section 'EmuCore/GS' -Key 'Renderer'            -Value $pcsxRenderer
     Set-IniValue -Data $ini -Section 'EmuCore/GS' -Key 'AnisotropicFiltering' -Value '16'
     Set-IniValue -Data $ini -Section 'EmuCore/GS' -Key 'TextureFiltering'    -Value '2'    # bilinear (forced)
     Set-IniValue -Data $ini -Section 'EmuCore/GS' -Key 'VsyncEnable'         -Value '1'
@@ -1749,7 +1833,7 @@ function Optimize-PCSX2 {
     Set-IniValue -Data $ini -Section 'EmuCore/GS' -Key 'OsdShowMessages'     -Value 'false'
 
     Write-IniFile -Path $cfg -Data $ini
-    & $Logger "PCSX2 optimized: upscale ${scale}x, Vulkan, 16x AF (tier $Tier)." 'SUCCESS'
+    & $Logger "PCSX2 optimized: upscale ${scale}x, $pcsxBackend, 16x AF (tier $Tier)." 'SUCCESS'
     return @{ Success = $true; Message = 'PCSX2 configured.'; Changed = @($cfg) }
 }
 
@@ -1757,7 +1841,7 @@ function Optimize-PCSX2 {
 # RPCS3 (YAML scalars)
 # ----------------------------------------------------------------------------
 function Optimize-RPCS3 {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
 
@@ -1775,7 +1859,7 @@ function Optimize-RPCS3 {
 # Xenia (TOML scalars)
 # ----------------------------------------------------------------------------
 function Optimize-Xenia {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
 
@@ -1793,7 +1877,7 @@ function Optimize-Xenia {
 # Dolphin / PrimeHack (GFX.ini + Dolphin.ini)
 # ----------------------------------------------------------------------------
 function Optimize-Dolphin {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $gfx     = Join-Path $Emulator.FolderPath 'User\Config\GFX.ini'
     $general = Join-Path $Emulator.FolderPath 'User\Config\Dolphin.ini'
 
@@ -1823,7 +1907,7 @@ function Optimize-Dolphin {
 # Cemu (settings.xml)
 # ----------------------------------------------------------------------------
 function Optimize-Cemu {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
 
@@ -1876,7 +1960,7 @@ function Set-XmlElement {
 # Yuzu / compatible (qt-config.ini)
 # ----------------------------------------------------------------------------
 function Optimize-Yuzu {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
     $ini = Read-IniFile -Path $cfg
@@ -1900,7 +1984,7 @@ function Optimize-Yuzu {
 # Ryujinx (Config.json)
 # ----------------------------------------------------------------------------
 function Optimize-Ryujinx {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     if (-not (Test-Path -LiteralPath $cfg)) {
         & $Logger "Ryujinx Config.json not present yet; will be created on first launch. Skipping." 'WARN'
@@ -1923,7 +2007,7 @@ function Optimize-Ryujinx {
 # PPSSPP (ppsspp.ini)
 # ----------------------------------------------------------------------------
 function Optimize-PPSSPP {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
     $ini = Read-IniFile -Path $cfg
@@ -1945,13 +2029,14 @@ function Optimize-PPSSPP {
 # DuckStation (settings.ini)
 # ----------------------------------------------------------------------------
 function Optimize-DuckStation {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
     $ini = Read-IniFile -Path $cfg
 
     $scale = switch ($Tier) { 'LowEnd' {2} 'MidRange' {4} 'HighEnd' {8} 'FourK' {9} default {4} }
-    Set-IniValue -Data $ini -Section 'GPU' -Key 'Renderer' -Value 'Vulkan'
+    $dsRenderer = if ($GpuVendor -eq 'Intel') { 'D3D11' } else { 'Vulkan' }
+    Set-IniValue -Data $ini -Section 'GPU' -Key 'Renderer' -Value $dsRenderer
     Set-IniValue -Data $ini -Section 'GPU' -Key 'ResolutionScale' -Value "$scale"
     Set-IniValue -Data $ini -Section 'GPU' -Key 'TextureFilter' -Value 'Bilinear'
     Set-IniValue -Data $ini -Section 'GPU' -Key 'PGXPEnable' -Value 'true'
@@ -1959,7 +2044,7 @@ function Optimize-DuckStation {
     Set-IniValue -Data $ini -Section 'Display' -Key 'VSync' -Value 'true'
     Set-IniValue -Data $ini -Section 'Display' -Key 'Fullscreen' -Value 'true'
     Write-IniFile -Path $cfg -Data $ini
-    & $Logger "DuckStation optimized: Vulkan, resolution scale ${scale}x, PGXP on (tier $Tier)." 'SUCCESS'
+    & $Logger "DuckStation optimized: $dsRenderer, resolution scale ${scale}x, PGXP on (tier $Tier)." 'SUCCESS'
     return @{ Success = $true; Message = 'DuckStation configured.'; Changed = @($cfg) }
 }
 
@@ -1967,7 +2052,7 @@ function Optimize-DuckStation {
 # melonDS (melonDS.ini)
 # ----------------------------------------------------------------------------
 function Optimize-MelonDS {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
     $ini = Read-IniFile -Path $cfg
@@ -1987,7 +2072,7 @@ function Optimize-MelonDS {
 # Flycast (emu.cfg)
 # ----------------------------------------------------------------------------
 function Optimize-Flycast {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
     $ini = Read-IniFile -Path $cfg
@@ -2007,7 +2092,7 @@ function Optimize-Flycast {
 # Citra / compatible (qt-config.ini)
 # ----------------------------------------------------------------------------
 function Optimize-Citra {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
     $ini = Read-IniFile -Path $cfg
@@ -2028,7 +2113,7 @@ function Optimize-Citra {
 # Redream (redream.cfg)
 # ----------------------------------------------------------------------------
 function Optimize-Redream {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
 
@@ -2046,7 +2131,7 @@ function Optimize-Redream {
 # MAME (mame.ini) - arcade hardware is fixed-res; tune presentation/VSync only.
 # ----------------------------------------------------------------------------
 function Optimize-MAME {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     if (-not (Test-Path -LiteralPath $cfg)) {
         & $Logger "mame.ini not present; MAME generates it via 'mame -createconfig'. Skipping." 'WARN'
@@ -2120,14 +2205,18 @@ function Get-ConnectedControllers {
 
         $vendor = if ($vendorId -and $VendorMap.ContainsKey($vendorId)) { $VendorMap[$vendorId] } else { 'Unknown vendor' }
         $family = Get-ControllerFamily -Vid $vendorId -Name $d.Name -PnpId $id
+        $conn   = Get-ControllerConnection -PnpId $id
+        $friendly = Get-ControllerFriendlyName -Name $d.Name -Family $family -Vendor $vendor
 
         $controllers.Add([pscustomobject]@{
             Name       = $d.Name
+            FriendlyName = $friendly
             Vid        = $vendorId
             Pid        = $productId
             Vendor     = $vendor
             Family     = $family
             ApiType    = (Get-ControllerApiType -PnpId $id -Family $family)
+            Connection = $conn
             PnpId      = $id
         })
     }
@@ -2156,6 +2245,42 @@ function Get-ControllerApiType {
     if ($PnpId -match '(?i)IG_') { return 'XInput' }     # IG_ marks XInput devices
     if ($Family -eq 'Xbox')      { return 'XInput' }
     return 'DirectInput'
+}
+
+function Get-ControllerConnection {
+    <#
+    .SYNOPSIS
+        Determines whether a controller is connected over Bluetooth or USB based
+        on its PnP device id enumerator prefix.
+    #>
+    param([string] $PnpId)
+    if ($PnpId -match '(?i)^BTHLE')    { return 'Bluetooth LE' }
+    if ($PnpId -match '(?i)^BTHENUM')  { return 'Bluetooth' }
+    if ($PnpId -match '(?i)^BTH')      { return 'Bluetooth' }
+    if ($PnpId -match '(?i)^USB')      { return 'USB' }
+    if ($PnpId -match '(?i)^HID')      { return 'HID (USB)' }
+    return 'Unknown'
+}
+
+function Get-ControllerFriendlyName {
+    <#
+    .SYNOPSIS
+        Builds a readable controller label from family + vendor when the raw HID
+        name is generic (e.g. "USB Input Device").
+    #>
+    param([string] $Name, [string] $Family, [string] $Vendor)
+    if ($Name -match '(?i)^(usb input device|hid-compliant.*|hid game.*|usb gamepad)$' -or [string]::IsNullOrWhiteSpace($Name)) {
+        $label = switch ($Family) {
+            'Xbox'        { 'Xbox-compatible controller' }
+            'PlayStation' { 'PlayStation-compatible controller' }
+            'Nintendo'    { 'Nintendo-compatible controller' }
+            '8BitDo'      { '8BitDo controller' }
+            default       { 'Generic controller' }
+        }
+        if ($Vendor -and $Vendor -ne 'Unknown vendor') { $label = "$label ($Vendor)" }
+        return $label
+    }
+    return $Name
 }
 
 function Get-ControllerInputProfile {
@@ -2918,7 +3043,7 @@ function Set-ControllerConfiguration {
     }
 
     foreach ($c in $Controllers) {
-        & $Logger "Detected controller: $($c.Name) [VID=$($c.Vid) PID=$($c.Pid)] family=$($c.Family) api=$($c.ApiType) vendor=$($c.Vendor)" 'INFO'
+        & $Logger "Detected controller: $($c.FriendlyName) [VID=$($c.Vid) PID=$($c.Pid)] family=$($c.Family) api=$($c.ApiType) conn=$($c.Connection) vendor=$($c.Vendor)" 'INFO'
     }
 
     $raAutoconf = Join-Path $Layout.Emulators 'retroarch\autoconfig'
@@ -2983,7 +3108,7 @@ function Invoke-FullSetup {
 
     # ---- Phase 4: Emulator detection ----
     Write-LogSection -Title 'Phase 4 - Emulator Detection' -Category 'Emulator'
-    $emulators = Get-InstalledEmulators -EmulatorsRoot $Layout.Emulators -Definitions $definitions
+    $emulators = @(Get-InstalledEmulators -EmulatorsRoot $Layout.Emulators -Definitions $definitions)
     foreach ($e in $emulators) {
         $state = if ($e.Installed) { 'INSTALLED' } else { 'missing' }
         $kind  = if ($e.Known) { 'known' } else { 'discovered' }
@@ -2993,9 +3118,13 @@ function Invoke-FullSetup {
     # ---- Phase 5: Auto-install missing emulators ----
     if (-not $SkipInstall) {
         Write-LogSection -Title 'Phase 5 - Auto-Install Missing Emulators' -Category 'Installation'
-        $missing = Get-MissingRequiredEmulators -Emulators $emulators
+        # NOTE: wrap in @() so a single result is not unwrapped to a scalar;
+        # Windows PowerShell + StrictMode would otherwise throw on .Count.
+        $missing = @(Get-MissingRequiredEmulators -Emulators $emulators)
         if ($missing.Count -eq 0) {
             & $LogInstall "No installable emulators are missing." 'SUCCESS'
+        } elseif ($DryRun) {
+            & $LogInstall "[DRY-RUN] Would install: $(( $missing | ForEach-Object { $_.Id }) -join ', ')" 'INFO'
         } else {
             & $LogInstall "$($missing.Count) emulator(s) missing and installable: $(( $missing | ForEach-Object { $_.Id }) -join ', ')" 'INFO'
             foreach ($m in $missing) {
@@ -3013,13 +3142,20 @@ function Invoke-FullSetup {
         & $LogInstall "Auto-install skipped by request (-SkipInstall)." 'INFO'
     }
 
-    # ---- Phase 6: Graphics optimization ----
+    # ---- Phase 6: Graphics optimization (GPU-vendor aware) ----
     Write-LogSection -Title 'Phase 6 - 4K Graphics Optimization' -Category 'Emulator'
-    foreach ($e in ($emulators | Where-Object { $_.Installed })) {
+    & $LogEmulator "GPU-aware tuning active for vendor: $($hw.GpuVendor)." 'INFO'
+    $optimizedCount = 0
+    foreach ($e in @($emulators | Where-Object { $_.Installed })) {
+        if ($DryRun) {
+            if ($e.Known -and $e.Supports4K) { & $LogEmulator "[DRY-RUN] Would optimize $($e.DisplayName) for $($profile.TargetWidth)x$($profile.TargetHeight)." 'INFO' }
+            continue
+        }
         $r = Invoke-EmulatorOptimization -Emulator $e -Tier $tier `
                 -TargetWidth $profile.TargetWidth -TargetHeight $profile.TargetHeight `
-                -BackupRoot $BackupDir -Logger $LogEmulator
-        if (-not $r.Success -and $r.Message -ne 'No optimizer (unknown emulator).') {
+                -BackupRoot $BackupDir -Logger $LogEmulator -GpuVendor $hw.GpuVendor
+        if ($r.Success) { $optimizedCount++ }
+        elseif ($r.Message -ne 'No optimizer (unknown emulator).') {
             & $LogEmulator "  -> $($e.DisplayName): $($r.Message)" 'WARN'
         }
     }
@@ -3030,6 +3166,8 @@ function Invoke-FullSetup {
     $controllers = @(Get-ConnectedControllers -VendorMap $vendorMap)
     if ($controllers.Count -eq 0) {
         & $LogController "No controllers currently connected. Use Watch mode for hotswap configuration." 'WARN'
+    } elseif ($DryRun) {
+        foreach ($c in $controllers) { & $LogController "[DRY-RUN] Would configure $($c.Name) [$($c.Vendor)] ($($c.Connection))." 'INFO' }
     } else {
         Set-ControllerConfiguration -Controllers $controllers -Layout $Layout -BackupDir $BackupDir -Logger $LogController
     }
@@ -3037,17 +3175,34 @@ function Invoke-FullSetup {
     # ---- Phase 8: Validation & repair ----
     Write-LogSection -Title 'Phase 8 - Configuration Validation & Repair' -Category 'Setup'
     $allIssues = New-Object System.Collections.Generic.List[object]
-    Test-RetroBatPaths   -Layout $Layout -Logger $LogSetup            | ForEach-Object { $allIssues.Add($_) }
-    Test-BiosFiles       -BiosDir $Layout.Bios -Logger $LogSetup      | ForEach-Object { $allIssues.Add($_) }
-    Test-EmulatorConfigs -Emulators $emulators -BackupRoot $BackupDir -Logger $LogSetup | ForEach-Object { $allIssues.Add($_) }
+    if ($DryRun) {
+        & $LogSetup "[DRY-RUN] Validation runs read-only; no repairs are applied." 'INFO'
+        Test-BiosFiles -BiosDir $Layout.Bios -Logger $LogSetup | ForEach-Object { $allIssues.Add($_) }
+    } else {
+        Test-RetroBatPaths   -Layout $Layout -Logger $LogSetup            | ForEach-Object { $allIssues.Add($_) }
+        Test-BiosFiles       -BiosDir $Layout.Bios -Logger $LogSetup      | ForEach-Object { $allIssues.Add($_) }
+        Test-EmulatorConfigs -Emulators $emulators -BackupRoot $BackupDir -Logger $LogSetup | ForEach-Object { $allIssues.Add($_) }
+    }
 
     $errors   = @($allIssues | Where-Object { $_.Severity -eq 'Error'   -and -not $_.Repaired })
     $warnings = @($allIssues | Where-Object { $_.Severity -eq 'Warning' -and -not $_.Repaired })
     & $LogSetup "Validation complete: $($errors.Count) unresolved error(s), $($warnings.Count) warning(s)." `
         $(if ($errors.Count -gt 0) { 'WARN' } else { 'SUCCESS' })
 
+    # ---- UPGRADE: HTML dashboard report ----
+    try {
+        $reportPath = Join-Path $LogsDir 'RetroBatAutoSetup-Report.html'
+        Write-HtmlReport -Path $reportPath -Hardware $hw -Layout $Layout -Tier $tier `
+            -Profile $profile -Emulators $emulators -Controllers $controllers -Issues $allIssues.ToArray()
+        & $LogSetup "HTML report written: $reportPath" 'SUCCESS'
+    } catch {
+        & $LogSetup "Could not write HTML report: $($_.Exception.Message)" 'WARN'
+    }
+
     # ---- Phase 9: Git integration ----
-    if (-not $SkipGit) {
+    if ($DryRun) {
+        & $LogSetup "[DRY-RUN] Git commit/push skipped." 'INFO'
+    } elseif (-not $SkipGit) {
         Write-LogSection -Title 'Phase 9 - Git Integration' -Category 'Setup'
         $installedCount = @($emulators | Where-Object { $_.Installed }).Count
         $msg  = "RetroBat auto-setup: tier=$tier, $($profile.TargetWidth)x$($profile.TargetHeight), "
@@ -3057,17 +3212,167 @@ function Invoke-FullSetup {
         & $LogSetup "Git integration skipped by request (-SkipGit)." 'INFO'
     }
 
+    # ---- Final summary ----
     Write-LogSection -Title 'RetroBat Auto Setup Complete' -Category 'Setup'
+    $installedTotal = @($emulators | Where-Object { $_.Installed }).Count
+    & $LogSetup "Summary: $installedTotal emulator(s) installed, $optimizedCount optimized for $($profile.TargetWidth)x$($profile.TargetHeight), $($controllers.Count) controller(s), $($warnings.Count) warning(s)." 'SUCCESS'
     & $LogSetup "All phases finished. Logs are in: $LogsDir" 'SUCCESS'
+}
+
+function Write-HtmlReport {
+    <#
+    .SYNOPSIS
+        UPGRADE: writes a self-contained HTML dashboard summarizing the run.
+    #>
+    [CmdletBinding()]
+    param(
+        [string] $Path,
+        [System.Collections.Specialized.OrderedDictionary] $Hardware,
+        [System.Collections.Specialized.OrderedDictionary] $Layout,
+        [string] $Tier,
+        [System.Collections.Specialized.OrderedDictionary] $Profile,
+        [object[]] $Emulators,
+        [object[]] $Controllers,
+        [object[]] $Issues
+    )
+
+    function HtmlEnc([string]$s) { if ($null -eq $s) { return '' } [System.Net.WebUtility]::HtmlEncode($s) }
+
+    $installed = @($Emulators | Where-Object { $_.Installed })
+    $known     = @($Emulators | Where-Object { $_.Known })
+    $generated = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+
+    $emuRows = ($Emulators | Sort-Object @{e={-([int]$_.Known)}}, DisplayName | ForEach-Object {
+        $badge = if ($_.Installed) { '<span class="ok">INSTALLED</span>' } else { '<span class="miss">missing</span>' }
+        $kind  = if ($_.Known) { 'known' } else { 'discovered' }
+        "<tr><td>$(HtmlEnc $_.DisplayName)</td><td>$kind</td><td>$badge</td><td class='mono'>$(HtmlEnc $_.ConfigType)</td></tr>"
+    }) -join "`n"
+
+    $ctrlRows = if ($Controllers -and $Controllers.Count) {
+        ($Controllers | ForEach-Object {
+            "<tr><td>$(HtmlEnc $_.FriendlyName)</td><td>$(HtmlEnc $_.Vendor)</td><td>$(HtmlEnc $_.Family)</td><td>$(HtmlEnc $_.ApiType)</td><td>$(HtmlEnc $_.Connection)</td><td class='mono'>$(HtmlEnc $_.Vid):$(HtmlEnc $_.Pid)</td></tr>"
+        }) -join "`n"
+    } else { "<tr><td colspan='6'>No controllers connected.</td></tr>" }
+
+    $biosMissing = @($Issues | Where-Object { $_.Type -eq 'Bios' })
+    $biosRows = if ($biosMissing.Count) {
+        ($biosMissing | ForEach-Object { "<tr><td class='mono'>$(HtmlEnc $_.Item)</td><td>$(HtmlEnc $_.Detail)</td></tr>" }) -join "`n"
+    } else { "<tr><td colspan='2' class='ok'>All tracked BIOS files present.</td></tr>" }
+
+    $html = @"
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RetroBat Auto Setup Report</title>
+<style>
+ body{font-family:Segoe UI,Arial,sans-serif;background:#12141a;color:#e6e6e6;margin:0;padding:24px}
+ h1{color:#7fd1ff;margin:0 0 4px} h2{color:#9ad19a;border-bottom:1px solid #2a2f3a;padding-bottom:6px;margin-top:28px}
+ .sub{color:#8a93a6;margin-bottom:18px}
+ .cards{display:flex;flex-wrap:wrap;gap:12px}
+ .card{background:#1b1f29;border:1px solid #2a2f3a;border-radius:10px;padding:14px 18px;min-width:160px}
+ .card .k{color:#8a93a6;font-size:12px;text-transform:uppercase} .card .v{font-size:18px;margin-top:4px}
+ table{border-collapse:collapse;width:100%;margin-top:10px;background:#1b1f29;border-radius:8px;overflow:hidden}
+ th,td{padding:8px 12px;text-align:left;border-bottom:1px solid #2a2f3a;font-size:14px}
+ th{background:#222735;color:#bcd}
+ .ok{color:#7ee27e;font-weight:600} .miss{color:#e2a05a} .mono{font-family:Consolas,monospace;color:#9fb3c8}
+ .footer{margin-top:26px;color:#6b7280;font-size:12px}
+</style></head><body>
+<h1>RetroBat Auto Setup &mdash; Report</h1>
+<div class="sub">Generated $generated &bull; Root: $(HtmlEnc $Layout.Root) &bull; RetroBat $(HtmlEnc $Layout.Version)</div>
+<div class="cards">
+ <div class="card"><div class="k">Performance tier</div><div class="v">$Tier</div></div>
+ <div class="card"><div class="k">Target resolution</div><div class="v">$($Profile.TargetWidth) x $($Profile.TargetHeight)</div></div>
+ <div class="card"><div class="k">Emulators installed</div><div class="v">$($installed.Count) / $($known.Count) known</div></div>
+ <div class="card"><div class="k">Controllers</div><div class="v">$(@($Controllers).Count)</div></div>
+</div>
+<h2>Hardware</h2>
+<div class="cards">
+ <div class="card"><div class="k">CPU</div><div class="v">$(HtmlEnc $Hardware.CpuName)</div></div>
+ <div class="card"><div class="k">GPU</div><div class="v">$(HtmlEnc $Hardware.GpuName) ($(HtmlEnc $Hardware.GpuVendor))</div></div>
+ <div class="card"><div class="k">VRAM</div><div class="v">$($Hardware.GpuVramMB) MB</div></div>
+ <div class="card"><div class="k">RAM</div><div class="v">$($Hardware.TotalRamGB) GB</div></div>
+ <div class="card"><div class="k">Storage</div><div class="v">$(HtmlEnc $Hardware.SystemDriveType)</div></div>
+ <div class="card"><div class="k">Display</div><div class="v">$($Hardware.DisplayWidth)x$($Hardware.DisplayHeight) @ $($Hardware.RefreshRateHz)Hz</div></div>
+</div>
+<h2>Emulators</h2>
+<table><tr><th>Emulator</th><th>Source</th><th>Status</th><th>Config</th></tr>
+$emuRows
+</table>
+<h2>Controllers</h2>
+<table><tr><th>Name</th><th>Vendor</th><th>Family</th><th>API</th><th>Connection</th><th>VID:PID</th></tr>
+$ctrlRows
+</table>
+<h2>Missing BIOS</h2>
+<table><tr><th>File</th><th>Needed for</th></tr>
+$biosRows
+</table>
+<div class="footer">RetroBat Auto Setup &bull; This report is regenerated on every run.</div>
+</body></html>
+"@
+    [System.IO.File]::WriteAllText($Path, $html, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Invoke-RestoreMode {
+    <#
+    .SYNOPSIS
+        UPGRADE: rolls back every configuration file from its most recent backup
+        in the Backups folder, restoring the state before the last optimization.
+    #>
+    Write-LogSection -Title 'RetroBat Auto Setup - Restore From Backups' -Category 'Setup'
+    if (-not (Test-Path -LiteralPath $BackupDir)) {
+        & $LogSetup "No Backups folder found at $BackupDir. Nothing to restore." 'WARN'
+        return
+    }
+
+    # Backups are named <originalfilename>.<timestamp>.bak; group by original name
+    # and restore the newest backup of each, writing it next to where it belongs.
+    $backups = Get-ChildItem -LiteralPath $BackupDir -Filter '*.bak' -File -ErrorAction SilentlyContinue
+    if (-not $backups -or @($backups).Count -eq 0) {
+        & $LogSetup "Backups folder is empty. Nothing to restore." 'WARN'
+        return
+    }
+
+    # Build an index of every config file currently under the RetroBat tree so we
+    # can map a backup's original leaf name back to its real location(s).
+    & $LogSetup "Indexing current configuration files under $($Layout.Root)..." 'INFO'
+    $index = @{}
+    foreach ($root in @($Layout.Emulators, $Layout.EmulationStationData, $Layout.System)) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        Get-ChildItem -LiteralPath $root -Recurse -File -Include *.ini,*.cfg,*.xml,*.yml,*.json,*.toml,*.config -ErrorAction SilentlyContinue | ForEach-Object {
+            $key = $_.Name.ToLower()
+            if (-not $index.ContainsKey($key)) { $index[$key] = New-Object System.Collections.Generic.List[string] }
+            $index[$key].Add($_.FullName)
+        }
+    }
+
+    $restored = 0; $skipped = 0
+    $groups = $backups | Group-Object { ($_.Name -replace '\.\d{8}_\d{6}\.bak$', '') }
+    foreach ($g in $groups) {
+        $newest = $g.Group | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        $leaf   = $g.Name.ToLower()
+        if ($index.ContainsKey($leaf)) {
+            foreach ($target in $index[$leaf]) {
+                Copy-Item -LiteralPath $newest.FullName -Destination $target -Force
+                & $LogSetup "Restored $target  <-  $($newest.Name)" 'SUCCESS'
+                $restored++
+            }
+        } else {
+            & $LogSetup "No current location found for '$($g.Name)'; left backup in place." 'WARN'
+            $skipped++
+        }
+    }
+    & $LogSetup "Restore complete: $restored file(s) restored, $skipped backup(s) had no current target." 'SUCCESS'
 }
 
 # ----------------------------------------------------------------------------
 # Entry point
 # ----------------------------------------------------------------------------
 try {
+    if ($DryRun) { Write-Log -Message "DRY-RUN mode: no files will be written." -Level WARN -Category 'Setup' }
     if ($Mode -eq 'Watch') {
         $definitions = $script:EmbeddedEmulatorJson | ConvertFrom-Json
         Start-HotswapWatcher -Layout $Layout -Definitions $definitions -BackupDir $BackupDir -Interval $WatchIntervalSeconds
+    } elseif ($Mode -eq 'Restore') {
+        Invoke-RestoreMode
     } else {
         Invoke-FullSetup
     }

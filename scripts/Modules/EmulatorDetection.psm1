@@ -44,11 +44,43 @@ function Find-EmulatorExecutable {
         $direct = Join-Path $Folder $exe
         if (Test-Path -LiteralPath $direct) { return $direct }
     }
-    # Fall back to a recursive search (handles versioned sub-folders).
+    # UPGRADE (performance): fall back to a DEPTH-LIMITED search instead of a full
+    # recursive scan. RetroBat emulators keep their executable at the root or one
+    # or two levels down, so capping depth turns a multi-second scan over large
+    # installs (100+ emulators) into a near-instant lookup.
     foreach ($exe in $Executables) {
-        $found = Get-ChildItem -LiteralPath $Folder -Filter $exe -Recurse -File -ErrorAction SilentlyContinue |
-                 Select-Object -First 1
-        if ($found) { return $found.FullName }
+        $found = Find-FileDepthLimited -Root $Folder -FileName $exe -MaxDepth 3
+        if ($found) { return $found }
+    }
+    return $null
+}
+
+function Find-FileDepthLimited {
+    <#
+    .SYNOPSIS
+        Breadth-first search for a file name up to a maximum directory depth.
+    .OUTPUTS
+        Full path of the first match, or $null.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [string] $Root,
+        [Parameter(Mandatory = $true)] [string] $FileName,
+        [int] $MaxDepth = 3
+    )
+    if (-not (Test-Path -LiteralPath $Root)) { return $null }
+
+    $queue = [System.Collections.Generic.Queue[object]]::new()
+    $queue.Enqueue([pscustomobject]@{ Path = $Root; Depth = 0 })
+    while ($queue.Count -gt 0) {
+        $node = $queue.Dequeue()
+        $hit  = Join-Path $node.Path $FileName
+        if (Test-Path -LiteralPath $hit -PathType Leaf) { return $hit }
+        if ($node.Depth -lt $MaxDepth) {
+            foreach ($sub in (Get-ChildItem -LiteralPath $node.Path -Directory -ErrorAction SilentlyContinue)) {
+                $queue.Enqueue([pscustomobject]@{ Path = $sub.FullName; Depth = $node.Depth + 1 })
+            }
+        }
     }
     return $null
 }
@@ -99,7 +131,9 @@ function Get-InstalledEmulators {
             if ($accountedDirs.Contains($dirName)) { return }
 
             # Treat a folder containing at least one .exe as a candidate emulator.
-            $exe = Get-ChildItem -LiteralPath $_.FullName -Filter '*.exe' -Recurse -File -ErrorAction SilentlyContinue |
+            # UPGRADE (performance): cap recursion depth so discovery over very
+            # large RetroBat installs stays fast.
+            $exe = Get-ChildItem -LiteralPath $_.FullName -Filter '*.exe' -File -Recurse -Depth 2 -ErrorAction SilentlyContinue |
                    Where-Object { $_.Name -notmatch '(?i)(unins|setup|vc_redist|crash|update|helper)\b' } |
                    Sort-Object Length -Descending |
                    Select-Object -First 1
@@ -144,4 +178,4 @@ function Get-MissingRequiredEmulators {
     })
 }
 
-Export-ModuleMember -Function Get-EmulatorDefinitions, Find-EmulatorExecutable, Get-InstalledEmulators, Get-MissingRequiredEmulators
+Export-ModuleMember -Function Get-EmulatorDefinitions, Find-EmulatorExecutable, Find-FileDepthLimited, Get-InstalledEmulators, Get-MissingRequiredEmulators

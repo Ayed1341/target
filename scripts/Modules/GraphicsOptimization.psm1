@@ -48,7 +48,8 @@ function Invoke-EmulatorOptimization {
         [Parameter(Mandatory = $true)] [int]    $TargetWidth,
         [Parameter(Mandatory = $true)] [int]    $TargetHeight,
         [Parameter(Mandatory = $true)] [string] $BackupRoot,
-        [Parameter(Mandatory = $true)] [scriptblock] $Logger
+        [Parameter(Mandatory = $true)] [scriptblock] $Logger,
+        [string] $GpuVendor = 'Unknown'
     )
 
     $log = { param($m, $l) & $Logger $m $l }
@@ -109,11 +110,14 @@ function Resolve-ConfigPath {
 # RetroArch (flat key = "value")
 # ----------------------------------------------------------------------------
 function Optimize-RetroArch {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Join-Path $Emulator.FolderPath 'retroarch.cfg'
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
 
     $smooth = if ($Tier -eq 'LowEnd') { 'false' } else { 'true' }
+    # GPU-aware backend: Vulkan for NVIDIA/AMD; glcore for Intel iGPUs where
+    # Vulkan drivers are historically less reliable in RetroArch.
+    $raDriver = if ($GpuVendor -eq 'Intel') { 'glcore' } else { 'vulkan' }
     $map = [ordered]@{
         'video_fullscreen'         = 'true'
         'video_windowed_fullscreen'= 'true'
@@ -123,7 +127,7 @@ function Optimize-RetroArch {
         'video_hard_sync'          = 'false'
         'video_smooth'             = $smooth
         'video_threaded'           = 'true'
-        'video_driver'             = 'vulkan'
+        'video_driver'             = $raDriver
         'video_shader_enable'      = 'true'
         'video_max_swapchain_images' = '3'
         'video_aspect_ratio_auto'  = 'true'
@@ -138,14 +142,18 @@ function Optimize-RetroArch {
 # PCSX2 (INI)
 # ----------------------------------------------------------------------------
 function Optimize-PCSX2 {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
     $ini = Read-IniFile -Path $cfg
 
     $scale = Get-TierScale -Tier $Tier -Max 8 -Min 1   # upscale_multiplier
+    # PCSX2 Renderer: 14=Vulkan, 12=Direct3D11. Intel iGPUs run most reliably on
+    # D3D11; discrete NVIDIA/AMD get Vulkan.
+    $pcsxRenderer = if ($GpuVendor -eq 'Intel') { '12' } else { '14' }
+    $pcsxBackend  = if ($GpuVendor -eq 'Intel') { 'Direct3D11' } else { 'Vulkan' }
     Set-IniValue -Data $ini -Section 'EmuCore/GS' -Key 'upscale_multiplier' -Value ("{0}" -f $scale)
-    Set-IniValue -Data $ini -Section 'EmuCore/GS' -Key 'Renderer'            -Value '14'   # 14 = Vulkan
+    Set-IniValue -Data $ini -Section 'EmuCore/GS' -Key 'Renderer'            -Value $pcsxRenderer
     Set-IniValue -Data $ini -Section 'EmuCore/GS' -Key 'AnisotropicFiltering' -Value '16'
     Set-IniValue -Data $ini -Section 'EmuCore/GS' -Key 'TextureFiltering'    -Value '2'    # bilinear (forced)
     Set-IniValue -Data $ini -Section 'EmuCore/GS' -Key 'VsyncEnable'         -Value '1'
@@ -153,7 +161,7 @@ function Optimize-PCSX2 {
     Set-IniValue -Data $ini -Section 'EmuCore/GS' -Key 'OsdShowMessages'     -Value 'false'
 
     Write-IniFile -Path $cfg -Data $ini
-    & $Logger "PCSX2 optimized: upscale ${scale}x, Vulkan, 16x AF (tier $Tier)." 'SUCCESS'
+    & $Logger "PCSX2 optimized: upscale ${scale}x, $pcsxBackend, 16x AF (tier $Tier)." 'SUCCESS'
     return @{ Success = $true; Message = 'PCSX2 configured.'; Changed = @($cfg) }
 }
 
@@ -161,7 +169,7 @@ function Optimize-PCSX2 {
 # RPCS3 (YAML scalars)
 # ----------------------------------------------------------------------------
 function Optimize-RPCS3 {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
 
@@ -179,7 +187,7 @@ function Optimize-RPCS3 {
 # Xenia (TOML scalars)
 # ----------------------------------------------------------------------------
 function Optimize-Xenia {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
 
@@ -197,7 +205,7 @@ function Optimize-Xenia {
 # Dolphin / PrimeHack (GFX.ini + Dolphin.ini)
 # ----------------------------------------------------------------------------
 function Optimize-Dolphin {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $gfx     = Join-Path $Emulator.FolderPath 'User\Config\GFX.ini'
     $general = Join-Path $Emulator.FolderPath 'User\Config\Dolphin.ini'
 
@@ -227,7 +235,7 @@ function Optimize-Dolphin {
 # Cemu (settings.xml)
 # ----------------------------------------------------------------------------
 function Optimize-Cemu {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
 
@@ -280,7 +288,7 @@ function Set-XmlElement {
 # Yuzu / compatible (qt-config.ini)
 # ----------------------------------------------------------------------------
 function Optimize-Yuzu {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
     $ini = Read-IniFile -Path $cfg
@@ -304,7 +312,7 @@ function Optimize-Yuzu {
 # Ryujinx (Config.json)
 # ----------------------------------------------------------------------------
 function Optimize-Ryujinx {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     if (-not (Test-Path -LiteralPath $cfg)) {
         & $Logger "Ryujinx Config.json not present yet; will be created on first launch. Skipping." 'WARN'
@@ -327,7 +335,7 @@ function Optimize-Ryujinx {
 # PPSSPP (ppsspp.ini)
 # ----------------------------------------------------------------------------
 function Optimize-PPSSPP {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
     $ini = Read-IniFile -Path $cfg
@@ -349,13 +357,14 @@ function Optimize-PPSSPP {
 # DuckStation (settings.ini)
 # ----------------------------------------------------------------------------
 function Optimize-DuckStation {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
     $ini = Read-IniFile -Path $cfg
 
     $scale = switch ($Tier) { 'LowEnd' {2} 'MidRange' {4} 'HighEnd' {8} 'FourK' {9} default {4} }
-    Set-IniValue -Data $ini -Section 'GPU' -Key 'Renderer' -Value 'Vulkan'
+    $dsRenderer = if ($GpuVendor -eq 'Intel') { 'D3D11' } else { 'Vulkan' }
+    Set-IniValue -Data $ini -Section 'GPU' -Key 'Renderer' -Value $dsRenderer
     Set-IniValue -Data $ini -Section 'GPU' -Key 'ResolutionScale' -Value "$scale"
     Set-IniValue -Data $ini -Section 'GPU' -Key 'TextureFilter' -Value 'Bilinear'
     Set-IniValue -Data $ini -Section 'GPU' -Key 'PGXPEnable' -Value 'true'
@@ -363,7 +372,7 @@ function Optimize-DuckStation {
     Set-IniValue -Data $ini -Section 'Display' -Key 'VSync' -Value 'true'
     Set-IniValue -Data $ini -Section 'Display' -Key 'Fullscreen' -Value 'true'
     Write-IniFile -Path $cfg -Data $ini
-    & $Logger "DuckStation optimized: Vulkan, resolution scale ${scale}x, PGXP on (tier $Tier)." 'SUCCESS'
+    & $Logger "DuckStation optimized: $dsRenderer, resolution scale ${scale}x, PGXP on (tier $Tier)." 'SUCCESS'
     return @{ Success = $true; Message = 'DuckStation configured.'; Changed = @($cfg) }
 }
 
@@ -371,7 +380,7 @@ function Optimize-DuckStation {
 # melonDS (melonDS.ini)
 # ----------------------------------------------------------------------------
 function Optimize-MelonDS {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
     $ini = Read-IniFile -Path $cfg
@@ -391,7 +400,7 @@ function Optimize-MelonDS {
 # Flycast (emu.cfg)
 # ----------------------------------------------------------------------------
 function Optimize-Flycast {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
     $ini = Read-IniFile -Path $cfg
@@ -411,7 +420,7 @@ function Optimize-Flycast {
 # Citra / compatible (qt-config.ini)
 # ----------------------------------------------------------------------------
 function Optimize-Citra {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
     $ini = Read-IniFile -Path $cfg
@@ -432,7 +441,7 @@ function Optimize-Citra {
 # Redream (redream.cfg)
 # ----------------------------------------------------------------------------
 function Optimize-Redream {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     New-ConfigBackup -Path $cfg -BackupRoot $BackupRoot | Out-Null
 
@@ -450,7 +459,7 @@ function Optimize-Redream {
 # MAME (mame.ini) - arcade hardware is fixed-res; tune presentation/VSync only.
 # ----------------------------------------------------------------------------
 function Optimize-MAME {
-    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger)
+    param($Emulator, $Tier, $TargetWidth, $TargetHeight, $BackupRoot, $Logger, $GpuVendor = 'Unknown')
     $cfg = Resolve-ConfigPath -Emulator $Emulator
     if (-not (Test-Path -LiteralPath $cfg)) {
         & $Logger "mame.ini not present; MAME generates it via 'mame -createconfig'. Skipping." 'WARN'

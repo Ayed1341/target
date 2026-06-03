@@ -55,14 +55,18 @@ function Get-ConnectedControllers {
 
         $vendor = if ($vendorId -and $VendorMap.ContainsKey($vendorId)) { $VendorMap[$vendorId] } else { 'Unknown vendor' }
         $family = Get-ControllerFamily -Vid $vendorId -Name $d.Name -PnpId $id
+        $conn   = Get-ControllerConnection -PnpId $id
+        $friendly = Get-ControllerFriendlyName -Name $d.Name -Family $family -Vendor $vendor
 
         $controllers.Add([pscustomobject]@{
             Name       = $d.Name
+            FriendlyName = $friendly
             Vid        = $vendorId
             Pid        = $productId
             Vendor     = $vendor
             Family     = $family
             ApiType    = (Get-ControllerApiType -PnpId $id -Family $family)
+            Connection = $conn
             PnpId      = $id
         })
     }
@@ -91,6 +95,42 @@ function Get-ControllerApiType {
     if ($PnpId -match '(?i)IG_') { return 'XInput' }     # IG_ marks XInput devices
     if ($Family -eq 'Xbox')      { return 'XInput' }
     return 'DirectInput'
+}
+
+function Get-ControllerConnection {
+    <#
+    .SYNOPSIS
+        Determines whether a controller is connected over Bluetooth or USB based
+        on its PnP device id enumerator prefix.
+    #>
+    param([string] $PnpId)
+    if ($PnpId -match '(?i)^BTHLE')    { return 'Bluetooth LE' }
+    if ($PnpId -match '(?i)^BTHENUM')  { return 'Bluetooth' }
+    if ($PnpId -match '(?i)^BTH')      { return 'Bluetooth' }
+    if ($PnpId -match '(?i)^USB')      { return 'USB' }
+    if ($PnpId -match '(?i)^HID')      { return 'HID (USB)' }
+    return 'Unknown'
+}
+
+function Get-ControllerFriendlyName {
+    <#
+    .SYNOPSIS
+        Builds a readable controller label from family + vendor when the raw HID
+        name is generic (e.g. "USB Input Device").
+    #>
+    param([string] $Name, [string] $Family, [string] $Vendor)
+    if ($Name -match '(?i)^(usb input device|hid-compliant.*|hid game.*|usb gamepad)$' -or [string]::IsNullOrWhiteSpace($Name)) {
+        $label = switch ($Family) {
+            'Xbox'        { 'Xbox-compatible controller' }
+            'PlayStation' { 'PlayStation-compatible controller' }
+            'Nintendo'    { 'Nintendo-compatible controller' }
+            '8BitDo'      { '8BitDo controller' }
+            default       { 'Generic controller' }
+        }
+        if ($Vendor -and $Vendor -ne 'Unknown vendor') { $label = "$label ($Vendor)" }
+        return $label
+    }
+    return $Name
 }
 
 function Get-ControllerInputProfile {
@@ -279,5 +319,6 @@ function Get-ControllerSignature {
 
 Export-ModuleMember -Function `
     Get-ConnectedControllers, Get-ControllerFamily, Get-ControllerApiType, `
+    Get-ControllerConnection, Get-ControllerFriendlyName, `
     Get-ControllerInputProfile, Write-RetroArchControllerProfile, `
     Write-EmulationStationInput, New-DeterministicGuid, Get-ControllerSignature

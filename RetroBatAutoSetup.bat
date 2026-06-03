@@ -34,6 +34,9 @@ echo    Root: %ROOT%
 echo  ============================================================
 echo.
 
+REM --- Force a UTF-8, English-friendly console so log output is consistent ----
+chcp 65001 >nul 2>&1
+
 REM --- Ensure the Logs directory exists for early failures -------------------
 if not exist "%LOGDIR%" mkdir "%LOGDIR%" >nul 2>&1
 
@@ -68,10 +71,14 @@ if "%~1"=="" goto args_done
 set "ARG=%~1"
 if /i "!ARG!"=="/watch"     set "MODE=Watch"
 if /i "!ARG!"=="-watch"     set "MODE=Watch"
+if /i "!ARG!"=="/restore"   set "MODE=Restore"
+if /i "!ARG!"=="-restore"   set "MODE=Restore"
 if /i "!ARG!"=="/noinstall" set "PS_ARGS=!PS_ARGS! -SkipInstall"
 if /i "!ARG!"=="-noinstall" set "PS_ARGS=!PS_ARGS! -SkipInstall"
 if /i "!ARG!"=="/nogit"     set "PS_ARGS=!PS_ARGS! -SkipGit"
 if /i "!ARG!"=="-nogit"     set "PS_ARGS=!PS_ARGS! -SkipGit"
+if /i "!ARG!"=="/dryrun"    set "PS_ARGS=!PS_ARGS! -DryRun"
+if /i "!ARG!"=="-dryrun"    set "PS_ARGS=!PS_ARGS! -DryRun"
 shift
 goto parse_args
 :args_done
