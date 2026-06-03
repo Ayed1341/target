@@ -41,23 +41,25 @@ function Get-ConnectedControllers {
 
     foreach ($d in $devices) {
         $id  = $d.PNPDeviceID
-        $vid = $null; $pid = $null
-        if ($id -match '(?i)VID_([0-9A-F]{4})') { $vid = $Matches[1].ToUpper() }
-        if ($id -match '(?i)PID_([0-9A-F]{4})') { $pid = $Matches[1].ToUpper() }
-        if (-not $vid) { continue }
+        # NOTE: do not use $pid here - it is a read-only PowerShell automatic
+        # variable (the current process id) and assigning to it throws.
+        $vendorId = $null; $productId = $null
+        if ($id -match '(?i)VID_([0-9A-F]{4})') { $vendorId = $Matches[1].ToUpper() }
+        if ($id -match '(?i)PID_([0-9A-F]{4})') { $productId = $Matches[1].ToUpper() }
+        if (-not $vendorId) { continue }
 
         # Deduplicate on VID+PID (composite devices expose multiple PnP nodes).
-        $key = "${vid}:${pid}"
+        $key = "${vendorId}:${productId}"
         if ($seen.Contains($key)) { continue }
         [void]$seen.Add($key)
 
-        $vendor = if ($vid -and $VendorMap.ContainsKey($vid)) { $VendorMap[$vid] } else { 'Unknown vendor' }
-        $family = Get-ControllerFamily -Vid $vid -Name $d.Name -PnpId $id
+        $vendor = if ($vendorId -and $VendorMap.ContainsKey($vendorId)) { $VendorMap[$vendorId] } else { 'Unknown vendor' }
+        $family = Get-ControllerFamily -Vid $vendorId -Name $d.Name -PnpId $id
 
         $controllers.Add([pscustomobject]@{
             Name       = $d.Name
-            Vid        = $vid
-            Pid        = $pid
+            Vid        = $vendorId
+            Pid        = $productId
             Vendor     = $vendor
             Family     = $family
             ApiType    = (Get-ControllerApiType -PnpId $id -Family $family)

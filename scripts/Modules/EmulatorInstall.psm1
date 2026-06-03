@@ -63,10 +63,24 @@ function Resolve-DownloadUrl {
             try {
                 $rel    = Invoke-RestMethod -Uri $api -Headers $headers -TimeoutSec 60 -ErrorAction Stop
                 $assets = @($rel.assets)
-                $match  = $assets | Where-Object { $_.name -match $Download.assetPattern } | Select-Object -First 1
+
+                # Never select a non-Windows or non-x64 build. Exclude assets for
+                # other operating systems and CPU architectures up front so a loose
+                # fallback can't grab a macOS / Linux / ARM64 artifact.
+                $foreign = '(?i)(arm64|aarch64|armhf|armv7|riscv|linux|ubuntu|debian|mac|macos|osx|darwin|android|appimage|ios|\.dmg$|\.deb$|\.rpm$|\.tar\.|\.apk$)'
+                $windowsAssets = $assets | Where-Object {
+                    $_.name -match '(?i)\.(7z|zip|exe)$' -and $_.name -notmatch $foreign
+                }
+
+                # 1) Honour the definition's specific pattern (within Windows assets).
+                $match = $windowsAssets | Where-Object { $_.name -match $Download.assetPattern } | Select-Object -First 1
+                # 2) Prefer anything that explicitly looks like Windows x64.
                 if (-not $match) {
-                    # Loosen: match on extension only if specific pattern failed.
-                    $match = $assets | Where-Object { $_.name -match '\.(7z|zip|exe)$' } | Select-Object -First 1
+                    $match = $windowsAssets | Where-Object { $_.name -match '(?i)(win|windows|x64|x86_64|64bit|amd64)' } | Select-Object -First 1
+                }
+                # 3) Last resort: any remaining Windows-safe archive.
+                if (-not $match) {
+                    $match = $windowsAssets | Select-Object -First 1
                 }
                 if ($match) {
                     return @{ Url = $match.browser_download_url; FileName = $match.name }

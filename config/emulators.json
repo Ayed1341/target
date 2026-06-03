@@ -72,17 +72,14 @@
         {
             "id": "dolphin",
             "displayName": "Dolphin (GameCube / Wii)",
-            "folder": "dolphin",
+            "folder": "dolphin-emu",
             "executables": [ "Dolphin.exe", "DolphinR.exe" ],
             "configType": "ini",
             "configFiles": [ "User/Config/GFX.ini", "User/Config/Dolphin.ini" ],
             "systems": [ "gc", "wii" ],
             "supports4K": true,
             "download": {
-                "type": "direct",
-                "url": "https://dl.dolphin-emu.org/builds/5e/4e/dolphin-master-5.0-21088-x64.7z",
-                "archive": "7z",
-                "stripRootFolder": true
+                "type": "none"
             }
         },
         {
@@ -173,7 +170,7 @@
             "download": {
                 "type": "github",
                 "repo": "melonDS-emu/melonDS",
-                "assetPattern": "win_x64.zip$",
+                "assetPattern": "(?i)windows.*\\.zip$",
                 "archive": "zip",
                 "stripRootFolder": false
             }
@@ -190,7 +187,7 @@
             "download": {
                 "type": "github",
                 "repo": "mamedev/mame",
-                "assetPattern": "64bit.exe$",
+                "assetPattern": "(?i)(x64|64bit)\\.exe$",
                 "archive": "sfx",
                 "stripRootFolder": false
             }
@@ -207,7 +204,7 @@
             "download": {
                 "type": "github",
                 "repo": "flyinghead/flycast",
-                "assetPattern": "win64.zip$",
+                "assetPattern": "(?i)windows.*\\.zip$",
                 "archive": "zip",
                 "stripRootFolder": false
             }

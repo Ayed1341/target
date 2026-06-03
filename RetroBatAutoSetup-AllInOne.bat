@@ -163,17 +163,14 @@ $script:EmbeddedEmulatorJson = @'
         {
             "id": "dolphin",
             "displayName": "Dolphin (GameCube / Wii)",
-            "folder": "dolphin",
+            "folder": "dolphin-emu",
             "executables": [ "Dolphin.exe", "DolphinR.exe" ],
             "configType": "ini",
             "configFiles": [ "User/Config/GFX.ini", "User/Config/Dolphin.ini" ],
             "systems": [ "gc", "wii" ],
             "supports4K": true,
             "download": {
-                "type": "direct",
-                "url": "https://dl.dolphin-emu.org/builds/5e/4e/dolphin-master-5.0-21088-x64.7z",
-                "archive": "7z",
-                "stripRootFolder": true
+                "type": "none"
             }
         },
         {
@@ -264,7 +261,7 @@ $script:EmbeddedEmulatorJson = @'
             "download": {
                 "type": "github",
                 "repo": "melonDS-emu/melonDS",
-                "assetPattern": "win_x64.zip$",
+                "assetPattern": "(?i)windows.*\\.zip$",
                 "archive": "zip",
                 "stripRootFolder": false
             }
@@ -281,7 +278,7 @@ $script:EmbeddedEmulatorJson = @'
             "download": {
                 "type": "github",
                 "repo": "mamedev/mame",
-                "assetPattern": "64bit.exe$",
+                "assetPattern": "(?i)(x64|64bit)\\.exe$",
                 "archive": "sfx",
                 "stripRootFolder": false
             }
@@ -298,7 +295,7 @@ $script:EmbeddedEmulatorJson = @'
             "download": {
                 "type": "github",
                 "repo": "flyinghead/flycast",
-                "assetPattern": "win64.zip$",
+                "assetPattern": "(?i)windows.*\\.zip$",
                 "archive": "zip",
                 "stripRootFolder": false
             }
@@ -1389,10 +1386,24 @@ function Resolve-DownloadUrl {
             try {
                 $rel    = Invoke-RestMethod -Uri $api -Headers $headers -TimeoutSec 60 -ErrorAction Stop
                 $assets = @($rel.assets)
-                $match  = $assets | Where-Object { $_.name -match $Download.assetPattern } | Select-Object -First 1
+
+                # Never select a non-Windows or non-x64 build. Exclude assets for
+                # other operating systems and CPU architectures up front so a loose
+                # fallback can't grab a macOS / Linux / ARM64 artifact.
+                $foreign = '(?i)(arm64|aarch64|armhf|armv7|riscv|linux|ubuntu|debian|mac|macos|osx|darwin|android|appimage|ios|\.dmg$|\.deb$|\.rpm$|\.tar\.|\.apk$)'
+                $windowsAssets = $assets | Where-Object {
+                    $_.name -match '(?i)\.(7z|zip|exe)$' -and $_.name -notmatch $foreign
+                }
+
+                # 1) Honour the definition's specific pattern (within Windows assets).
+                $match = $windowsAssets | Where-Object { $_.name -match $Download.assetPattern } | Select-Object -First 1
+                # 2) Prefer anything that explicitly looks like Windows x64.
                 if (-not $match) {
-                    # Loosen: match on extension only if specific pattern failed.
-                    $match = $assets | Where-Object { $_.name -match '\.(7z|zip|exe)$' } | Select-Object -First 1
+                    $match = $windowsAssets | Where-Object { $_.name -match '(?i)(win|windows|x64|x86_64|64bit|amd64)' } | Select-Object -First 1
+                }
+                # 3) Last resort: any remaining Windows-safe archive.
+                if (-not $match) {
+                    $match = $windowsAssets | Select-Object -First 1
                 }
                 if ($match) {
                     return @{ Url = $match.browser_download_url; FileName = $match.name }
@@ -2095,23 +2106,25 @@ function Get-ConnectedControllers {
 
     foreach ($d in $devices) {
         $id  = $d.PNPDeviceID
-        $vid = $null; $pid = $null
-        if ($id -match '(?i)VID_([0-9A-F]{4})') { $vid = $Matches[1].ToUpper() }
-        if ($id -match '(?i)PID_([0-9A-F]{4})') { $pid = $Matches[1].ToUpper() }
-        if (-not $vid) { continue }
+        # NOTE: do not use $pid here - it is a read-only PowerShell automatic
+        # variable (the current process id) and assigning to it throws.
+        $vendorId = $null; $productId = $null
+        if ($id -match '(?i)VID_([0-9A-F]{4})') { $vendorId = $Matches[1].ToUpper() }
+        if ($id -match '(?i)PID_([0-9A-F]{4})') { $productId = $Matches[1].ToUpper() }
+        if (-not $vendorId) { continue }
 
         # Deduplicate on VID+PID (composite devices expose multiple PnP nodes).
-        $key = "${vid}:${pid}"
+        $key = "${vendorId}:${productId}"
         if ($seen.Contains($key)) { continue }
         [void]$seen.Add($key)
 
-        $vendor = if ($vid -and $VendorMap.ContainsKey($vid)) { $VendorMap[$vid] } else { 'Unknown vendor' }
-        $family = Get-ControllerFamily -Vid $vid -Name $d.Name -PnpId $id
+        $vendor = if ($vendorId -and $VendorMap.ContainsKey($vendorId)) { $VendorMap[$vendorId] } else { 'Unknown vendor' }
+        $family = Get-ControllerFamily -Vid $vendorId -Name $d.Name -PnpId $id
 
         $controllers.Add([pscustomobject]@{
             Name       = $d.Name
-            Vid        = $vid
-            Pid        = $pid
+            Vid        = $vendorId
+            Pid        = $productId
             Vendor     = $vendor
             Family     = $family
             ApiType    = (Get-ControllerApiType -PnpId $id -Family $family)
