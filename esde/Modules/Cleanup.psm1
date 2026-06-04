@@ -80,8 +80,9 @@ function Get-CacheSize {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string] $CacheDir)
     if (-not (Test-Path -LiteralPath $CacheDir)) { return 0 }
-    $sum = (Get-ChildItem -LiteralPath $CacheDir -File -Recurse -ErrorAction SilentlyContinue |
-            Measure-Object -Property Length -Sum).Sum
+    $files = @(Get-ChildItem -LiteralPath $CacheDir -File -Recurse -ErrorAction SilentlyContinue)
+    $sum = 0
+    if ($files.Count -gt 0) { $sum = ($files | Measure-Object -Property Length -Sum).Sum }
     if (-not $sum) { return 0 }
     return [int64]$sum
 }

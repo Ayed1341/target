@@ -45,29 +45,34 @@ function Get-FileCrc32 {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string] $Path)
 
+    # All arithmetic is done in [long] with an explicit 32-bit mask. Constants use
+    # decimal form because the PowerShell literal 0xFFFFFFFF parses as [int] -1.
+    $mask = [long]4294967295      # 0xFFFFFFFF
+    $poly = [long]3988292384      # 0xEDB88320
     $table = New-Object 'System.UInt32[]' 256
     for ($i = 0; $i -lt 256; $i++) {
-        $c = [uint32]$i
+        $c = [long]$i
         for ($k = 0; $k -lt 8; $k++) {
-            if ($c -band 1) { $c = (0xEDB88320 -bxor ($c -shr 1)) } else { $c = ($c -shr 1) }
+            if (($c -band 1) -ne 0) { $c = ($poly -bxor ($c -shr 1)) -band $mask }
+            else { $c = ($c -shr 1) -band $mask }
         }
-        $table[$i] = $c
+        $table[$i] = [uint32]$c
     }
-    $crc = [uint32]0xFFFFFFFF
+    $crc = $mask  # 0xFFFFFFFF
     try {
         $fs = [System.IO.File]::OpenRead($Path)
         try {
             $buf = New-Object byte[] 65536
             while (($read = $fs.Read($buf, 0, $buf.Length)) -gt 0) {
                 for ($n = 0; $n -lt $read; $n++) {
-                    $idx = ($crc -bxor $buf[$n]) -band 0xFF
-                    $crc = ($table[$idx] -bxor ($crc -shr 8))
+                    $idx = [int](($crc -bxor [long]$buf[$n]) -band 255)
+                    $crc = (($crc -shr 8) -band $mask) -bxor [long]$table[$idx]
                 }
             }
         } finally { $fs.Dispose() }
     } catch { return $null }
-    $crc = $crc -bxor 0xFFFFFFFF
-    return ('{0:X8}' -f $crc)
+    $crc = ($crc -bxor $mask) -band $mask
+    return ('{0:X8}' -f [uint32]$crc)
 }
 
 function Invoke-ScreenScraperLookup {

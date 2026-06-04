@@ -56,6 +56,9 @@ if /i "%~1"=="/restore"    set "MODE=Restore"
 if /i "%~1"=="-restore"    set "MODE=Restore"
 if /i "%~1"=="/dryrun"     set "EXTRA=!EXTRA! -DryRun"
 if /i "%~1"=="-dryrun"     set "EXTRA=!EXTRA! -DryRun"
+if /i "%~1"=="/hashroms"   set "EXTRA=!EXTRA! -HashRoms"
+if /i "%~1"=="/genmedia"   set "EXTRA=!EXTRA! -GenerateMedia"
+if /i "%~1"=="/tune"       set "EXTRA=!EXTRA! -TuneEsde"
 if /i "%~1"=="/nomigrate"  set "EXTRA=!EXTRA! -SkipMigration"
 if /i "%~1"=="-nomigrate"  set "EXTRA=!EXTRA! -SkipMigration"
 if /i "%~1"=="/nodownload" set "EXTRA=!EXTRA! -SkipDownload"
@@ -89,6 +92,9 @@ param(
     [switch] $SkipOptimize,
     [switch] $SkipGit,
     [switch] $DryRun,
+    [switch] $HashRoms,
+    [switch] $GenerateMedia,
+    [switch] $TuneEsde,
     [int] $WatchIntervalSeconds = 5
 )
 Set-StrictMode -Version Latest
@@ -2784,6 +2790,281 @@ function Export-ScrapeList {
     return $lines.Count
 }
 
+# ----- module: MediaAudit -----
+<#
+.SYNOPSIS
+    Media audit engine - deep analysis and safe fixes for the ES-DE media library.
+.DESCRIPTION
+    Adds: media coverage %, per-system/per-type disk usage, image format/extension
+    mismatch detection + safe fix, oversized-media detection, video container audit,
+    optional ffmpeg frame extraction for games missing a screenshot, ROM<->gamelist
+    consistency (orphan entries / unlisted ROMs), play statistics, and a 1G1R
+    region-duplicate advisory.
+#>
+
+Set-StrictMode -Version Latest
+
+$script:CoverageTypes = @('covers','screenshots','videos','marquees','fanart','titlescreens','manuals','3dboxes')
+
+function Get-MediaCoverage {
+    <#
+    .SYNOPSIS
+        Returns per-system media coverage: for each media type, how many of the
+        system's games have that media (count + percentage).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $SystemName,
+        [System.Collections.Generic.HashSet[string]] $RomStems,
+        [Parameter(Mandatory = $true)][string] $SystemMediaDir
+    )
+    if ($null -eq $RomStems) { $RomStems = New-Object System.Collections.Generic.HashSet[string] }
+    $total = $RomStems.Count
+    $cov = [ordered]@{}
+    foreach ($t in $script:CoverageTypes) {
+        $have = 0
+        $dir = Join-Path $SystemMediaDir $t
+        if ($total -gt 0 -and (Test-Path -LiteralPath $dir)) {
+            $present = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+            Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue | ForEach-Object {
+                [void]$present.Add([System.IO.Path]::GetFileNameWithoutExtension($_.Name))
+            }
+            foreach ($s in $RomStems) { if ($present.Contains($s)) { $have++ } }
+        }
+        $pct = if ($total -gt 0) { [math]::Round(($have * 100.0) / $total, 1) } else { 0 }
+        $cov[$t] = @{ Have = $have; Total = $total; Percent = $pct }
+    }
+    return @{ System = $SystemName; Coverage = $cov }
+}
+
+function Get-MediaDiskUsage {
+    <#
+    .SYNOPSIS
+        Returns total bytes and per-type bytes for a system's media folder.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $SystemName, [Parameter(Mandatory = $true)][string] $SystemMediaDir)
+    $perType = [ordered]@{}; $total = [int64]0
+    if (Test-Path -LiteralPath $SystemMediaDir) {
+        foreach ($sub in (Get-ChildItem -LiteralPath $SystemMediaDir -Directory -ErrorAction SilentlyContinue)) {
+            $files = @(Get-ChildItem -LiteralPath $sub.FullName -File -Recurse -ErrorAction SilentlyContinue)
+            $sum = 0
+            if ($files.Count -gt 0) { $sum = ($files | Measure-Object -Property Length -Sum).Sum }
+            if (-not $sum) { $sum = 0 }
+            $perType[$sub.Name] = [int64]$sum; $total += [int64]$sum
+        }
+    }
+    return @{ System = $SystemName; TotalBytes = $total; PerType = $perType }
+}
+
+function Get-ImageMagicType {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $Path)
+    try {
+        $fs = [System.IO.File]::OpenRead($Path)
+        try {
+            $b = New-Object byte[] 12
+            $n = $fs.Read($b, 0, 12)
+            if ($n -ge 8 -and $b[0] -eq 0x89 -and $b[1] -eq 0x50 -and $b[2] -eq 0x4E -and $b[3] -eq 0x47) { return 'png' }
+            if ($n -ge 3 -and $b[0] -eq 0xFF -and $b[1] -eq 0xD8 -and $b[2] -eq 0xFF) { return 'jpg' }
+            if ($n -ge 3 -and $b[0] -eq 0x47 -and $b[1] -eq 0x49 -and $b[2] -eq 0x46) { return 'gif' }
+            if ($n -ge 2 -and $b[0] -eq 0x42 -and $b[1] -eq 0x4D) { return 'bmp' }
+            if ($n -ge 12 -and $b[0] -eq 0x52 -and $b[1] -eq 0x49 -and $b[8] -eq 0x57 -and $b[9] -eq 0x45) { return 'webp' }
+        } finally { $fs.Dispose() }
+    } catch { }
+    return $null
+}
+
+function Repair-MediaExtensions {
+    <#
+    .SYNOPSIS
+        Detects image files whose extension does not match their real format and
+        renames them to the correct extension (after backup). Returns count fixed.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $SystemMediaDir,
+        [Parameter(Mandatory = $true)][string] $BackupRoot,
+        [Parameter(Mandatory = $true)][scriptblock] $Logger,
+        [switch] $DryRun
+    )
+    $fixed = 0
+    if (-not (Test-Path -LiteralPath $SystemMediaDir)) { return 0 }
+    $imgExt = @('.png','.jpg','.jpeg','.gif','.bmp','.webp')
+    Get-ChildItem -LiteralPath $SystemMediaDir -File -Recurse -ErrorAction SilentlyContinue | Where-Object { $imgExt -contains $_.Extension.ToLower() } | ForEach-Object {
+        $real = Get-ImageMagicType -Path $_.FullName
+        if (-not $real) { return }
+        $cur = $_.Extension.TrimStart('.').ToLower()
+        if ($cur -eq 'jpeg') { $cur = 'jpg' }
+        if ($real -ne $cur) {
+            $target = [System.IO.Path]::ChangeExtension($_.FullName, $real)
+            if (Test-Path -LiteralPath $target) { return }
+            if ($DryRun) { & $Logger "[DRY-RUN] Would fix extension: $($_.Name) is actually $real" 'INFO'; $fixed++; return }
+            Backup-File -Path $_.FullName -BackupRoot $BackupRoot | Out-Null
+            Rename-Item -LiteralPath $_.FullName -NewName (Split-Path $target -Leaf) -Force
+            $fixed++
+        }
+    }
+    if ($fixed -gt 0) { & $Logger "Fixed $fixed mislabeled image extension(s) in $(Split-Path $SystemMediaDir -Leaf)." 'SUCCESS' }
+    return $fixed
+}
+
+function Get-OversizedMedia {
+    <#
+    .SYNOPSIS
+        Returns media files larger than a threshold (MB) that may slow ES-DE.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $SystemMediaDir, [int] $ThresholdMB = 8)
+    $hits = New-Object System.Collections.Generic.List[object]
+    if (Test-Path -LiteralPath $SystemMediaDir) {
+        $limit = $ThresholdMB * 1MB
+        Get-ChildItem -LiteralPath $SystemMediaDir -File -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt $limit -and $_.Extension -notin @('.mp4','.webm','.mkv','.avi') } | ForEach-Object {
+            $hits.Add(@{ File = $_.FullName; SizeMB = [math]::Round($_.Length/1MB,1) })
+        }
+    }
+    return $hits.ToArray()
+}
+
+function Get-VideoAudit {
+    <#
+    .SYNOPSIS
+        Reports videos whose container is not the ES-DE-friendly mp4/webm, and
+        whether ffmpeg is available to convert/extract.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $SystemMediaDir)
+    $vids = Join-Path $SystemMediaDir 'videos'
+    $nonFriendly = New-Object System.Collections.Generic.List[string]
+    $count = 0
+    if (Test-Path -LiteralPath $vids) {
+        Get-ChildItem -LiteralPath $vids -File -ErrorAction SilentlyContinue | ForEach-Object {
+            $count++
+            if ($_.Extension.ToLower() -notin @('.mp4','.webm')) { $nonFriendly.Add($_.FullName) }
+        }
+    }
+    return @{ Total = $count; NonFriendly = $nonFriendly.ToArray() }
+}
+
+function Test-FfmpegAvailable {
+    [CmdletBinding()] param()
+    $cmd = Get-Command ffmpeg -ErrorAction SilentlyContinue
+    return [bool]$cmd
+}
+
+function Invoke-VideoFrameForMissingScreens {
+    <#
+    .SYNOPSIS
+        For games that have a video but no screenshot, extracts a representative
+        frame with ffmpeg to create the missing screenshot. Requires ffmpeg.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $SystemMediaDir,
+        [Parameter(Mandatory = $true)][scriptblock] $Logger,
+        [switch] $DryRun
+    )
+    if (-not (Test-FfmpegAvailable)) { return 0 }
+    $vids = Join-Path $SystemMediaDir 'videos'
+    $shots = Join-Path $SystemMediaDir 'screenshots'
+    if (-not (Test-Path -LiteralPath $vids)) { return 0 }
+    if (-not (Test-Path -LiteralPath $shots) -and -not $DryRun) { New-Item -Path $shots -ItemType Directory -Force | Out-Null }
+    $made = 0
+    Get-ChildItem -LiteralPath $vids -File -ErrorAction SilentlyContinue | ForEach-Object {
+        $stem = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
+        $out = Join-Path $shots ($stem + '.png')
+        if (Test-Path -LiteralPath $out) { return }
+        if ($DryRun) { & $Logger "[DRY-RUN] Would extract screenshot for $stem" 'INFO'; $made++; return }
+        try {
+            $p = Start-Process -FilePath 'ffmpeg' -ArgumentList @('-y','-ss','3','-i',$_.FullName,'-frames:v','1','-q:v','3',$out) -NoNewWindow -Wait -PassThru -RedirectStandardError ([System.IO.Path]::GetTempFileName())
+            if ($p.ExitCode -eq 0 -and (Test-Path -LiteralPath $out)) { $made++ }
+        } catch { }
+    }
+    if ($made -gt 0) { & $Logger "Generated $made screenshot(s) from video via ffmpeg." 'SUCCESS' }
+    return $made
+}
+
+function Get-RomGamelistConsistency {
+    <#
+    .SYNOPSIS
+        Returns gamelist entries whose ROM file is missing (orphan entries) and
+        ROM files not present in the gamelist (unlisted).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $SystemRomDir,
+        [string] $GamelistPath
+    )
+    $orphanEntries = New-Object System.Collections.Generic.List[string]
+    $listed = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    if ($GamelistPath -and (Test-Path -LiteralPath $GamelistPath)) {
+        $g = Read-Gamelist -Path $GamelistPath
+        if ($g.Ok) {
+            foreach ($game in @($g.Games)) {
+                $pn = $game.SelectSingleNode('path')
+                if (-not $pn -or -not $pn.InnerText) { continue }
+                $rel = ($pn.InnerText -replace '/', '\') -replace '^\.\\',''
+                [void]$listed.Add([System.IO.Path]::GetFileName($rel))
+                $abs = Join-Path $SystemRomDir $rel
+                if (-not (Test-Path -LiteralPath $abs)) { $orphanEntries.Add($pn.InnerText) }
+            }
+        }
+    }
+    $unlisted = New-Object System.Collections.Generic.List[string]
+    if (Test-Path -LiteralPath $SystemRomDir) {
+        Get-ChildItem -LiteralPath $SystemRomDir -File -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_.Extension.ToLower() -in @('.txt','.xml','.dat','.jpg','.png')) { return }
+            if (-not $listed.Contains($_.Name)) { $unlisted.Add($_.Name) }
+        }
+    }
+    return @{ OrphanEntries = $orphanEntries.ToArray(); Unlisted = $unlisted.ToArray() }
+}
+
+function Get-PlayStats {
+    <#
+    .SYNOPSIS
+        Aggregates favorites / playcount / total playtime / most-played title from
+        a system's gamelist.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $SystemName, [string] $GamelistPath)
+    $fav = 0; $played = 0; $totalTime = 0; $top = ''; $topTime = -1
+    if ($GamelistPath -and (Test-Path -LiteralPath $GamelistPath)) {
+        $g = Read-Gamelist -Path $GamelistPath
+        if ($g.Ok) {
+            foreach ($game in @($g.Games)) {
+                $f = $game.SelectSingleNode('favorite'); if ($f -and $f.InnerText -eq 'true') { $fav++ }
+                $pc = $game.SelectSingleNode('playcount')
+                if ($pc -and [int]::TryParse($pc.InnerText, [ref]([int]$null))) { if ([int]$pc.InnerText -gt 0) { $played++ } }
+                $pt = $game.SelectSingleNode('playtime')
+                if ($pt) { $v = 0; if ([int]::TryParse($pt.InnerText, [ref]$v)) { $totalTime += $v; if ($v -gt $topTime) { $topTime = $v; $n = $game.SelectSingleNode('name'); $top = if ($n) { $n.InnerText } else { '' } } } }
+            }
+        }
+    }
+    return @{ System = $SystemName; Favorites = $fav; Played = $played; TotalPlaytimeMin = [math]::Round($totalTime/60); MostPlayed = $top }
+}
+
+function Get-RegionDuplicates {
+    <#
+    .SYNOPSIS
+        1G1R advisory: groups ROMs by region-insensitive base name and reports
+        groups with more than one regional variant.
+    #>
+    [CmdletBinding()]
+    param([System.Collections.Generic.HashSet[string]] $RomStems)
+    if ($null -eq $RomStems -or $RomStems.Count -eq 0) { return @() }
+    $byBase = @{}
+    foreach ($s in $RomStems) {
+        $base = [Regex]::Replace($s, '\s*[\(\[].*$', '').Trim().ToLower()
+        if (-not $base) { continue }
+        if (-not $byBase.ContainsKey($base)) { $byBase[$base] = New-Object System.Collections.Generic.List[string] }
+        $byBase[$base].Add($s)
+    }
+    $groups = New-Object System.Collections.Generic.List[object]
+    foreach ($k in $byBase.Keys) { if ($byBase[$k].Count -gt 1) { $groups.Add(@{ Base = $k; Variants = @($byBase[$k]) }) } }
+    return $groups.ToArray()
+}
+
 # ----- module: MediaDownload -----
 <#
 .SYNOPSIS
@@ -2832,29 +3113,34 @@ function Get-FileCrc32 {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string] $Path)
 
+    # All arithmetic is done in [long] with an explicit 32-bit mask. Constants use
+    # decimal form because the PowerShell literal 0xFFFFFFFF parses as [int] -1.
+    $mask = [long]4294967295      # 0xFFFFFFFF
+    $poly = [long]3988292384      # 0xEDB88320
     $table = New-Object 'System.UInt32[]' 256
     for ($i = 0; $i -lt 256; $i++) {
-        $c = [uint32]$i
+        $c = [long]$i
         for ($k = 0; $k -lt 8; $k++) {
-            if ($c -band 1) { $c = (0xEDB88320 -bxor ($c -shr 1)) } else { $c = ($c -shr 1) }
+            if (($c -band 1) -ne 0) { $c = ($poly -bxor ($c -shr 1)) -band $mask }
+            else { $c = ($c -shr 1) -band $mask }
         }
-        $table[$i] = $c
+        $table[$i] = [uint32]$c
     }
-    $crc = [uint32]0xFFFFFFFF
+    $crc = $mask  # 0xFFFFFFFF
     try {
         $fs = [System.IO.File]::OpenRead($Path)
         try {
             $buf = New-Object byte[] 65536
             while (($read = $fs.Read($buf, 0, $buf.Length)) -gt 0) {
                 for ($n = 0; $n -lt $read; $n++) {
-                    $idx = ($crc -bxor $buf[$n]) -band 0xFF
-                    $crc = ($table[$idx] -bxor ($crc -shr 8))
+                    $idx = [int](($crc -bxor [long]$buf[$n]) -band 255)
+                    $crc = (($crc -shr 8) -band $mask) -bxor [long]$table[$idx]
                 }
             }
         } finally { $fs.Dispose() }
     } catch { return $null }
-    $crc = $crc -bxor 0xFFFFFFFF
-    return ('{0:X8}' -f $crc)
+    $crc = ($crc -bxor $mask) -band $mask
+    return ('{0:X8}' -f [uint32]$crc)
 }
 
 function Invoke-ScreenScraperLookup {
@@ -3061,8 +3347,9 @@ function Get-CacheSize {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string] $CacheDir)
     if (-not (Test-Path -LiteralPath $CacheDir)) { return 0 }
-    $sum = (Get-ChildItem -LiteralPath $CacheDir -File -Recurse -ErrorAction SilentlyContinue |
-            Measure-Object -Property Length -Sum).Sum
+    $files = @(Get-ChildItem -LiteralPath $CacheDir -File -Recurse -ErrorAction SilentlyContinue)
+    $sum = 0
+    if ($files.Count -gt 0) { $sum = ($files | Measure-Object -Property Length -Sum).Sum }
     if (-not $sum) { return 0 }
     return [int64]$sum
 }
@@ -3572,6 +3859,244 @@ function Test-BiosAdvanced {
     $present = @($records | Where-Object { $_.Status -eq 'Present' }).Count
     & $Logger "BIOS check: $present/$($records.Count) present and valid." 'INFO'
     return $records.ToArray()
+}
+
+# ----- module: EsdeEnvironmentAudit -----
+<#
+.SYNOPSIS
+    ES-DE environment audit: custom es_systems.xml, themes, collections, alternative
+    emulator audit, safe es_settings.xml optimization, language, suite version,
+    connectivity, empty-system advisory, custom-systems suggestions, controller
+    config verification and a ROM hash manifest.
+#>
+
+Set-StrictMode -Version Latest
+
+$script:SuiteVersion = '2.0'
+
+function Get-SuiteVersion { return @{ Version = $script:SuiteVersion; Built = (Get-Date -Format 'yyyy-MM-dd') } }
+
+function Test-EsSystemsXml {
+    <#
+    .SYNOPSIS
+        Validates custom_systems/es_systems.xml is well-formed and counts systems.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][System.Collections.Specialized.OrderedDictionary] $Layout)
+    $path = Join-Path $Layout.CustomSystems 'es_systems.xml'
+    if (-not (Test-Path -LiteralPath $path)) { return @{ Present = $false; Valid = $true; Count = 0; Path = $path } }
+    try {
+        [xml]$xml = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+        $count = @($xml.SelectNodes('//system')).Count
+        return @{ Present = $true; Valid = $true; Count = $count; Path = $path }
+    } catch {
+        return @{ Present = $true; Valid = $false; Count = 0; Path = $path; Error = $_.Exception.Message }
+    }
+}
+
+function Get-EsdeThemes {
+    <#
+    .SYNOPSIS
+        Lists installed themes and the active theme (from es_settings 'ThemeSet').
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][System.Collections.Specialized.OrderedDictionary] $Layout)
+    $themes = @()
+    if (Test-Path -LiteralPath $Layout.Themes) {
+        $themes = @(Get-ChildItem -LiteralPath $Layout.Themes -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+    }
+    $active = Get-EsdeSetting -SettingsFile $Layout.SettingsFile -Name 'ThemeSet'
+    $activePresent = ($active -and ($themes -contains $active))
+    return @{ Installed = $themes; Active = $active; ActivePresent = $activePresent }
+}
+
+function Test-Collections {
+    <#
+    .SYNOPSIS
+        Validates custom collection files (collections/custom-*.cfg); each line is a
+        ROM path. Reports broken (non-existent) references per collection.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][System.Collections.Specialized.OrderedDictionary] $Layout)
+    $records = New-Object System.Collections.Generic.List[object]
+    if (-not (Test-Path -LiteralPath $Layout.Collections)) { return $records.ToArray() }
+    Get-ChildItem -LiteralPath $Layout.Collections -Filter 'custom-*.cfg' -File -ErrorAction SilentlyContinue | ForEach-Object {
+        $total = 0; $broken = 0
+        foreach ($line in (Get-Content -LiteralPath $_.FullName -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+            $p = $line.Trim()
+            if (-not $p) { continue }
+            $total++
+            $expanded = $p -replace '%ROMPATH%', $Layout.RomDir
+            $expanded = [Environment]::ExpandEnvironmentVariables($expanded) -replace '/', '\'
+            if (-not (Test-Path -LiteralPath $expanded)) { $broken++ }
+        }
+        $records.Add(@{ Collection = $_.BaseName; Entries = $total; Broken = $broken })
+    }
+    return $records.ToArray()
+}
+
+function Get-AltEmulatorAudit {
+    <#
+    .SYNOPSIS
+        Reads each gamelist's <alternativeEmulator><label> and flags labels whose
+        emulator does not appear to be installed (by display-name match).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]] $Systems,
+        [string[]] $InstalledDisplayNames = @()
+    )
+    $records = New-Object System.Collections.Generic.List[object]
+    foreach ($sys in $Systems) {
+        if (-not (Test-Path -LiteralPath $sys.Gamelist)) { continue }
+        $raw = Get-Content -LiteralPath $sys.Gamelist -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+        if (-not $raw) { continue }
+        $m = [Regex]::Match($raw, '<alternativeEmulator>\s*<label>([^<]+)</label>')
+        if (-not $m.Success) { continue }
+        $label = $m.Groups[1].Value.Trim()
+        $core  = ($label -replace '\(.*\)', '').Trim()
+        $installed = $false
+        foreach ($dn in $InstalledDisplayNames) {
+            if ($dn -and ($dn -match [Regex]::Escape($core) -or $core -match [Regex]::Escape(($dn -replace '\s*\(.*\)','')))) { $installed = $true; break }
+        }
+        $records.Add(@{ System = $sys.Name; Label = $label; Installed = $installed })
+    }
+    return $records.ToArray()
+}
+
+function Set-EsdeSettingValue {
+    <#
+    .SYNOPSIS
+        Sets/creates a typed setting (<int>/<bool>/<string>) in es_settings.xml.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $SettingsFile,
+        [Parameter(Mandatory = $true)][ValidateSet('int','bool','string')][string] $Type,
+        [Parameter(Mandatory = $true)][string] $Name,
+        [Parameter(Mandatory = $true)][string] $Value
+    )
+    if (-not (Test-Path -LiteralPath $SettingsFile)) {
+        $dir = Split-Path $SettingsFile -Parent
+        if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
+        [System.IO.File]::WriteAllText($SettingsFile, "<?xml version=`"1.0`"?>`r`n<settings />", (New-Object System.Text.UTF8Encoding($false)))
+    }
+    [xml]$xml = Get-Content -LiteralPath $SettingsFile -Raw -Encoding UTF8
+    if (-not $xml.DocumentElement) {
+        $root = $xml.CreateElement('settings'); $xml.AppendChild($root) | Out-Null
+    }
+    $node = $xml.SelectSingleNode("//$Type[@name='$Name']")
+    if (-not $node) {
+        $node = $xml.CreateElement($Type)
+        $node.SetAttribute('name', $Name)
+        $xml.DocumentElement.AppendChild($node) | Out-Null
+    }
+    $node.SetAttribute('value', $Value)
+    $xml.Save($SettingsFile)
+}
+
+function Optimize-EsdeSettings {
+    <#
+    .SYNOPSIS
+        Applies a small set of safe ES-DE settings tuned to the hardware (after
+        backup): VRAM cache cap and video audio. Never changes paths.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $SettingsFile,
+        [Parameter(Mandatory = $true)][System.Collections.Specialized.OrderedDictionary] $Hardware,
+        [Parameter(Mandatory = $true)][string] $BackupRoot,
+        [Parameter(Mandatory = $true)][scriptblock] $Logger,
+        [switch] $DryRun
+    )
+    if ($DryRun) { & $Logger "[DRY-RUN] Would tune es_settings.xml (MaxVRAM, VideoAudio)." 'INFO'; return $false }
+    Backup-File -Path $SettingsFile -BackupRoot $BackupRoot | Out-Null
+    # Cap the media VRAM cache sensibly: a quarter of GPU VRAM, clamped 256..1024 MB.
+    $vram = 512
+    if ($Hardware.Contains('GpuVramMB') -and $Hardware.GpuVramMB -gt 0) {
+        $vram = [int]([math]::Min(1024, [math]::Max(256, [math]::Floor($Hardware.GpuVramMB / 4))))
+    }
+    Set-EsdeSettingValue -SettingsFile $SettingsFile -Type 'int'  -Name 'MaxVRAM'    -Value "$vram"
+    Set-EsdeSettingValue -SettingsFile $SettingsFile -Type 'bool' -Name 'VideoAudio' -Value 'true'
+    & $Logger "Tuned es_settings.xml: MaxVRAM=$vram MB, VideoAudio=true." 'SUCCESS'
+    return $true
+}
+
+function Get-EsdeLanguage {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $SettingsFile)
+    $lang = Get-EsdeSetting -SettingsFile $SettingsFile -Name 'ApplicationLanguage'
+    if (-not $lang) { $lang = 'automatic' }
+    return $lang
+}
+
+function Test-Online {
+    [CmdletBinding()] param([int] $TimeoutMs = 2500)
+    # NB: do not use $host (reserved automatic variable).
+    foreach ($endpoint in @('api.screenscraper.fr','github.com','1.1.1.1')) {
+        try {
+            $c = New-Object System.Net.Sockets.TcpClient
+            $iar = $c.BeginConnect($endpoint, 443, $null, $null)
+            $ok = $iar.AsyncWaitHandle.WaitOne($TimeoutMs)
+            if ($ok -and $c.Connected) { $c.EndConnect($iar); $c.Close(); return $true }
+            $c.Close()
+        } catch { }
+    }
+    return $false
+}
+
+function Get-EmptySystemsAdvisory {
+    <#
+    .SYNOPSIS
+        Returns systems that have neither ROMs nor media (candidates for removal).
+        Advisory only - nothing is deleted.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][object[]] $Systems)
+    return @($Systems | Where-Object { -not $_.HasRoms -and -not $_.HasMedia } | ForEach-Object { $_.Name })
+}
+
+function Test-ControllerConfigApplied {
+    <#
+    .SYNOPSIS
+        Verifies controller config artifacts were actually written (non-empty).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][System.Collections.Specialized.OrderedDictionary] $Layout)
+    $esInput = (Test-Path -LiteralPath $Layout.InputFile) -and ((Get-Item -LiteralPath $Layout.InputFile -ErrorAction SilentlyContinue).Length -gt 0)
+    $db = Join-Path $Layout.DataDir 'gamecontrollerdb.txt'
+    $sdlDb = (Test-Path -LiteralPath $db) -and ((Get-Item -LiteralPath $db -ErrorAction SilentlyContinue).Length -gt 0)
+    return @{ EsInput = [bool]$esInput; GameControllerDb = [bool]$sdlDb }
+}
+
+function Export-RomHashManifest {
+    <#
+    .SYNOPSIS
+        Writes a CRC32 manifest of ROMs (skipping files above MaxSizeMB) for future
+        scraping / verification. Returns count hashed.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $SystemName,
+        [Parameter(Mandatory = $true)][string] $SystemRomDir,
+        [Parameter(Mandatory = $true)][string] $OutFile,
+        [int] $MaxSizeMB = 256
+    )
+    if (-not (Test-Path -LiteralPath $SystemRomDir)) { return 0 }
+    $limit = $MaxSizeMB * 1MB
+    $entries = New-Object System.Collections.Generic.List[object]
+    Get-ChildItem -LiteralPath $SystemRomDir -File -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.Extension.ToLower() -in @('.txt','.xml','.dat','.jpg','.png')) { return }
+        if ($_.Length -gt $limit) { return }
+        $crc = Get-FileCrc32 -Path $_.FullName
+        if ($crc) { $entries.Add(@{ file = $_.Name; size = $_.Length; crc32 = $crc }) }
+    }
+    if ($entries.Count -gt 0) {
+        $dir = Split-Path $OutFile -Parent
+        if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
+        @{ system = $SystemName; generated = (Get-Date -Format o); roms = $entries.ToArray() } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $OutFile -Encoding UTF8
+    }
+    return $entries.Count
 }
 
 # ----- module: GraphicsOptimization -----
@@ -4970,6 +5495,14 @@ function Invoke-EsdeSetup {
         Duplicates = @{ Groups=@(); TotalFiles=0; DuplicateFiles=0; ReclaimableBytes=0 }
         Bios = @(); BiosDetailed = @(); EmulatorGaps = @(); EmulatorIntegrity = @()
         Health = @(); PhaseResults = @(); Warnings = 0; Errors = 0
+        Audit = [ordered]@{
+            SuiteVersion = ''; Online = $false; Language = ''
+            EsSystems = @{}; Themes = @{}; Collections = @(); AltEmulators = @()
+            EmptySystems = @(); ControllerVerify = @{}; SettingsTuned = $false
+            ExtensionsFixed = 0; ScreenshotsGenerated = 0; RomsHashed = 0
+            MediaCoverage = @(); DiskUsage = @(); OversizedMedia = 0; NonFriendlyVideos = 0
+            PlayStats = @(); RegionDuplicates = @(); Consistency = @()
+        }
     }
 
     # Shared state with safe defaults so a failing phase never breaks later phases.
@@ -5076,6 +5609,21 @@ function Invoke-EsdeSetup {
         & $LMedia "Local media recovered (re-matched to ROMs): $($report.Media.Recovered)." 'SUCCESS'
     } catch { & $LMedia "Phase 5b error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Recovery' 'Error' $_.Exception.Message }
 
+    # ---- Phase 5c: media format/extension repair (+ optional ffmpeg frame grab) ----
+    try {
+        Write-EsdeSection -Title 'Phase 5c - Media Format Repair' -Category 'Media'
+        foreach ($sys in $systems) {
+            $report.Audit.ExtensionsFixed += (Repair-MediaExtensions -SystemMediaDir $sys.MediaDir -BackupRoot $BackupDir -Logger $LMedia -DryRun:$DryRun)
+        }
+        & $LMedia "Mislabeled image extensions fixed: $($report.Audit.ExtensionsFixed)." 'INFO'
+        if ($GenerateMedia) {
+            if (Test-FfmpegAvailable) {
+                foreach ($sys in $systems) { $report.Audit.ScreenshotsGenerated += (Invoke-VideoFrameForMissingScreens -SystemMediaDir $sys.MediaDir -Logger $LMedia -DryRun:$DryRun) }
+                & $LMedia "Screenshots generated from video (ffmpeg): $($report.Audit.ScreenshotsGenerated)." 'SUCCESS'
+            } else { & $LMedia "ffmpeg not found; skipping video frame extraction (install ffmpeg to enable)." 'WARN' }
+        }
+    } catch { & $LMedia "Phase 5c error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'MediaFormat' 'Error' $_.Exception.Message }
+
     # ---- Phase 6: metadata repair (self-heals malformed gamelists) ----
     try {
         Write-EsdeSection -Title 'Phase 6 - Metadata Repair' -Category 'Metadata'
@@ -5112,6 +5660,31 @@ function Invoke-EsdeSetup {
             if (-not $DryRun) { Export-ScrapeList -MissingResult $mm -SystemRomDir $sys.RomPath -OutFile $scrapeFile | Out-Null }
         }
     } catch { & $LMedia "Phase 8 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'MissingMedia' 'Error' $_.Exception.Message }
+
+    # ---- Phase 8b: deep media audit (coverage, disk usage, consistency, stats) ----
+    try {
+        Write-EsdeSection -Title 'Phase 8b - Media Audit' -Category 'Media'
+        foreach ($sys in $systems) {
+            $stems = Get-SystemGameStems -SystemRomDir $sys.RomPath -GamelistPath $sys.Gamelist
+            $cov = Get-MediaCoverage -SystemName $sys.Name -RomStems $stems -SystemMediaDir $sys.MediaDir
+            $report.Audit.MediaCoverage += @{ System=$sys.Name; Covers=$cov.Coverage.covers.Percent; Screenshots=$cov.Coverage.screenshots.Percent; Videos=$cov.Coverage.videos.Percent; Marquees=$cov.Coverage.marquees.Percent }
+            $du = Get-MediaDiskUsage -SystemName $sys.Name -SystemMediaDir $sys.MediaDir
+            $report.Audit.DiskUsage += @{ System=$sys.Name; MB=[math]::Round($du.TotalBytes/1MB,1) }
+            $report.Audit.OversizedMedia += @(Get-OversizedMedia -SystemMediaDir $sys.MediaDir).Count
+            $va = Get-VideoAudit -SystemMediaDir $sys.MediaDir
+            $report.Audit.NonFriendlyVideos += @($va.NonFriendly).Count
+            $cons = Get-RomGamelistConsistency -SystemRomDir $sys.RomPath -GamelistPath $sys.Gamelist
+            if (@($cons.OrphanEntries).Count -gt 0 -or @($cons.Unlisted).Count -gt 0) {
+                $report.Audit.Consistency += @{ System=$sys.Name; OrphanEntries=@($cons.OrphanEntries).Count; Unlisted=@($cons.Unlisted).Count }
+            }
+            $ps = Get-PlayStats -SystemName $sys.Name -GamelistPath $sys.Gamelist
+            if ($ps.Favorites -gt 0 -or $ps.Played -gt 0) { $report.Audit.PlayStats += $ps }
+            $rd = @(Get-RegionDuplicates -RomStems $stems)
+            if ($rd.Count -gt 0) { $report.Audit.RegionDuplicates += @{ System=$sys.Name; Groups=$rd.Count } }
+        }
+        $totalMB = 0.0; foreach ($d in $report.Audit.DiskUsage) { $totalMB += [double]$d.MB }
+        & $LMedia "Media audit: $([math]::Round($totalMB,1)) MB total, $($report.Audit.OversizedMedia) oversized, $($report.Audit.NonFriendlyVideos) non-mp4 video(s)." 'SUCCESS'
+    } catch { & $LMedia "Phase 8b error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'MediaAudit' 'Error' $_.Exception.Message }
 
     # ---- Phase 9: media download (missing only) ----
     try {
@@ -5203,6 +5776,40 @@ function Invoke-EsdeSetup {
         $report.BiosDetailed = $bd
         $report.Bios = @($bd | Where-Object { $_.Status -ne 'Present' } | ForEach-Object { @{ File=$_.File; System="$($_.System) [$($_.Status)]" } })
     } catch { & $LMain "Phase 13 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'BIOS' 'Error' $_.Exception.Message }
+
+    # ---- Phase 13b: ES-DE environment audit ----
+    try {
+        Write-EsdeSection -Title 'Phase 13b - Environment Audit' -Category 'Main'
+        $sv = Get-SuiteVersion; $report.Audit.SuiteVersion = "$($sv.Version) ($($sv.Built))"
+        $report.Audit.Online   = Test-Online
+        $report.Audit.Language = Get-EsdeLanguage -SettingsFile $Layout.SettingsFile
+        $ess = Test-EsSystemsXml -Layout $Layout
+        $report.Audit.EsSystems = @{ Present=$ess.Present; Valid=$ess.Valid; Count=$ess.Count }
+        if ($ess.Present -and -not $ess.Valid) { Add-HealthFinding 'es_systems' 'Warning' "Malformed custom es_systems.xml" }
+        $th = Get-EsdeThemes -Layout $Layout
+        $report.Audit.Themes = @{ Installed=@($th.Installed); Active=$th.Active; ActivePresent=$th.ActivePresent }
+        if ($th.Active -and -not $th.ActivePresent) { & $LMain "Active theme '$($th.Active)' is not installed." 'WARN'; Add-HealthFinding 'Theme' 'Warning' "Active theme missing: $($th.Active)" }
+        $report.Audit.Collections = @(Test-Collections -Layout $Layout)
+        $installedDisplay = @($report.EmulatorIntegrity | ForEach-Object { $_.DisplayName })
+        $report.Audit.AltEmulators = @(Get-AltEmulatorAudit -Systems $systems -InstalledDisplayNames $installedDisplay)
+        foreach ($ae in ($report.Audit.AltEmulators | Where-Object { -not $_.Installed })) {
+            & $LMain "System '$($ae.System)' is set to use '$($ae.Label)' but that emulator was not detected." 'WARN'
+            Add-HealthFinding 'AltEmulator' 'Warning' "$($ae.System): $($ae.Label) not installed"
+        }
+        $report.Audit.EmptySystems = @(Get-EmptySystemsAdvisory -Systems $systems)
+        if (($TuneEsde) -and (Test-Path -LiteralPath $Layout.SettingsFile)) {
+            $report.Audit.SettingsTuned = (Optimize-EsdeSettings -SettingsFile $Layout.SettingsFile -Hardware $hw -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun)
+        }
+        $report.Audit.ControllerVerify = Test-ControllerConfigApplied -Layout $Layout
+        if ($HashRoms) {
+            foreach ($sys in $systems) {
+                $hf = Join-Path $ReportsDir ("romhashes_{0}.json" -f $sys.Name)
+                if (-not $DryRun) { $report.Audit.RomsHashed += (Export-RomHashManifest -SystemName $sys.Name -SystemRomDir $sys.RomPath -OutFile $hf) }
+            }
+            & $LMain "ROM hash manifest: $($report.Audit.RomsHashed) ROM(s) hashed." 'SUCCESS'
+        }
+        & $LMain "Environment audit: online=$($report.Audit.Online), language=$($report.Audit.Language), themes=$(@($th.Installed).Count), es_systems=$($ess.Count), empty systems=$(@($report.Audit.EmptySystems).Count)." 'SUCCESS'
+    } catch { & $LMain "Phase 13b error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'EnvAudit' 'Error' $_.Exception.Message }
 
     # ---- Phase 14: reports (incl. health) ----
     try {

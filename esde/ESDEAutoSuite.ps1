@@ -21,6 +21,9 @@ param(
     [switch] $SkipOptimize,
     [switch] $SkipGit,
     [switch] $DryRun,
+    [switch] $HashRoms,
+    [switch] $GenerateMedia,
+    [switch] $TuneEsde,
     [int]    $WatchIntervalSeconds = 5
 )
 
@@ -44,8 +47,8 @@ $ConfigDir  = Join-Path $ScriptDir 'config'
 if (Test-Path -LiteralPath $ModulesDir) {
     foreach ($m in @('EsdeLogging','ConfigParser','Hardware','ProfileGeneration','EsdeDiscovery',
                      'HealthSelfHeal','BackupEngine','MediaClassification','MediaReorganization','RetroBatMigration',
-                     'MetadataRepair','DuplicateDetection','MissingMedia','MediaRecovery','MediaDownload','Cleanup',
-                     'EmulatorDetection','EsdeEmulators','EmulatorGap','BiosAdvanced','GraphicsOptimization',
+                     'MetadataRepair','DuplicateDetection','MissingMedia','MediaRecovery','MediaAudit','MediaDownload','Cleanup',
+                     'EmulatorDetection','EsdeEmulators','EmulatorGap','BiosAdvanced','EsdeEnvironmentAudit','GraphicsOptimization',
                      'ControllerManagement','Reporting','GitIntegration')) {
         Import-Module (Join-Path $ModulesDir "$m.psm1") -Force -DisableNameChecking
     }
@@ -203,6 +206,14 @@ function Invoke-EsdeSetup {
         Duplicates = @{ Groups=@(); TotalFiles=0; DuplicateFiles=0; ReclaimableBytes=0 }
         Bios = @(); BiosDetailed = @(); EmulatorGaps = @(); EmulatorIntegrity = @()
         Health = @(); PhaseResults = @(); Warnings = 0; Errors = 0
+        Audit = [ordered]@{
+            SuiteVersion = ''; Online = $false; Language = ''
+            EsSystems = @{}; Themes = @{}; Collections = @(); AltEmulators = @()
+            EmptySystems = @(); ControllerVerify = @{}; SettingsTuned = $false
+            ExtensionsFixed = 0; ScreenshotsGenerated = 0; RomsHashed = 0
+            MediaCoverage = @(); DiskUsage = @(); OversizedMedia = 0; NonFriendlyVideos = 0
+            PlayStats = @(); RegionDuplicates = @(); Consistency = @()
+        }
     }
 
     # Shared state with safe defaults so a failing phase never breaks later phases.
@@ -309,6 +320,21 @@ function Invoke-EsdeSetup {
         & $LMedia "Local media recovered (re-matched to ROMs): $($report.Media.Recovered)." 'SUCCESS'
     } catch { & $LMedia "Phase 5b error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Recovery' 'Error' $_.Exception.Message }
 
+    # ---- Phase 5c: media format/extension repair (+ optional ffmpeg frame grab) ----
+    try {
+        Write-EsdeSection -Title 'Phase 5c - Media Format Repair' -Category 'Media'
+        foreach ($sys in $systems) {
+            $report.Audit.ExtensionsFixed += (Repair-MediaExtensions -SystemMediaDir $sys.MediaDir -BackupRoot $BackupDir -Logger $LMedia -DryRun:$DryRun)
+        }
+        & $LMedia "Mislabeled image extensions fixed: $($report.Audit.ExtensionsFixed)." 'INFO'
+        if ($GenerateMedia) {
+            if (Test-FfmpegAvailable) {
+                foreach ($sys in $systems) { $report.Audit.ScreenshotsGenerated += (Invoke-VideoFrameForMissingScreens -SystemMediaDir $sys.MediaDir -Logger $LMedia -DryRun:$DryRun) }
+                & $LMedia "Screenshots generated from video (ffmpeg): $($report.Audit.ScreenshotsGenerated)." 'SUCCESS'
+            } else { & $LMedia "ffmpeg not found; skipping video frame extraction (install ffmpeg to enable)." 'WARN' }
+        }
+    } catch { & $LMedia "Phase 5c error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'MediaFormat' 'Error' $_.Exception.Message }
+
     # ---- Phase 6: metadata repair (self-heals malformed gamelists) ----
     try {
         Write-EsdeSection -Title 'Phase 6 - Metadata Repair' -Category 'Metadata'
@@ -345,6 +371,31 @@ function Invoke-EsdeSetup {
             if (-not $DryRun) { Export-ScrapeList -MissingResult $mm -SystemRomDir $sys.RomPath -OutFile $scrapeFile | Out-Null }
         }
     } catch { & $LMedia "Phase 8 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'MissingMedia' 'Error' $_.Exception.Message }
+
+    # ---- Phase 8b: deep media audit (coverage, disk usage, consistency, stats) ----
+    try {
+        Write-EsdeSection -Title 'Phase 8b - Media Audit' -Category 'Media'
+        foreach ($sys in $systems) {
+            $stems = Get-SystemGameStems -SystemRomDir $sys.RomPath -GamelistPath $sys.Gamelist
+            $cov = Get-MediaCoverage -SystemName $sys.Name -RomStems $stems -SystemMediaDir $sys.MediaDir
+            $report.Audit.MediaCoverage += @{ System=$sys.Name; Covers=$cov.Coverage.covers.Percent; Screenshots=$cov.Coverage.screenshots.Percent; Videos=$cov.Coverage.videos.Percent; Marquees=$cov.Coverage.marquees.Percent }
+            $du = Get-MediaDiskUsage -SystemName $sys.Name -SystemMediaDir $sys.MediaDir
+            $report.Audit.DiskUsage += @{ System=$sys.Name; MB=[math]::Round($du.TotalBytes/1MB,1) }
+            $report.Audit.OversizedMedia += @(Get-OversizedMedia -SystemMediaDir $sys.MediaDir).Count
+            $va = Get-VideoAudit -SystemMediaDir $sys.MediaDir
+            $report.Audit.NonFriendlyVideos += @($va.NonFriendly).Count
+            $cons = Get-RomGamelistConsistency -SystemRomDir $sys.RomPath -GamelistPath $sys.Gamelist
+            if (@($cons.OrphanEntries).Count -gt 0 -or @($cons.Unlisted).Count -gt 0) {
+                $report.Audit.Consistency += @{ System=$sys.Name; OrphanEntries=@($cons.OrphanEntries).Count; Unlisted=@($cons.Unlisted).Count }
+            }
+            $ps = Get-PlayStats -SystemName $sys.Name -GamelistPath $sys.Gamelist
+            if ($ps.Favorites -gt 0 -or $ps.Played -gt 0) { $report.Audit.PlayStats += $ps }
+            $rd = @(Get-RegionDuplicates -RomStems $stems)
+            if ($rd.Count -gt 0) { $report.Audit.RegionDuplicates += @{ System=$sys.Name; Groups=$rd.Count } }
+        }
+        $totalMB = 0.0; foreach ($d in $report.Audit.DiskUsage) { $totalMB += [double]$d.MB }
+        & $LMedia "Media audit: $([math]::Round($totalMB,1)) MB total, $($report.Audit.OversizedMedia) oversized, $($report.Audit.NonFriendlyVideos) non-mp4 video(s)." 'SUCCESS'
+    } catch { & $LMedia "Phase 8b error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'MediaAudit' 'Error' $_.Exception.Message }
 
     # ---- Phase 9: media download (missing only) ----
     try {
@@ -436,6 +487,40 @@ function Invoke-EsdeSetup {
         $report.BiosDetailed = $bd
         $report.Bios = @($bd | Where-Object { $_.Status -ne 'Present' } | ForEach-Object { @{ File=$_.File; System="$($_.System) [$($_.Status)]" } })
     } catch { & $LMain "Phase 13 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'BIOS' 'Error' $_.Exception.Message }
+
+    # ---- Phase 13b: ES-DE environment audit ----
+    try {
+        Write-EsdeSection -Title 'Phase 13b - Environment Audit' -Category 'Main'
+        $sv = Get-SuiteVersion; $report.Audit.SuiteVersion = "$($sv.Version) ($($sv.Built))"
+        $report.Audit.Online   = Test-Online
+        $report.Audit.Language = Get-EsdeLanguage -SettingsFile $Layout.SettingsFile
+        $ess = Test-EsSystemsXml -Layout $Layout
+        $report.Audit.EsSystems = @{ Present=$ess.Present; Valid=$ess.Valid; Count=$ess.Count }
+        if ($ess.Present -and -not $ess.Valid) { Add-HealthFinding 'es_systems' 'Warning' "Malformed custom es_systems.xml" }
+        $th = Get-EsdeThemes -Layout $Layout
+        $report.Audit.Themes = @{ Installed=@($th.Installed); Active=$th.Active; ActivePresent=$th.ActivePresent }
+        if ($th.Active -and -not $th.ActivePresent) { & $LMain "Active theme '$($th.Active)' is not installed." 'WARN'; Add-HealthFinding 'Theme' 'Warning' "Active theme missing: $($th.Active)" }
+        $report.Audit.Collections = @(Test-Collections -Layout $Layout)
+        $installedDisplay = @($report.EmulatorIntegrity | ForEach-Object { $_.DisplayName })
+        $report.Audit.AltEmulators = @(Get-AltEmulatorAudit -Systems $systems -InstalledDisplayNames $installedDisplay)
+        foreach ($ae in ($report.Audit.AltEmulators | Where-Object { -not $_.Installed })) {
+            & $LMain "System '$($ae.System)' is set to use '$($ae.Label)' but that emulator was not detected." 'WARN'
+            Add-HealthFinding 'AltEmulator' 'Warning' "$($ae.System): $($ae.Label) not installed"
+        }
+        $report.Audit.EmptySystems = @(Get-EmptySystemsAdvisory -Systems $systems)
+        if (($TuneEsde) -and (Test-Path -LiteralPath $Layout.SettingsFile)) {
+            $report.Audit.SettingsTuned = (Optimize-EsdeSettings -SettingsFile $Layout.SettingsFile -Hardware $hw -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun)
+        }
+        $report.Audit.ControllerVerify = Test-ControllerConfigApplied -Layout $Layout
+        if ($HashRoms) {
+            foreach ($sys in $systems) {
+                $hf = Join-Path $ReportsDir ("romhashes_{0}.json" -f $sys.Name)
+                if (-not $DryRun) { $report.Audit.RomsHashed += (Export-RomHashManifest -SystemName $sys.Name -SystemRomDir $sys.RomPath -OutFile $hf) }
+            }
+            & $LMain "ROM hash manifest: $($report.Audit.RomsHashed) ROM(s) hashed." 'SUCCESS'
+        }
+        & $LMain "Environment audit: online=$($report.Audit.Online), language=$($report.Audit.Language), themes=$(@($th.Installed).Count), es_systems=$($ess.Count), empty systems=$(@($report.Audit.EmptySystems).Count)." 'SUCCESS'
+    } catch { & $LMain "Phase 13b error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'EnvAudit' 'Error' $_.Exception.Message }
 
     # ---- Phase 14: reports (incl. health) ----
     try {
