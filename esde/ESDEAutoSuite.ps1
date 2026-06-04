@@ -45,7 +45,7 @@ if (Test-Path -LiteralPath $ModulesDir) {
     foreach ($m in @('EsdeLogging','ConfigParser','Hardware','ProfileGeneration','EsdeDiscovery',
                      'BackupEngine','MediaClassification','MediaReorganization','RetroBatMigration',
                      'MetadataRepair','DuplicateDetection','MissingMedia','MediaDownload','Cleanup',
-                     'EmulatorDetection','GraphicsOptimization','ControllerManagement','Reporting','GitIntegration')) {
+                     'EmulatorDetection','EsdeEmulators','GraphicsOptimization','ControllerManagement','Reporting','GitIntegration')) {
         Import-Module (Join-Path $ModulesDir "$m.psm1") -Force -DisableNameChecking
     }
 }
@@ -84,23 +84,31 @@ $LGit   = { param($m,$l='INFO') Write-EsdeLog -Message $m -Level $l -Category 'G
 
 function ConvertTo-Ht { param([object]$o) $h=@{}; if($o){ foreach($p in $o.PSObject.Properties){ $h[$p.Name]=$p.Value } }; return $h }
 
-function Resolve-EmulatorsRoot {
+function Resolve-MediaSource {
+    # The media to migrate lives in the ES-DE ROM directory (per-system media
+    # sub-folders / gamelist references). An optional -RetroBatRoot is honoured as
+    # an explicit override only; nothing is assumed about RetroBat's location.
     param([string] $RetroBatRoot, [System.Collections.Specialized.OrderedDictionary] $Layout)
-    $cands = New-Object System.Collections.Generic.List[string]
-    if ($RetroBatRoot) { $cands.Add((Join-Path $RetroBatRoot 'emulators')) }
-    $cands.Add((Join-Path (Split-Path $Layout.DataDir -Parent) 'emulators'))
-    foreach ($p in @('C:\RetroBat\emulators','D:\RetroBat\emulators','E:\RetroBat\emulators')) { $cands.Add($p) }
-    foreach ($c in ($cands | Select-Object -Unique)) { if ($c -and (Test-Path -LiteralPath $c)) { return $c } }
+    if ($RetroBatRoot) {
+        $rr = Join-Path $RetroBatRoot 'roms'
+        if (Test-Path -LiteralPath $rr) { return $rr }
+        if (Test-Path -LiteralPath $RetroBatRoot) { return $RetroBatRoot }
+    }
+    if (Test-Path -LiteralPath $Layout.RomDir) { return $Layout.RomDir }
     return $null
 }
 
-function Resolve-RetroBatRoms {
-    param([string] $RetroBatRoot, [System.Collections.Specialized.OrderedDictionary] $Layout)
-    $cands = New-Object System.Collections.Generic.List[string]
-    if ($RetroBatRoot) { $cands.Add((Join-Path $RetroBatRoot 'roms')) }
-    $cands.Add($Layout.RomDir)
-    foreach ($p in @('C:\RetroBat\roms','D:\RetroBat\roms','E:\RetroBat\roms')) { $cands.Add($p) }
-    foreach ($c in ($cands | Select-Object -Unique)) { if ($c -and (Test-Path -LiteralPath $c)) { return $c } }
+function Get-EmuRoots {
+    # ES-DE-native emulator roots (no RetroBat assumptions); $RetroBatRoot is an
+    # optional explicit override only.
+    return @(Get-EsdeEmulatorsRoots -Layout $Layout -ExtraRoot $RetroBatRoot)
+}
+
+function Find-RetroArchExe {
+    foreach ($root in (Get-EmuRoots)) {
+        $exe = Find-FileDepthLimited -Root $root -FileName 'retroarch.exe' -MaxDepth 4
+        if ($exe) { return $exe }
+    }
     return $null
 }
 
@@ -165,9 +173,9 @@ function Set-EsdeControllers {
     foreach ($c in $Controllers) {
         & $LCtl "Controller: $($c.FriendlyName) [VID=$($c.Vid) PID=$($c.Pid)] $($c.Family)/$($c.ApiType)/$($c.Connection) - $($c.Vendor)" 'INFO'
     }
-    $emuRoot = Resolve-EmulatorsRoot -RetroBatRoot $RetroBatRoot -Layout $Layout
-    if ($emuRoot) {
-        $ra = Join-Path $emuRoot 'retroarch\autoconfig'
+    $raExe = Find-RetroArchExe
+    if ($raExe) {
+        $ra = Join-Path (Split-Path $raExe -Parent) 'autoconfig'
         foreach ($c in $Controllers) { Write-RetroArchControllerProfile -Controller $c -AutoconfigDir $ra -Logger $LCtl | Out-Null }
     }
     if (-not $DryRun) {
@@ -228,9 +236,9 @@ function Invoke-EsdeSetup {
     # ---- Phase 4: RetroBat migration ----
     Write-EsdeSection -Title 'Phase 4 - RetroBat Media Migration' -Category 'Migration'
     if (-not $SkipMigration) {
-        $rbRoms = Resolve-RetroBatRoms -RetroBatRoot $RetroBatRoot -Layout $Layout
+        $rbRoms = Resolve-MediaSource -RetroBatRoot $RetroBatRoot -Layout $Layout
         if ($rbRoms) {
-            & $LMig "RetroBat ROM/media source: $rbRoms" 'INFO'
+            & $LMig "Media migration source (ES-DE ROM dir): $rbRoms" 'INFO'
             foreach ($sysDir in (Get-ChildItem -LiteralPath $rbRoms -Directory -ErrorAction SilentlyContinue)) {
                 if (-not (Test-RetroBatMediaLayout -SystemRomDir $sysDir.FullName)) { continue }
                 $sysMedia = Join-Path $Layout.MediaDir $sysDir.Name
@@ -304,16 +312,16 @@ function Invoke-EsdeSetup {
     # ---- Phase 11: emulator graphics optimization ----
     Write-EsdeSection -Title 'Phase 11 - Emulator Graphics Optimization' -Category 'Optimization'
     if (-not $SkipOptimize) {
-        $emuRoot = Resolve-EmulatorsRoot -RetroBatRoot $RetroBatRoot -Layout $Layout
-        if ($emuRoot) {
-            & $LOpt "Emulators root: $emuRoot (GPU vendor: $($hw.GpuVendor))" 'INFO'
-            $emulators = @(Get-InstalledEmulators -EmulatorsRoot $emuRoot -Definitions $emuDefs)
+        $emuRoots = Get-EmuRoots
+        if ($emuRoots.Count -gt 0) {
+            & $LOpt "ES-DE emulator root(s): $($emuRoots -join '; ') (GPU vendor: $($hw.GpuVendor))" 'INFO'
+            $emulators = @(Get-EsdeEmulators -Roots $emuRoots -Definitions $emuDefs)
             foreach ($e in ($emulators | Where-Object { $_.Installed })) {
                 if ($DryRun) { if ($e.Known -and $e.Supports4K) { & $LOpt "[DRY-RUN] Would optimize $($e.DisplayName)." 'INFO' }; continue }
                 $r = Invoke-EmulatorOptimization -Emulator $e -Tier $tier -TargetWidth $profile.TargetWidth -TargetHeight $profile.TargetHeight -BackupRoot $BackupDir -Logger $LOpt -GpuVendor $hw.GpuVendor
                 $report.Optimization += @{ Emulator=$e.DisplayName; Result=$(if($r.Success){'optimized'}else{$r.Message}) }
             }
-        } else { & $LOpt "No emulators root found; skipping graphics optimization." 'WARN' }
+        } else { & $LOpt "No ES-DE emulator folder found; skipping graphics optimization." 'WARN' }
     } else { & $LOpt "Optimization skipped by request." 'INFO' }
 
     # ---- Phase 12: controllers ----
@@ -329,12 +337,14 @@ function Invoke-EsdeSetup {
     # ---- Phase 13: BIOS validation ----
     Write-EsdeSection -Title 'Phase 13 - BIOS Validation' -Category 'Main'
     $biosDir = $null
-    $emuRoot2 = Resolve-EmulatorsRoot -RetroBatRoot $RetroBatRoot -Layout $Layout
     $biosCandidates = New-Object System.Collections.Generic.List[string]
+    # ES-DE-native BIOS locations: alongside the ROM dir, the ES-DE data dir, and
+    # the RetroArch 'system' folder if RetroArch is present.
     $biosCandidates.Add((Join-Path (Split-Path $Layout.RomDir -Parent) 'bios'))
     $biosCandidates.Add((Join-Path $Layout.RomDir 'bios'))
-    if ($emuRoot2)     { $biosCandidates.Add((Join-Path $emuRoot2 'retroarch\system')) }
-    if ($RetroBatRoot) { $biosCandidates.Add((Join-Path $RetroBatRoot 'bios')) }
+    $biosCandidates.Add((Join-Path $Layout.DataDir 'bios'))
+    $raExe2 = Find-RetroArchExe
+    if ($raExe2) { $biosCandidates.Add((Join-Path (Split-Path $raExe2 -Parent) 'system')) }
     foreach ($cand in $biosCandidates) {
         if ($cand -and (Test-Path -LiteralPath $cand)) { $biosDir = $cand; break }
     }

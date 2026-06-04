@@ -2809,6 +2809,155 @@ function Get-MissingRequiredEmulators {
     })
 }
 
+# ----- module: EsdeEmulators -----
+<#
+.SYNOPSIS
+    ES-DE-native emulator discovery.
+.DESCRIPTION
+    Discovers emulators the way ES-DE itself does, with NO dependency on a RetroBat
+    folder layout:
+      1. Parses ES-DE's es_find_rules.xml (staticpath rules) and resolves the
+         real emulator binaries, expanding %ESPATH% / %ROMPATH% / %EMUPATH% / ~.
+      2. Scans the ES-DE "Emulators" tree(s) next to the installation.
+    Emulators are matched by EXECUTABLE name (retroarch.exe, pcsx2-qt.exe, ...)
+    rather than folder name, so ES-DE naming (RetroArch-Win64, PCSX2-Qt, ...) is
+    handled correctly. Each match is returned as a descriptor compatible with the
+    graphics optimizer.
+#>
+
+Set-StrictMode -Version Latest
+
+function Get-EsdeFindRulesPath {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][System.Collections.Specialized.OrderedDictionary] $Layout)
+    $dataParent = Split-Path $Layout.DataDir -Parent
+    $cands = @(
+        (Join-Path $Layout.CustomSystems 'es_find_rules.xml'),
+        (Join-Path $Layout.DataDir 'resources\systems\windows\es_find_rules.xml'),
+        (Join-Path $dataParent 'resources\systems\windows\es_find_rules.xml'),
+        (Join-Path $dataParent 'ES-DE\resources\systems\windows\es_find_rules.xml')
+    )
+    foreach ($c in $cands) { if ($c -and (Test-Path -LiteralPath $c)) { return $c } }
+    return $null
+}
+
+function Expand-EsdePath {
+    <#
+    .SYNOPSIS
+        Expands ES-DE path variables and environment variables in a rule entry.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $Entry,
+        [Parameter(Mandatory = $true)][string] $EsPath,
+        [Parameter(Mandatory = $true)][string] $RomPath
+    )
+    $p = $Entry
+    $p = $p.Replace('%ESPATH%', $EsPath).Replace('%ROMPATH%', $RomPath).Replace('%EMUPATH%', $EsPath)
+    if ($p.StartsWith('~')) {
+        $home2 = if ($env:USERPROFILE) { $env:USERPROFILE } else { $env:HOME }
+        if ($home2) { $p = $home2 + $p.Substring(1) }
+    }
+    $p = [Environment]::ExpandEnvironmentVariables($p)
+    return ($p -replace '/', '\')
+}
+
+function Get-EsdeEmulatorsRoots {
+    <#
+    .SYNOPSIS
+        Returns existing candidate "Emulators" roots derived from the ES-DE install
+        plus an optional explicit extra root. No RetroBat paths are assumed.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.Specialized.OrderedDictionary] $Layout,
+        [string] $ExtraRoot
+    )
+    $dataParent = Split-Path $Layout.DataDir -Parent
+    $roots = New-Object System.Collections.Generic.List[string]
+    foreach ($c in @(
+        (Join-Path $Layout.DataDir 'Emulators'),
+        (Join-Path $dataParent 'Emulators'),
+        (Join-Path $dataParent 'emulators'),
+        (Join-Path $Layout.DataDir 'emulators')
+    )) { if ($c) { $roots.Add($c) } }
+    if ($ExtraRoot) {
+        $roots.Add($ExtraRoot)
+        $roots.Add((Join-Path $ExtraRoot 'emulators'))
+        $roots.Add((Join-Path $ExtraRoot 'Emulators'))
+    }
+
+    # Derive roots from es_find_rules.xml: any existing staticpath exe whose path
+    # contains an 'Emulators' segment yields that segment as a root.
+    $frp = Get-EsdeFindRulesPath -Layout $Layout
+    if ($frp) {
+        $esPath = $dataParent
+        try {
+            [xml]$xml = Get-Content -LiteralPath $frp -Raw -Encoding UTF8
+            foreach ($entry in $xml.SelectNodes("//rule[@type='staticpath']/entry")) {
+                $abs = Expand-EsdePath -Entry $entry.InnerText -EsPath $esPath -RomPath $Layout.RomDir
+                if (Test-Path -LiteralPath $abs) {
+                    $parts = $abs -split '\\'
+                    for ($i = $parts.Length - 1; $i -ge 0; $i--) {
+                        if ($parts[$i] -ieq 'Emulators') {
+                            $roots.Add(($parts[0..$i] -join '\'))
+                            break
+                        }
+                    }
+                }
+            }
+        } catch { }
+    }
+
+    return @($roots | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)
+}
+
+function Get-EsdeEmulators {
+    <#
+    .SYNOPSIS
+        Returns emulator descriptors by matching known executables (from the
+        definition database) anywhere under the given roots. Folder naming is
+        irrelevant; FolderPath is set to the directory containing the executable.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string[]] $Roots,
+        [Parameter(Mandatory = $true)][object]   $Definitions
+    )
+
+    $results = New-Object System.Collections.Generic.List[object]
+    $foundIds = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($def in $Definitions.emulators) {
+        if ($foundIds.Contains($def.id)) { continue }
+        $hit = $null
+        foreach ($root in $Roots) {
+            foreach ($exe in $def.executables) {
+                $found = Find-FileDepthLimited -Root $root -FileName $exe -MaxDepth 4
+                if ($found) { $hit = $found; break }
+            }
+            if ($hit) { break }
+        }
+        $descriptor = [ordered]@{
+            Id             = $def.id
+            DisplayName    = $def.displayName
+            Folder         = $def.folder
+            FolderPath     = if ($hit) { Split-Path $hit -Parent } else { $null }
+            Installed      = [bool]$hit
+            ExecutablePath = $hit
+            ConfigType     = $def.configType
+            ConfigFiles    = @($def.configFiles)
+            Supports4K     = [bool]$def.supports4K
+            Known          = $true
+            Definition     = $def
+        }
+        $results.Add([pscustomobject]$descriptor)
+        if ($hit) { [void]$foundIds.Add($def.id) }
+    }
+
+    return $results.ToArray()
+}
+
 # ----- module: GraphicsOptimization -----
 <#
 .SYNOPSIS
@@ -3973,23 +4122,31 @@ $LGit   = { param($m,$l='INFO') Write-EsdeLog -Message $m -Level $l -Category 'G
 
 function ConvertTo-Ht { param([object]$o) $h=@{}; if($o){ foreach($p in $o.PSObject.Properties){ $h[$p.Name]=$p.Value } }; return $h }
 
-function Resolve-EmulatorsRoot {
+function Resolve-MediaSource {
+    # The media to migrate lives in the ES-DE ROM directory (per-system media
+    # sub-folders / gamelist references). An optional -RetroBatRoot is honoured as
+    # an explicit override only; nothing is assumed about RetroBat's location.
     param([string] $RetroBatRoot, [System.Collections.Specialized.OrderedDictionary] $Layout)
-    $cands = New-Object System.Collections.Generic.List[string]
-    if ($RetroBatRoot) { $cands.Add((Join-Path $RetroBatRoot 'emulators')) }
-    $cands.Add((Join-Path (Split-Path $Layout.DataDir -Parent) 'emulators'))
-    foreach ($p in @('C:\RetroBat\emulators','D:\RetroBat\emulators','E:\RetroBat\emulators')) { $cands.Add($p) }
-    foreach ($c in ($cands | Select-Object -Unique)) { if ($c -and (Test-Path -LiteralPath $c)) { return $c } }
+    if ($RetroBatRoot) {
+        $rr = Join-Path $RetroBatRoot 'roms'
+        if (Test-Path -LiteralPath $rr) { return $rr }
+        if (Test-Path -LiteralPath $RetroBatRoot) { return $RetroBatRoot }
+    }
+    if (Test-Path -LiteralPath $Layout.RomDir) { return $Layout.RomDir }
     return $null
 }
 
-function Resolve-RetroBatRoms {
-    param([string] $RetroBatRoot, [System.Collections.Specialized.OrderedDictionary] $Layout)
-    $cands = New-Object System.Collections.Generic.List[string]
-    if ($RetroBatRoot) { $cands.Add((Join-Path $RetroBatRoot 'roms')) }
-    $cands.Add($Layout.RomDir)
-    foreach ($p in @('C:\RetroBat\roms','D:\RetroBat\roms','E:\RetroBat\roms')) { $cands.Add($p) }
-    foreach ($c in ($cands | Select-Object -Unique)) { if ($c -and (Test-Path -LiteralPath $c)) { return $c } }
+function Get-EmuRoots {
+    # ES-DE-native emulator roots (no RetroBat assumptions); $RetroBatRoot is an
+    # optional explicit override only.
+    return @(Get-EsdeEmulatorsRoots -Layout $Layout -ExtraRoot $RetroBatRoot)
+}
+
+function Find-RetroArchExe {
+    foreach ($root in (Get-EmuRoots)) {
+        $exe = Find-FileDepthLimited -Root $root -FileName 'retroarch.exe' -MaxDepth 4
+        if ($exe) { return $exe }
+    }
     return $null
 }
 
@@ -4054,9 +4211,9 @@ function Set-EsdeControllers {
     foreach ($c in $Controllers) {
         & $LCtl "Controller: $($c.FriendlyName) [VID=$($c.Vid) PID=$($c.Pid)] $($c.Family)/$($c.ApiType)/$($c.Connection) - $($c.Vendor)" 'INFO'
     }
-    $emuRoot = Resolve-EmulatorsRoot -RetroBatRoot $RetroBatRoot -Layout $Layout
-    if ($emuRoot) {
-        $ra = Join-Path $emuRoot 'retroarch\autoconfig'
+    $raExe = Find-RetroArchExe
+    if ($raExe) {
+        $ra = Join-Path (Split-Path $raExe -Parent) 'autoconfig'
         foreach ($c in $Controllers) { Write-RetroArchControllerProfile -Controller $c -AutoconfigDir $ra -Logger $LCtl | Out-Null }
     }
     if (-not $DryRun) {
@@ -4117,9 +4274,9 @@ function Invoke-EsdeSetup {
     # ---- Phase 4: RetroBat migration ----
     Write-EsdeSection -Title 'Phase 4 - RetroBat Media Migration' -Category 'Migration'
     if (-not $SkipMigration) {
-        $rbRoms = Resolve-RetroBatRoms -RetroBatRoot $RetroBatRoot -Layout $Layout
+        $rbRoms = Resolve-MediaSource -RetroBatRoot $RetroBatRoot -Layout $Layout
         if ($rbRoms) {
-            & $LMig "RetroBat ROM/media source: $rbRoms" 'INFO'
+            & $LMig "Media migration source (ES-DE ROM dir): $rbRoms" 'INFO'
             foreach ($sysDir in (Get-ChildItem -LiteralPath $rbRoms -Directory -ErrorAction SilentlyContinue)) {
                 if (-not (Test-RetroBatMediaLayout -SystemRomDir $sysDir.FullName)) { continue }
                 $sysMedia = Join-Path $Layout.MediaDir $sysDir.Name
@@ -4193,16 +4350,16 @@ function Invoke-EsdeSetup {
     # ---- Phase 11: emulator graphics optimization ----
     Write-EsdeSection -Title 'Phase 11 - Emulator Graphics Optimization' -Category 'Optimization'
     if (-not $SkipOptimize) {
-        $emuRoot = Resolve-EmulatorsRoot -RetroBatRoot $RetroBatRoot -Layout $Layout
-        if ($emuRoot) {
-            & $LOpt "Emulators root: $emuRoot (GPU vendor: $($hw.GpuVendor))" 'INFO'
-            $emulators = @(Get-InstalledEmulators -EmulatorsRoot $emuRoot -Definitions $emuDefs)
+        $emuRoots = Get-EmuRoots
+        if ($emuRoots.Count -gt 0) {
+            & $LOpt "ES-DE emulator root(s): $($emuRoots -join '; ') (GPU vendor: $($hw.GpuVendor))" 'INFO'
+            $emulators = @(Get-EsdeEmulators -Roots $emuRoots -Definitions $emuDefs)
             foreach ($e in ($emulators | Where-Object { $_.Installed })) {
                 if ($DryRun) { if ($e.Known -and $e.Supports4K) { & $LOpt "[DRY-RUN] Would optimize $($e.DisplayName)." 'INFO' }; continue }
                 $r = Invoke-EmulatorOptimization -Emulator $e -Tier $tier -TargetWidth $profile.TargetWidth -TargetHeight $profile.TargetHeight -BackupRoot $BackupDir -Logger $LOpt -GpuVendor $hw.GpuVendor
                 $report.Optimization += @{ Emulator=$e.DisplayName; Result=$(if($r.Success){'optimized'}else{$r.Message}) }
             }
-        } else { & $LOpt "No emulators root found; skipping graphics optimization." 'WARN' }
+        } else { & $LOpt "No ES-DE emulator folder found; skipping graphics optimization." 'WARN' }
     } else { & $LOpt "Optimization skipped by request." 'INFO' }
 
     # ---- Phase 12: controllers ----
@@ -4218,12 +4375,14 @@ function Invoke-EsdeSetup {
     # ---- Phase 13: BIOS validation ----
     Write-EsdeSection -Title 'Phase 13 - BIOS Validation' -Category 'Main'
     $biosDir = $null
-    $emuRoot2 = Resolve-EmulatorsRoot -RetroBatRoot $RetroBatRoot -Layout $Layout
     $biosCandidates = New-Object System.Collections.Generic.List[string]
+    # ES-DE-native BIOS locations: alongside the ROM dir, the ES-DE data dir, and
+    # the RetroArch 'system' folder if RetroArch is present.
     $biosCandidates.Add((Join-Path (Split-Path $Layout.RomDir -Parent) 'bios'))
     $biosCandidates.Add((Join-Path $Layout.RomDir 'bios'))
-    if ($emuRoot2)     { $biosCandidates.Add((Join-Path $emuRoot2 'retroarch\system')) }
-    if ($RetroBatRoot) { $biosCandidates.Add((Join-Path $RetroBatRoot 'bios')) }
+    $biosCandidates.Add((Join-Path $Layout.DataDir 'bios'))
+    $raExe2 = Find-RetroArchExe
+    if ($raExe2) { $biosCandidates.Add((Join-Path (Split-Path $raExe2 -Parent) 'system')) }
     foreach ($cand in $biosCandidates) {
         if ($cand -and (Test-Path -LiteralPath $cand)) { $biosDir = $cand; break }
     }
