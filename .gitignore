@@ -9,3 +9,6 @@ system/profiles/
 *~
 .DS_Store
 Thumbs.db
+
+ESDEAutoSuite/
+esde/**/ESDEAutoSuite/

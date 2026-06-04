@@ -1,0 +1,299 @@
+{
+    "schemaVersion": 2,
+    "description": "RetroBat emulator definition database. Drives detection, auto-install and 4K optimization. Add new objects to the 'emulators' array to support future emulators without touching script code.",
+    "emulators": [
+        {
+            "id": "retroarch",
+            "displayName": "RetroArch",
+            "folder": "retroarch",
+            "executables": [ "retroarch.exe" ],
+            "configType": "retroarch",
+            "configFiles": [ "retroarch.cfg" ],
+            "systems": [ "multi" ],
+            "supports4K": true,
+            "download": {
+                "type": "direct",
+                "url": "https://buildbot.libretro.com/stable/1.19.1/windows/x86_64/RetroArch.7z",
+                "archive": "7z",
+                "stripRootFolder": true
+            }
+        },
+        {
+            "id": "pcsx2",
+            "displayName": "PCSX2 (PlayStation 2)",
+            "folder": "pcsx2",
+            "executables": [ "pcsx2-qt.exe", "pcsx2x64.exe", "pcsx2.exe" ],
+            "configType": "ini",
+            "configFiles": [ "inis/PCSX2.ini" ],
+            "systems": [ "ps2" ],
+            "supports4K": true,
+            "download": {
+                "type": "github",
+                "repo": "PCSX2/pcsx2",
+                "assetPattern": "windows-x64-Qt.7z$",
+                "archive": "7z",
+                "stripRootFolder": true
+            }
+        },
+        {
+            "id": "rpcs3",
+            "displayName": "RPCS3 (PlayStation 3)",
+            "folder": "rpcs3",
+            "executables": [ "rpcs3.exe" ],
+            "configType": "yaml",
+            "configFiles": [ "config.yml" ],
+            "systems": [ "ps3" ],
+            "supports4K": true,
+            "download": {
+                "type": "github",
+                "repo": "RPCS3/rpcs3-binaries-win",
+                "assetPattern": "win64.7z$",
+                "archive": "7z",
+                "stripRootFolder": false
+            }
+        },
+        {
+            "id": "xenia",
+            "displayName": "Xenia (Xbox 360)",
+            "folder": "xenia",
+            "executables": [ "xenia_canary.exe", "xenia.exe" ],
+            "configType": "toml",
+            "configFiles": [ "xenia-canary.config.toml", "xenia.config.toml" ],
+            "systems": [ "xbox360" ],
+            "supports4K": true,
+            "download": {
+                "type": "github",
+                "repo": "xenia-canary/xenia-canary-releases",
+                "assetPattern": "windows.zip$",
+                "archive": "zip",
+                "stripRootFolder": false
+            }
+        },
+        {
+            "id": "dolphin",
+            "displayName": "Dolphin (GameCube / Wii)",
+            "folder": "dolphin-emu",
+            "executables": [ "Dolphin.exe", "DolphinR.exe" ],
+            "configType": "ini",
+            "configFiles": [ "User/Config/GFX.ini", "User/Config/Dolphin.ini" ],
+            "systems": [ "gc", "wii" ],
+            "supports4K": true,
+            "download": {
+                "type": "none"
+            }
+        },
+        {
+            "id": "cemu",
+            "displayName": "Cemu (Wii U)",
+            "folder": "cemu",
+            "executables": [ "Cemu.exe" ],
+            "configType": "xml",
+            "configFiles": [ "settings.xml" ],
+            "systems": [ "wiiu" ],
+            "supports4K": true,
+            "download": {
+                "type": "github",
+                "repo": "cemu-project/Cemu",
+                "assetPattern": "windows-x64.zip$",
+                "archive": "zip",
+                "stripRootFolder": true
+            }
+        },
+        {
+            "id": "yuzu",
+            "displayName": "Yuzu / compatible (Switch)",
+            "folder": "yuzu",
+            "executables": [ "yuzu.exe" ],
+            "configType": "ini",
+            "configFiles": [ "user/config/qt-config.ini" ],
+            "systems": [ "switch" ],
+            "supports4K": true,
+            "download": {
+                "type": "none"
+            }
+        },
+        {
+            "id": "ryujinx",
+            "displayName": "Ryujinx (Switch)",
+            "folder": "ryujinx",
+            "executables": [ "Ryujinx.exe", "Ryujinx.Ava.exe" ],
+            "configType": "json",
+            "configFiles": [ "portable/Config.json" ],
+            "systems": [ "switch" ],
+            "supports4K": true,
+            "download": {
+                "type": "none"
+            }
+        },
+        {
+            "id": "ppsspp",
+            "displayName": "PPSSPP (PSP)",
+            "folder": "ppsspp",
+            "executables": [ "PPSSPPWindows64.exe", "PPSSPPWindows.exe" ],
+            "configType": "ini",
+            "configFiles": [ "memstick/PSP/SYSTEM/ppsspp.ini" ],
+            "systems": [ "psp" ],
+            "supports4K": true,
+            "download": {
+                "type": "direct",
+                "url": "https://www.ppsspp.org/files/1_17_1/ppsspp_win.zip",
+                "archive": "zip",
+                "stripRootFolder": false
+            }
+        },
+        {
+            "id": "duckstation",
+            "displayName": "DuckStation (PlayStation 1)",
+            "folder": "duckstation",
+            "executables": [ "duckstation-qt-x64-ReleaseLTCG.exe", "duckstation.exe" ],
+            "configType": "ini",
+            "configFiles": [ "settings.ini" ],
+            "systems": [ "psx" ],
+            "supports4K": true,
+            "download": {
+                "type": "github",
+                "repo": "stenzek/duckstation",
+                "assetPattern": "windows-x64-release.zip$",
+                "archive": "zip",
+                "stripRootFolder": false
+            }
+        },
+        {
+            "id": "melonds",
+            "displayName": "melonDS (Nintendo DS)",
+            "folder": "melonds",
+            "executables": [ "melonDS.exe" ],
+            "configType": "ini",
+            "configFiles": [ "melonDS.ini" ],
+            "systems": [ "nds" ],
+            "supports4K": true,
+            "download": {
+                "type": "github",
+                "repo": "melonDS-emu/melonDS",
+                "assetPattern": "(?i)windows.*\\.zip$",
+                "archive": "zip",
+                "stripRootFolder": false
+            }
+        },
+        {
+            "id": "mame",
+            "displayName": "MAME (Arcade)",
+            "folder": "mame",
+            "executables": [ "mame.exe", "mame64.exe" ],
+            "configType": "ini",
+            "configFiles": [ "ini/mame.ini" ],
+            "systems": [ "arcade", "mame" ],
+            "supports4K": false,
+            "download": {
+                "type": "github",
+                "repo": "mamedev/mame",
+                "assetPattern": "(?i)(x64|64bit)\\.exe$",
+                "archive": "sfx",
+                "stripRootFolder": false
+            }
+        },
+        {
+            "id": "flycast",
+            "displayName": "Flycast (Dreamcast / NAOMI)",
+            "folder": "flycast",
+            "executables": [ "flycast.exe" ],
+            "configType": "ini",
+            "configFiles": [ "emu.cfg" ],
+            "systems": [ "dreamcast", "naomi" ],
+            "supports4K": true,
+            "download": {
+                "type": "github",
+                "repo": "flyinghead/flycast",
+                "assetPattern": "(?i)windows.*\\.zip$",
+                "archive": "zip",
+                "stripRootFolder": false
+            }
+        },
+        {
+            "id": "citra",
+            "displayName": "Citra / compatible (Nintendo 3DS)",
+            "folder": "citra",
+            "executables": [ "citra-qt.exe", "citra.exe" ],
+            "configType": "ini",
+            "configFiles": [ "user/config/qt-config.ini" ],
+            "systems": [ "3ds" ],
+            "supports4K": true,
+            "download": {
+                "type": "none"
+            }
+        },
+        {
+            "id": "primehack",
+            "displayName": "PrimeHack (Metroid Prime)",
+            "folder": "primehack",
+            "executables": [ "DolphinWX.exe", "primehack.exe", "Dolphin.exe" ],
+            "configType": "ini",
+            "configFiles": [ "User/Config/GFX.ini", "User/Config/Dolphin.ini" ],
+            "systems": [ "gc", "wii" ],
+            "supports4K": true,
+            "download": {
+                "type": "none"
+            }
+        },
+        {
+            "id": "redream",
+            "displayName": "Redream (Dreamcast)",
+            "folder": "redream",
+            "executables": [ "redream.exe" ],
+            "configType": "ini",
+            "configFiles": [ "redream.cfg" ],
+            "systems": [ "dreamcast" ],
+            "supports4K": true,
+            "download": {
+                "type": "direct",
+                "url": "https://redream.io/download/redream.x86_64-windows-v1.5.0.zip",
+                "archive": "zip",
+                "stripRootFolder": false
+            }
+        }
+    ],
+    "controllerVendors": {
+        "045E": "Microsoft (Xbox)",
+        "054C": "Sony (PlayStation)",
+        "057E": "Nintendo",
+        "28DE": "Valve (Steam)",
+        "2DC8": "8BitDo",
+        "0F0D": "Hori",
+        "146B": "BigBen / Nacon",
+        "0079": "DragonRise / Generic USB",
+        "1532": "Razer",
+        "24C6": "PowerA",
+        "0E6F": "PDP",
+        "1689": "Razer Onza",
+        "2563": "ShanWan / Generic",
+        "20D6": "PowerA / BDA",
+        "0E8F": "GreenAsia / Generic",
+        "11C0": "Betop",
+        "1A34": "Afterglow / PDP",
+        "06A3": "Saitek",
+        "044F": "ThrustMaster",
+        "0738": "Mad Catz",
+        "1BAD": "Mad Catz (Rock Band)",
+        "045B": "Hitachi",
+        "0810": "Personal Communication Systems",
+        "0B05": "ASUS (ROG)",
+        "1038": "SteelSeries",
+        "1B1C": "Corsair",
+        "320F": "Generic / 8BitDo-compatible",
+        "048D": "ITE (built-in HID)",
+        "045A": "Logitech",
+        "046D": "Logitech",
+        "0955": "NVIDIA (Shield)",
+        "18D1": "Google (Stadia)",
+        "2DC8 ": "8BitDo",
+        "3537": "GuliKit",
+        "3250": "GameSir",
+        "3285": "Nacon",
+        "0C12": "Zeroplus",
+        "12BD": "Generic USB Gamepad",
+        "25F0": "ShanWan / SZMY-Power",
+        "2C22": "Qanba (Arcade Stick)",
+        "0D62": "Darfon",
+        "1345": "Sino Lite / Generic"
+    }
+}
