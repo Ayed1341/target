@@ -110,11 +110,39 @@ function Write-EsdeReports {
                (ConvertTo-HtmlTable -Headers @('SHA256 (short)','Copies','Files') -Rows $dupRows)
     Set-Content (Join-Path $ReportsDir 'Duplicate_Report.html') (New-HtmlDocument 'Duplicate Report' $dupBody) -Encoding UTF8
 
+    # ---- Missing emulators report ----
+    $gapRows = @()
+    if ($Data.Keys -contains 'EmulatorGaps') {
+        $gapRows = @($Data.EmulatorGaps | Where-Object { $_.Missing } | ForEach-Object { ,@($_.System, ($_.Required -join ', '), $_.Recommended) })
+    }
+    $gapBody = "<h1>Missing Emulators Report</h1><div class='sub'>Systems that have ROMs but no installed emulator</div>" +
+               (ConvertTo-HtmlTable -Headers @('System','Compatible emulators','Recommended') -Rows $gapRows)
+    Set-Content (Join-Path $ReportsDir 'Missing_Emulators_Report.html') (New-HtmlDocument 'Missing Emulators Report' $gapBody) -Encoding UTF8
+
+    # ---- BIOS report ----
+    $biosDetRows = @()
+    if ($Data.Keys -contains 'BiosDetailed') {
+        $biosDetRows = @($Data.BiosDetailed | ForEach-Object { ,@($_.File, $_.System, $_.Status, $_.Detail) })
+    }
+    $biosBody = "<h1>BIOS Report</h1><div class='sub'>Presence, MD5 verification and location</div>" +
+                (ConvertTo-HtmlTable -Headers @('File','System','Status','Detail') -Rows $biosDetRows)
+    Set-Content (Join-Path $ReportsDir 'Bios_Report.html') (New-HtmlDocument 'BIOS Report' $biosBody) -Encoding UTF8
+
+    # ---- Health report ----
+    $healthRows = @()
+    if ($Data.Keys -contains 'Health') { $healthRows = @($Data.Health | ForEach-Object { ,@($_.Time, $_.Area, $_.Status, $_.Detail) }) }
+    $phaseRows = @()
+    if ($Data.Keys -contains 'PhaseResults') { $phaseRows = @($Data.PhaseResults | ForEach-Object { ,@($_.Phase, $_.Result, $_.Seconds, $_.Error) }) }
+    $healthBody = "<h1>Health &amp; Self-Repair Report</h1><div class='sub'>$($Data.Errors) error(s), $($Data.Warnings) warning(s) - the suite continued through every phase</div>" +
+                  "<h2>Findings</h2>" + (ConvertTo-HtmlTable -Headers @('Time','Area','Status','Detail') -Rows $healthRows) +
+                  "<h2>Phase timings</h2>" + (ConvertTo-HtmlTable -Headers @('Phase','Result','Seconds','Error') -Rows $phaseRows)
+    Set-Content (Join-Path $ReportsDir 'Health_Report.html') (New-HtmlDocument 'Health Report' $healthBody) -Encoding UTF8
+
     # ---- Full report (overview + links) ----
     $hw = $Data.Hardware
     $biosRows = @($Data.Bios | ForEach-Object { ,@($_.File, $_.System) })
     $sysRows  = @($Data.Systems | ForEach-Object { ,@($_.Name, $(if($_.Roms){'yes'}else{'-'}), $(if($_.Gamelist){'yes'}else{'-'}), $(if($_.Media){'yes'}else{'-'})) })
-    $links = @('Migration_Report.html','Media_Report.html','Metadata_Report.html','Optimization_Report.html','Controllers_Report.html','Missing_Media_Report.html','Duplicate_Report.html')
+    $links = @('Migration_Report.html','Media_Report.html','Metadata_Report.html','Optimization_Report.html','Missing_Emulators_Report.html','Controllers_Report.html','Missing_Media_Report.html','Duplicate_Report.html','Bios_Report.html','Health_Report.html')
     $linkHtml = ($links | ForEach-Object { "<a href='$_'>$($_ -replace '_',' ' -replace '\.html','')</a>" }) -join ' &bull; '
 
     $body = @"

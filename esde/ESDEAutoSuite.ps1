@@ -15,7 +15,7 @@
 param(
     [string] $EsdeRoot,
     [string] $RetroBatRoot,
-    [ValidateSet('Setup','Restore','Watch')] [string] $Mode = 'Setup',
+    [ValidateSet('Setup','Restore','Watch','Doctor')] [string] $Mode = 'Setup',
     [switch] $SkipMigration,
     [switch] $SkipDownload,
     [switch] $SkipOptimize,
@@ -43,9 +43,10 @@ $ModulesDir = Join-Path $ScriptDir 'Modules'
 $ConfigDir  = Join-Path $ScriptDir 'config'
 if (Test-Path -LiteralPath $ModulesDir) {
     foreach ($m in @('EsdeLogging','ConfigParser','Hardware','ProfileGeneration','EsdeDiscovery',
-                     'BackupEngine','MediaClassification','MediaReorganization','RetroBatMigration',
-                     'MetadataRepair','DuplicateDetection','MissingMedia','MediaDownload','Cleanup',
-                     'EmulatorDetection','EsdeEmulators','GraphicsOptimization','ControllerManagement','Reporting','GitIntegration')) {
+                     'HealthSelfHeal','BackupEngine','MediaClassification','MediaReorganization','RetroBatMigration',
+                     'MetadataRepair','DuplicateDetection','MissingMedia','MediaRecovery','MediaDownload','Cleanup',
+                     'EmulatorDetection','EsdeEmulators','EmulatorGap','BiosAdvanced','GraphicsOptimization',
+                     'ControllerManagement','Reporting','GitIntegration')) {
         Import-Module (Join-Path $ModulesDir "$m.psm1") -Force -DisableNameChecking
     }
 }
@@ -175,28 +176,39 @@ function Set-EsdeControllers {
     }
     $raExe = Find-RetroArchExe
     if ($raExe) {
-        $ra = Join-Path (Split-Path $raExe -Parent) 'autoconfig'
+        $raDir = Split-Path $raExe -Parent
+        $ra = Join-Path $raDir 'autoconfig'
         foreach ($c in $Controllers) { Write-RetroArchControllerProfile -Controller $c -AutoconfigDir $ra -Logger $LCtl | Out-Null }
+        # Universal SDL mapping DB - consumed by RetroArch and all SDL-based
+        # standalone emulators (DuckStation, PCSX2, PPSSPP, Flycast, ...).
+        Write-GameControllerDb -Controllers $Controllers -Path (Join-Path $raDir 'gamecontrollerdb.txt') -Logger $LCtl | Out-Null
     }
-    if (-not $DryRun) {
-        Write-EmulationStationInput -Controllers $Controllers -EsInputPath $Layout.InputFile -BackupRoot $BackupDir -Logger $LCtl | Out-Null
-    }
+    # Also drop a gamecontrollerdb in the ES-DE data dir for portability.
+    Write-GameControllerDb -Controllers $Controllers -Path (Join-Path $Layout.DataDir 'gamecontrollerdb.txt') -Logger $LCtl | Out-Null
+    Write-EmulationStationInput -Controllers $Controllers -EsInputPath $Layout.InputFile -BackupRoot $BackupDir -Logger $LCtl | Out-Null
 }
 
 # ===========================================================================
 # FULL SETUP PIPELINE
 # ===========================================================================
 function Invoke-EsdeSetup {
+    Initialize-Health
     $report = [ordered]@{
         GeneratedAt = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
         EsdeVersion = $Layout.Version; DataDir = $Layout.DataDir; RomDir = $Layout.RomDir; MediaDir = $Layout.MediaDir
         Tier = ''; Profile = @{ TargetWidth = 0; TargetHeight = 0 }; Hardware = @{}
         Systems = @(); Migration = @{ PerSystem = @(); TotalCopied = 0 }
-        Media = @{ PerSystem = @(); TotalMoved = 0 }; Metadata = @{ PerSystem = @() }
+        Media = @{ PerSystem = @(); TotalMoved = 0; Recovered = 0 }; Metadata = @{ PerSystem = @() }
         Optimization = @(); Controllers = @(); MissingMedia = @{ PerSystem = @() }
         Duplicates = @{ Groups=@(); TotalFiles=0; DuplicateFiles=0; ReclaimableBytes=0 }
-        Bios = @(); Warnings = 0; Errors = 0
+        Bios = @(); BiosDetailed = @(); EmulatorGaps = @(); EmulatorIntegrity = @()
+        Health = @(); PhaseResults = @(); Warnings = 0; Errors = 0
     }
+
+    # Shared state with safe defaults so a failing phase never breaks later phases.
+    $systems = @(); $hw = $null; $tier = 'MidRange'
+    $profile = @{ TargetWidth = 1920; TargetHeight = 1080; InternalScale = 2 }
+    $missingPerSystem = @(); $installedEmuIds = @(); $controllers = @()
 
     Write-EsdeSection -Title 'ES-DE Auto Suite' -Category 'Main'
     & $LMain "ES-DE data dir: $($Layout.DataDir)  (version $($Layout.Version))" 'INFO'
@@ -206,170 +218,268 @@ function Invoke-EsdeSetup {
 
     $mediaDefs = Get-MediaDefinitions -DefinitionPath (Join-Path $ConfigDir 'esde-media.json')
     $emuDefs   = Get-EmulatorDefinitions -DefinitionPath (Join-Path $ConfigDir 'emulators.json')
+    $sysEmuMap = ConvertTo-Ht $mediaDefs.systemEmulators
+
+    # ---- Phase 0: health preflight + self-heal of the ES-DE structure ----
+    Write-EsdeSection -Title 'Phase 0 - Health Preflight & Self-Repair' -Category 'Main'
+    try {
+        $freeGB = Get-FreeSpaceGB -Path $Layout.DataDir
+        & $LMain "Free space on data drive: $freeGB GB" 'INFO'
+        if ($freeGB -ge 0 -and $freeGB -lt 1) { & $LMain "Low disk space (<1GB); media operations may be limited." 'WARN'; Add-HealthFinding 'Disk' 'Warning' "Only $freeGB GB free." }
+        if (-not (Test-PathWritable -Path $WorkRoot)) { & $LMain "Work directory is not writable: $WorkRoot" 'ERROR'; Add-HealthFinding 'Permissions' 'Error' "Not writable: $WorkRoot" }
+        else { Add-HealthFinding 'Permissions' 'OK' "Work directory writable." }
+        if (-not $DryRun) { Repair-EsdeStructure -Layout $Layout -Logger $LMain | Out-Null }
+        # Self-heal a malformed es_settings.xml before anything reads it.
+        if ((Test-Path -LiteralPath $Layout.SettingsFile) -and -not (Test-XmlWellFormed -Path $Layout.SettingsFile)) {
+            Repair-XmlFile -Path $Layout.SettingsFile -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun | Out-Null
+        }
+    } catch { & $LMain "Preflight error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Preflight' 'Error' $_.Exception.Message }
 
     # ---- Phase 1: discovery ----
-    Write-EsdeSection -Title 'Phase 1 - ES-DE Discovery' -Category 'Main'
-    foreach ($k in $Layout.Exists.Keys) { & $LMain ("  {0,-18} {1}" -f $k, $(if($Layout.Exists[$k]){'present'}else{'MISSING'})) 'INFO' }
-    $systems = @(Get-EsdeSystems -Layout $Layout)
-    & $LMain "Detected $($systems.Count) system(s)." 'SUCCESS'
-    $report.Systems = @($systems | ForEach-Object { @{ Name=$_.Name; Roms=$_.HasRoms; Gamelist=$_.HasGamelist; Media=$_.HasMedia } })
+    try {
+        Write-EsdeSection -Title 'Phase 1 - ES-DE Discovery' -Category 'Main'
+        foreach ($k in $Layout.Exists.Keys) { & $LMain ("  {0,-18} {1}" -f $k, $(if($Layout.Exists[$k]){'present'}else{'MISSING'})) 'INFO' }
+        $systems = @(Get-EsdeSystems -Layout $Layout)
+        & $LMain "Detected $($systems.Count) system(s)." 'SUCCESS'
+        $report.Systems = @($systems | ForEach-Object { @{ Name=$_.Name; Roms=$_.HasRoms; Gamelist=$_.HasGamelist; Media=$_.HasMedia } })
+    } catch { & $LMain "Phase 1 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Discovery' 'Error' $_.Exception.Message }
 
     # ---- Phase 2: hardware + profile ----
-    Write-EsdeSection -Title 'Phase 2 - Hardware Detection & Profile' -Category 'Main'
-    $hw = Get-SystemHardware
-    & $LMain "CPU: $($hw.CpuName) | GPU: $($hw.GpuName) [$($hw.GpuVendor)] $($hw.GpuVramMB)MB | RAM: $($hw.TotalRamGB)GB | $($hw.DisplayWidth)x$($hw.DisplayHeight)" 'INFO'
-    Save-Profiles -ProfilesDir (Join-Path $WorkRoot 'profiles') -Logger $LMain | Out-Null
-    $sel = Select-ProfileForHardware -Hardware $hw -Logger $LMain
-    $tier = $sel.Tier; $profile = $sel.Profile
-    $report.Tier = $tier
-    $report.Profile = @{ TargetWidth = $profile.TargetWidth; TargetHeight = $profile.TargetHeight }
-    $report.Hardware = @{ CpuName=$hw.CpuName; GpuName=$hw.GpuName; GpuVendor=$hw.GpuVendor; GpuVramMB=$hw.GpuVramMB; TotalRamGB=$hw.TotalRamGB; DisplayWidth=$hw.DisplayWidth; DisplayHeight=$hw.DisplayHeight; RefreshRateHz=$hw.RefreshRateHz }
+    try {
+        Write-EsdeSection -Title 'Phase 2 - Hardware Detection & Profile' -Category 'Main'
+        $hw = Get-SystemHardware
+        & $LMain "CPU: $($hw.CpuName) | GPU: $($hw.GpuName) [$($hw.GpuVendor)] $($hw.GpuVramMB)MB | RAM: $($hw.TotalRamGB)GB | $($hw.DisplayWidth)x$($hw.DisplayHeight)" 'INFO'
+        Save-Profiles -ProfilesDir (Join-Path $WorkRoot 'profiles') -Logger $LMain | Out-Null
+        $sel = Select-ProfileForHardware -Hardware $hw -Logger $LMain
+        $tier = $sel.Tier; $profile = $sel.Profile
+        $report.Tier = $tier
+        $report.Profile = @{ TargetWidth = $profile.TargetWidth; TargetHeight = $profile.TargetHeight }
+        $report.Hardware = @{ CpuName=$hw.CpuName; GpuName=$hw.GpuName; GpuVendor=$hw.GpuVendor; GpuVramMB=$hw.GpuVramMB; TotalRamGB=$hw.TotalRamGB; DisplayWidth=$hw.DisplayWidth; DisplayHeight=$hw.DisplayHeight; RefreshRateHz=$hw.RefreshRateHz }
+    } catch { & $LMain "Phase 2 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Hardware' 'Error' $_.Exception.Message }
+    if (-not $hw) { $hw = [ordered]@{ GpuVendor='Unknown' } }
 
     # ---- Phase 3: backup snapshot ----
-    Write-EsdeSection -Title 'Phase 3 - Backup Snapshot' -Category 'Main'
-    if (-not $DryRun) {
-        $snap = Backup-Tree -SourceDir $Layout.Gamelists -BackupRoot $BackupDir -Label 'gamelists'
-        if ($snap) { & $LMain "Backed up $($snap.FileCount) gamelist file(s)." 'SUCCESS' }
-        Backup-File -Path $Layout.SettingsFile -BackupRoot $BackupDir | Out-Null
-    } else { & $LMain "[DRY-RUN] Backup snapshot skipped." 'INFO' }
+    try {
+        Write-EsdeSection -Title 'Phase 3 - Backup Snapshot' -Category 'Main'
+        if (-not $DryRun) {
+            $snap = Backup-Tree -SourceDir $Layout.Gamelists -BackupRoot $BackupDir -Label 'gamelists'
+            if ($snap) { & $LMain "Backed up $($snap.FileCount) gamelist file(s)." 'SUCCESS' }
+            Backup-File -Path $Layout.SettingsFile -BackupRoot $BackupDir | Out-Null
+        } else { & $LMain "[DRY-RUN] Backup snapshot skipped." 'INFO' }
+    } catch { & $LMain "Phase 3 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Backup' 'Error' $_.Exception.Message }
 
-    # ---- Phase 4: RetroBat migration ----
-    Write-EsdeSection -Title 'Phase 4 - RetroBat Media Migration' -Category 'Migration'
-    if (-not $SkipMigration) {
-        $rbRoms = Resolve-MediaSource -RetroBatRoot $RetroBatRoot -Layout $Layout
-        if ($rbRoms) {
-            & $LMig "Media migration source (ES-DE ROM dir): $rbRoms" 'INFO'
-            foreach ($sysDir in (Get-ChildItem -LiteralPath $rbRoms -Directory -ErrorAction SilentlyContinue)) {
-                if (-not (Test-RetroBatMediaLayout -SystemRomDir $sysDir.FullName)) { continue }
-                $sysMedia = Join-Path $Layout.MediaDir $sysDir.Name
-                $st = Invoke-SystemMigration -SystemRomDir $sysDir.FullName -SystemMediaDir $sysMedia -Definitions $mediaDefs -BackupRoot $BackupDir -Logger $LMig -DryRun:$DryRun
-                $report.Migration.PerSystem += @{ System=$sysDir.Name; FromGamelist=$st.FromGamelist; FromFolders=$st.FromFolders; Skipped=$st.Skipped }
-                $report.Migration.TotalCopied += ($st.FromGamelist + $st.FromFolders)
-            }
-            & $LMig "Migration total: $($report.Migration.TotalCopied) media file(s) copied." 'SUCCESS'
-        } else { & $LMig "No RetroBat ROM/media source found; skipping migration." 'WARN' }
-    } else { & $LMig "Migration skipped by request." 'INFO' }
+    # ---- Phase 4: RetroBat / in-place media migration ----
+    try {
+        Write-EsdeSection -Title 'Phase 4 - Media Migration' -Category 'Migration'
+        if (-not $SkipMigration) {
+            $rbRoms = Resolve-MediaSource -RetroBatRoot $RetroBatRoot -Layout $Layout
+            if ($rbRoms) {
+                & $LMig "Media migration source (ES-DE ROM dir): $rbRoms" 'INFO'
+                foreach ($sysDir in (Get-ChildItem -LiteralPath $rbRoms -Directory -ErrorAction SilentlyContinue)) {
+                    if (-not (Test-RetroBatMediaLayout -SystemRomDir $sysDir.FullName)) { continue }
+                    $sysMedia = Join-Path $Layout.MediaDir $sysDir.Name
+                    $st = Invoke-SystemMigration -SystemRomDir $sysDir.FullName -SystemMediaDir $sysMedia -Definitions $mediaDefs -BackupRoot $BackupDir -Logger $LMig -DryRun:$DryRun
+                    $report.Migration.PerSystem += @{ System=$sysDir.Name; FromGamelist=$st.FromGamelist; FromFolders=$st.FromFolders; Skipped=$st.Skipped }
+                    $report.Migration.TotalCopied += ($st.FromGamelist + $st.FromFolders)
+                }
+                & $LMig "Migration total: $($report.Migration.TotalCopied) media file(s) copied." 'SUCCESS'
+            } else { & $LMig "No media source found; skipping migration." 'WARN' }
+        } else { & $LMig "Migration skipped by request." 'INFO' }
+    } catch { & $LMig "Phase 4 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Migration' 'Error' $_.Exception.Message }
 
     # ---- Phase 5: media reorganization ----
-    Write-EsdeSection -Title 'Phase 5 - Media Reorganization' -Category 'Media'
-    foreach ($sys in $systems) {
-        $st = Invoke-MediaReorganization -SystemMediaDir $sys.MediaDir -Definitions $mediaDefs -BackupRoot $BackupDir -Logger $LMedia -DryRun:$DryRun
-        $report.Media.PerSystem += @{ System=$sys.Name; FoldersCreated=$st.FoldersCreated; Moved=$st.Moved; Skipped=$st.Skipped }
-        $report.Media.TotalMoved += $st.Moved
-    }
-    & $LMedia "Reorganization total: $($report.Media.TotalMoved) file(s) moved." 'SUCCESS'
+    try {
+        Write-EsdeSection -Title 'Phase 5 - Media Reorganization' -Category 'Media'
+        foreach ($sys in $systems) {
+            $st = Invoke-MediaReorganization -SystemMediaDir $sys.MediaDir -Definitions $mediaDefs -BackupRoot $BackupDir -Logger $LMedia -DryRun:$DryRun
+            $report.Media.PerSystem += @{ System=$sys.Name; FoldersCreated=$st.FoldersCreated; Moved=$st.Moved; Skipped=$st.Skipped }
+            $report.Media.TotalMoved += $st.Moved
+        }
+        & $LMedia "Reorganization total: $($report.Media.TotalMoved) file(s) moved." 'SUCCESS'
+    } catch { & $LMedia "Phase 5 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Reorg' 'Error' $_.Exception.Message }
 
-    # ---- Phase 6: metadata repair ----
-    Write-EsdeSection -Title 'Phase 6 - Metadata Repair' -Category 'Metadata'
-    foreach ($sys in $systems) {
-        if (-not (Test-Path -LiteralPath $sys.Gamelist)) { continue }
-        $st = Repair-Gamelist -GamelistPath $sys.Gamelist -MediaDir $sys.MediaDir -BackupRoot $BackupDir -Logger $LMeta -DryRun:$DryRun
-        $report.Metadata.PerSystem += @{ System=$sys.Name; Games=$st.Games; Duplicates=$st.Duplicates; Repaired=$st.Repaired; Removed=$st.Removed; Invalid=$st.Invalid }
-    }
+    # ---- Phase 5b: local media recovery (find mislabeled media you already have) ----
+    try {
+        Write-EsdeSection -Title 'Phase 5b - Local Media Recovery' -Category 'Media'
+        foreach ($sys in $systems) {
+            $stems = Get-SystemGameStems -SystemRomDir $sys.RomPath -GamelistPath $sys.Gamelist
+            $rec = Invoke-LocalMediaRecovery -SystemMediaDir $sys.MediaDir -RomStems $stems -BackupRoot $BackupDir -Logger $LMedia -DryRun:$DryRun
+            $report.Media.Recovered += $rec
+        }
+        & $LMedia "Local media recovered (re-matched to ROMs): $($report.Media.Recovered)." 'SUCCESS'
+    } catch { & $LMedia "Phase 5b error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Recovery' 'Error' $_.Exception.Message }
+
+    # ---- Phase 6: metadata repair (self-heals malformed gamelists) ----
+    try {
+        Write-EsdeSection -Title 'Phase 6 - Metadata Repair' -Category 'Metadata'
+        foreach ($sys in $systems) {
+            if (-not (Test-Path -LiteralPath $sys.Gamelist)) { continue }
+            if (-not (Test-XmlWellFormed -Path $sys.Gamelist)) {
+                Repair-XmlFile -Path $sys.Gamelist -BackupRoot $BackupDir -Logger $LMeta -DryRun:$DryRun | Out-Null
+            }
+            $st = Repair-Gamelist -GamelistPath $sys.Gamelist -MediaDir $sys.MediaDir -BackupRoot $BackupDir -Logger $LMeta -DryRun:$DryRun
+            $report.Metadata.PerSystem += @{ System=$sys.Name; Games=$st.Games; Duplicates=$st.Duplicates; Repaired=$st.Repaired; Removed=$st.Removed; Invalid=$st.Invalid }
+        }
+    } catch { & $LMeta "Phase 6 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Metadata' 'Error' $_.Exception.Message }
 
     # ---- Phase 7: duplicate detection ----
-    Write-EsdeSection -Title 'Phase 7 - Duplicate Detection' -Category 'Media'
-    $dup = Find-DuplicateMedia -MediaDir $Layout.MediaDir
-    & $LMedia "Hashed $($dup.TotalFiles) media file(s): $($dup.DuplicateFiles) duplicate(s), $([math]::Round($dup.ReclaimableBytes/1MB,2)) MB reclaimable." 'INFO'
-    $removed = Invoke-DuplicateCleanup -Groups @($dup.Groups) -BackupRoot $BackupDir -Logger $LMedia -DryRun:$DryRun
-    if ($removed -gt 0) { & $LMedia "Removed $removed redundant same-folder duplicate(s)." 'SUCCESS' }
-    $report.Duplicates = @{ Groups = @($dup.Groups); TotalFiles=$dup.TotalFiles; DuplicateFiles=$dup.DuplicateFiles; ReclaimableBytes=$dup.ReclaimableBytes }
+    try {
+        Write-EsdeSection -Title 'Phase 7 - Duplicate Detection' -Category 'Media'
+        $dup = Find-DuplicateMedia -MediaDir $Layout.MediaDir
+        & $LMedia "Hashed $($dup.TotalFiles) media file(s): $($dup.DuplicateFiles) duplicate(s), $([math]::Round($dup.ReclaimableBytes/1MB,2)) MB reclaimable." 'INFO'
+        $removed = Invoke-DuplicateCleanup -Groups @($dup.Groups) -BackupRoot $BackupDir -Logger $LMedia -DryRun:$DryRun
+        if ($removed -gt 0) { & $LMedia "Removed $removed redundant same-folder duplicate(s)." 'SUCCESS' }
+        $report.Duplicates = @{ Groups = @($dup.Groups); TotalFiles=$dup.TotalFiles; DuplicateFiles=$dup.DuplicateFiles; ReclaimableBytes=$dup.ReclaimableBytes }
+    } catch { & $LMedia "Phase 7 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Duplicates' 'Error' $_.Exception.Message }
 
-    # ---- Phase 8: missing media analysis ----
-    Write-EsdeSection -Title 'Phase 8 - Missing Media Analysis' -Category 'Media'
-    $missingPerSystem = @()
-    foreach ($sys in $systems) {
-        $mm = Get-MissingMediaForSystem -SystemName $sys.Name -SystemRomDir $sys.RomPath -SystemMediaDir $sys.MediaDir -GamelistPath $sys.Gamelist
-        $missingPerSystem += $mm
-        $report.MissingMedia.PerSystem += @{ System=$mm.System; Games=$mm.Games; Totals=$mm.Totals }
-        & $LMedia "$($sys.Name): $($mm.Games) game(s); missing covers=$($mm.Totals.covers) videos=$($mm.Totals.videos) ss=$($mm.Totals.screenshots)." 'INFO'
-    }
+    # ---- Phase 8: missing media analysis + scrape-list export ----
+    try {
+        Write-EsdeSection -Title 'Phase 8 - Missing Media Analysis' -Category 'Media'
+        $missingPerSystem = @()
+        foreach ($sys in $systems) {
+            $mm = Get-MissingMediaForSystem -SystemName $sys.Name -SystemRomDir $sys.RomPath -SystemMediaDir $sys.MediaDir -GamelistPath $sys.Gamelist
+            $missingPerSystem += $mm
+            $report.MissingMedia.PerSystem += @{ System=$mm.System; Games=$mm.Games; Totals=$mm.Totals }
+            & $LMedia "$($sys.Name): $($mm.Games) game(s); missing covers=$($mm.Totals.covers) videos=$($mm.Totals.videos) ss=$($mm.Totals.screenshots)." 'INFO'
+            $scrapeFile = Join-Path $ReportsDir ("scrapelist_{0}.txt" -f $sys.Name)
+            if (-not $DryRun) { Export-ScrapeList -MissingResult $mm -SystemRomDir $sys.RomPath -OutFile $scrapeFile | Out-Null }
+        }
+    } catch { & $LMedia "Phase 8 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'MissingMedia' 'Error' $_.Exception.Message }
 
     # ---- Phase 9: media download (missing only) ----
-    Write-EsdeSection -Title 'Phase 9 - Media Download (missing only)' -Category 'Downloads'
-    if (-not $SkipDownload) {
-        if (Test-ScraperCredentials) {
-            foreach ($sys in $systems) {
-                $mm = $missingPerSystem | Where-Object { $_.System -eq $sys.Name } | Select-Object -First 1
-                if (-not $mm -or @($mm.Records).Count -eq 0) { continue }
-                $d = Invoke-MediaDownloadForSystem -SystemRomDir $sys.RomPath -SystemMediaDir $sys.MediaDir -MissingResult $mm -Logger $LDown -DryRun:$DryRun
-                & $LDown "$($sys.Name): attempted=$($d.Attempted) downloaded=$($d.Downloaded) skipped=$($d.Skipped)." 'INFO'
+    try {
+        Write-EsdeSection -Title 'Phase 9 - Media Download (missing only)' -Category 'Downloads'
+        if (-not $SkipDownload) {
+            if (Test-ScraperCredentials) {
+                foreach ($sys in $systems) {
+                    $mm = $missingPerSystem | Where-Object { $_.System -eq $sys.Name } | Select-Object -First 1
+                    if (-not $mm -or @($mm.Records).Count -eq 0) { continue }
+                    $d = Invoke-MediaDownloadForSystem -SystemRomDir $sys.RomPath -SystemMediaDir $sys.MediaDir -MissingResult $mm -Logger $LDown -DryRun:$DryRun
+                    & $LDown "$($sys.Name): attempted=$($d.Attempted) downloaded=$($d.Downloaded) skipped=$($d.Skipped)." 'INFO'
+                }
+            } else {
+                & $LDown "ScreenScraper credentials not set; downloads skipped (set SS_DEVID/SS_DEVPASSWORD/SS_USER/SS_PASSWORD). Scrape lists exported to Reports." 'WARN'
             }
-        } else {
-            & $LDown "ScreenScraper credentials not set; downloads skipped (set SS_DEVID/SS_DEVPASSWORD/SS_USER/SS_PASSWORD). Missing-media report still generated." 'WARN'
-        }
-    } else { & $LDown "Media download skipped by request." 'INFO' }
+        } else { & $LDown "Media download skipped by request." 'INFO' }
+    } catch { & $LDown "Phase 9 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Downloads' 'Error' $_.Exception.Message }
 
     # ---- Phase 10: orphan + empty-folder cleanup ----
-    Write-EsdeSection -Title 'Phase 10 - Cleanup' -Category 'Media'
-    foreach ($sys in $systems) {
-        $stems = Get-SystemGameStems -SystemRomDir $sys.RomPath -GamelistPath $sys.Gamelist
-        Invoke-OrphanCleanup -SystemName $sys.Name -SystemRomDir $sys.RomPath -SystemMediaDir $sys.MediaDir -RomStems $stems -BackupRoot $BackupDir -Logger $LMedia -DryRun:$DryRun | Out-Null
-    }
-    $emptyRemoved = Remove-EmptyFolders -Root $Layout.MediaDir -DryRun:$DryRun
-    & $LMedia "Removed $emptyRemoved empty media folder(s)." 'INFO'
+    try {
+        Write-EsdeSection -Title 'Phase 10 - Cleanup' -Category 'Media'
+        foreach ($sys in $systems) {
+            $stems = Get-SystemGameStems -SystemRomDir $sys.RomPath -GamelistPath $sys.Gamelist
+            Invoke-OrphanCleanup -SystemName $sys.Name -SystemRomDir $sys.RomPath -SystemMediaDir $sys.MediaDir -RomStems $stems -BackupRoot $BackupDir -Logger $LMedia -DryRun:$DryRun | Out-Null
+        }
+        $emptyRemoved = Remove-EmptyFolders -Root $Layout.MediaDir -DryRun:$DryRun
+        & $LMedia "Removed $emptyRemoved empty media folder(s)." 'INFO'
+    } catch { & $LMedia "Phase 10 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Cleanup' 'Error' $_.Exception.Message }
 
-    # ---- Phase 11: emulator graphics optimization ----
-    Write-EsdeSection -Title 'Phase 11 - Emulator Graphics Optimization' -Category 'Optimization'
-    if (-not $SkipOptimize) {
-        # @() so an empty result stays an array (a returned empty array collapses
-        # to $null, which would break .Count under StrictMode).
-        $emuRoots = @(Get-EmuRoots)
-        if ($emuRoots.Count -gt 0) {
-            & $LOpt "ES-DE emulator root(s): $($emuRoots -join '; ') (GPU vendor: $($hw.GpuVendor))" 'INFO'
-            $emulators = @(Get-EsdeEmulators -Roots $emuRoots -Definitions $emuDefs)
-            foreach ($e in ($emulators | Where-Object { $_.Installed })) {
-                if ($DryRun) { if ($e.Known -and $e.Supports4K) { & $LOpt "[DRY-RUN] Would optimize $($e.DisplayName)." 'INFO' }; continue }
-                $r = Invoke-EmulatorOptimization -Emulator $e -Tier $tier -TargetWidth $profile.TargetWidth -TargetHeight $profile.TargetHeight -BackupRoot $BackupDir -Logger $LOpt -GpuVendor $hw.GpuVendor
-                $report.Optimization += @{ Emulator=$e.DisplayName; Result=$(if($r.Success){'optimized'}else{$r.Message}) }
-            }
-        } else { & $LOpt "No ES-DE emulator folder found; skipping graphics optimization." 'WARN' }
-    } else { & $LOpt "Optimization skipped by request." 'INFO' }
+    # ---- Phase 11: emulator graphics optimization (GPU-aware, self-creates configs) ----
+    try {
+        Write-EsdeSection -Title 'Phase 11 - Emulator Graphics Optimization' -Category 'Optimization'
+        if (-not $SkipOptimize) {
+            $emuRoots = @(Get-EmuRoots)
+            if ($emuRoots.Count -gt 0) {
+                & $LOpt "ES-DE emulator root(s): $($emuRoots -join '; ') (GPU vendor: $($hw.GpuVendor))" 'INFO'
+                $emulators = @(Get-EsdeEmulators -Roots $emuRoots -Definitions $emuDefs)
+                $installedEmuIds = @($emulators | Where-Object { $_.Installed } | ForEach-Object { $_.Id })
+                $report.EmulatorIntegrity = @(Test-EmulatorInstalls -Emulators $emulators -Logger $LOpt)
+                foreach ($e in ($emulators | Where-Object { $_.Installed })) {
+                    if ($DryRun) { if ($e.Known -and $e.Supports4K) { & $LOpt "[DRY-RUN] Would optimize $($e.DisplayName)." 'INFO' }; continue }
+                    $r = Invoke-EmulatorOptimization -Emulator $e -Tier $tier -TargetWidth $profile.TargetWidth -TargetHeight $profile.TargetHeight -BackupRoot $BackupDir -Logger $LOpt -GpuVendor $hw.GpuVendor
+                    $report.Optimization += @{ Emulator=$e.DisplayName; Result=$(if($r.Success){'optimized'}else{$r.Message}) }
+                }
+            } else { & $LOpt "No ES-DE emulator folder found; skipping graphics optimization." 'WARN' }
+        } else { & $LOpt "Optimization skipped by request." 'INFO' }
+    } catch { & $LOpt "Phase 11 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Optimization' 'Error' $_.Exception.Message }
 
-    # ---- Phase 12: controllers ----
-    Write-EsdeSection -Title 'Phase 12 - Controller Configuration' -Category 'Controllers'
-    $vendorMap = ConvertTo-Ht $emuDefs.controllerVendors
-    $controllers = @(Get-ConnectedControllers -VendorMap $vendorMap)
-    if ($controllers.Count -eq 0) { & $LCtl "No controllers connected. Use Watch mode for hotswap." 'WARN' }
-    else {
-        if (-not $DryRun) { Set-EsdeControllers -Controllers $controllers } else { foreach($c in $controllers){ & $LCtl "[DRY-RUN] Would configure $($c.FriendlyName)." 'INFO' } }
-        $report.Controllers = @($controllers | ForEach-Object { @{ Name=$_.FriendlyName; Vendor=$_.Vendor; Family=$_.Family; Api=$_.ApiType; Connection=$_.Connection; VidPid="$($_.Vid):$($_.Pid)" } })
-    }
+    # ---- Phase 11b: missing-emulator gap analysis ----
+    try {
+        Write-EsdeSection -Title 'Phase 11b - Missing Emulator Analysis' -Category 'Optimization'
+        $gaps = @(Get-EmulatorGaps -Systems $systems -InstalledIds $installedEmuIds -SystemMap $sysEmuMap)
+        $report.EmulatorGaps = $gaps
+        foreach ($g in ($gaps | Where-Object { $_.Missing })) {
+            & $LOpt "System '$($g.System)' has ROMs but no installed emulator. Recommended: $($g.Recommended) (options: $($g.Required -join ', '))." 'WARN'
+            Add-HealthFinding 'EmulatorGap' 'Warning' "$($g.System): install $($g.Recommended)"
+        }
+        $gapCount = @($gaps | Where-Object { $_.Missing }).Count
+        & $LOpt "Missing-emulator analysis: $gapCount system(s) need an emulator." $(if ($gapCount -gt 0) { 'WARN' } else { 'SUCCESS' })
+    } catch { & $LOpt "Phase 11b error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'EmulatorGap' 'Error' $_.Exception.Message }
 
-    # ---- Phase 13: BIOS validation ----
-    Write-EsdeSection -Title 'Phase 13 - BIOS Validation' -Category 'Main'
-    $biosDir = $null
-    $biosCandidates = New-Object System.Collections.Generic.List[string]
-    # ES-DE-native BIOS locations: alongside the ROM dir, the ES-DE data dir, and
-    # the RetroArch 'system' folder if RetroArch is present.
-    $biosCandidates.Add((Join-Path (Split-Path $Layout.RomDir -Parent) 'bios'))
-    $biosCandidates.Add((Join-Path $Layout.RomDir 'bios'))
-    $biosCandidates.Add((Join-Path $Layout.DataDir 'bios'))
-    $raExe2 = Find-RetroArchExe
-    if ($raExe2) { $biosCandidates.Add((Join-Path (Split-Path $raExe2 -Parent) 'system')) }
-    foreach ($cand in $biosCandidates) {
-        if ($cand -and (Test-Path -LiteralPath $cand)) { $biosDir = $cand; break }
-    }
-    if ($biosDir) {
-        $b = Test-BiosDirectory -BiosDir $biosDir -Requirements @($mediaDefs.biosRequirements) -Logger $LMain
-        $report.Bios = @($b.Missing)
-        & $LMain "BIOS dir: $biosDir ($($b.Present) present, $(@($b.Missing).Count) missing)." 'INFO'
-    } else { & $LMain "No BIOS directory found." 'WARN' }
+    # ---- Phase 12: controllers (ES-DE input + RetroArch + SDL gamecontrollerdb) ----
+    try {
+        Write-EsdeSection -Title 'Phase 12 - Controller Configuration' -Category 'Controllers'
+        $vendorMap = ConvertTo-Ht $emuDefs.controllerVendors
+        $controllers = @(Get-ConnectedControllers -VendorMap $vendorMap)
+        if ($controllers.Count -eq 0) { & $LCtl "No controllers connected. Use Watch mode for hotswap." 'WARN' }
+        else {
+            $port = 0
+            foreach ($c in $controllers) { $port++; & $LCtl ("Player {0}: {1} [{2}] {3}/{4}/{5}" -f $port, $c.FriendlyName, $c.Vendor, $c.Family, $c.ApiType, $c.Connection) 'INFO' }
+            if (-not $DryRun) { Set-EsdeControllers -Controllers $controllers } else { foreach($c in $controllers){ & $LCtl "[DRY-RUN] Would configure $($c.FriendlyName)." 'INFO' } }
+            $report.Controllers = @($controllers | ForEach-Object { @{ Name=$_.FriendlyName; Vendor=$_.Vendor; Family=$_.Family; Api=$_.ApiType; Connection=$_.Connection; VidPid="$($_.Vid):$($_.Pid)" } })
+        }
+    } catch { & $LCtl "Phase 12 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Controllers' 'Error' $_.Exception.Message }
 
-    # ---- Phase 14: reports ----
-    Write-EsdeSection -Title 'Phase 14 - Reports' -Category 'Main'
-    $report.Warnings = 0; $report.Errors = 0
-    Write-EsdeReports -ReportsDir $ReportsDir -Data $report -Logger $LMain
+    # ---- Phase 13: advanced BIOS validation (MD5 + wrong-location) ----
+    try {
+        Write-EsdeSection -Title 'Phase 13 - BIOS Validation' -Category 'Main'
+        $biosDir = $null
+        $biosCandidates = New-Object System.Collections.Generic.List[string]
+        $biosCandidates.Add((Join-Path (Split-Path $Layout.RomDir -Parent) 'bios'))
+        $biosCandidates.Add((Join-Path $Layout.RomDir 'bios'))
+        $biosCandidates.Add((Join-Path $Layout.DataDir 'bios'))
+        $raExe2 = Find-RetroArchExe
+        if ($raExe2) { $biosCandidates.Add((Join-Path (Split-Path $raExe2 -Parent) 'system')) }
+        foreach ($cand in $biosCandidates) { if ($cand -and (Test-Path -LiteralPath $cand)) { $biosDir = $cand; break } }
+        if (-not $biosDir) { $biosDir = Join-Path (Split-Path $Layout.RomDir -Parent) 'bios' }
+        $bd = @(Test-BiosAdvanced -BiosDir $biosDir -Requirements @($mediaDefs.biosRequirements) -Logger $LMain)
+        $report.BiosDetailed = $bd
+        $report.Bios = @($bd | Where-Object { $_.Status -ne 'Present' } | ForEach-Object { @{ File=$_.File; System="$($_.System) [$($_.Status)]" } })
+    } catch { & $LMain "Phase 13 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'BIOS' 'Error' $_.Exception.Message }
+
+    # ---- Phase 14: reports (incl. health) ----
+    try {
+        Write-EsdeSection -Title 'Phase 14 - Reports' -Category 'Main'
+        $report.Health = @(Get-HealthFindings)
+        $report.PhaseResults = @(Get-PhaseResults)
+        $report.Warnings = @($report.Health | Where-Object { $_.Status -eq 'Warning' }).Count
+        $report.Errors   = @($report.Health | Where-Object { $_.Status -eq 'Error' }).Count
+        Write-EsdeReports -ReportsDir $ReportsDir -Data $report -Logger $LMain
+    } catch { & $LMain "Phase 14 error: $($_.Exception.Message)" 'ERROR' }
 
     # ---- Phase 15: git ----
-    if (-not $SkipGit -and -not $DryRun) {
-        Write-EsdeSection -Title 'Phase 15 - Git Integration' -Category 'Git'
-        $msg = "ES-DE auto suite: $($report.Migration.TotalCopied) migrated, $($report.Media.TotalMoved) reorganized, $(@($systems).Count) systems, tier=$tier."
-        Invoke-GitCommitAndPush -RepoPath $Layout.DataDir -CommitMessage $msg -Logger $LGit | Out-Null
-    } elseif ($DryRun) { & $LGit "[DRY-RUN] Git skipped." 'INFO' } else { & $LGit "Git skipped by request." 'INFO' }
+    try {
+        if (-not $SkipGit -and -not $DryRun) {
+            Write-EsdeSection -Title 'Phase 15 - Git Integration' -Category 'Git'
+            $msg = "ES-DE auto suite: $($report.Migration.TotalCopied) migrated, $($report.Media.TotalMoved) reorganized, $(@($systems).Count) systems, tier=$tier."
+            Invoke-GitCommitAndPush -RepoPath $Layout.DataDir -CommitMessage $msg -Logger $LGit | Out-Null
+        } elseif ($DryRun) { & $LGit "[DRY-RUN] Git skipped." 'INFO' } else { & $LGit "Git skipped by request." 'INFO' }
+    } catch { & $LGit "Phase 15 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Git' 'Error' $_.Exception.Message }
 
     Write-EsdeSection -Title 'ES-DE Auto Suite Complete' -Category 'Main'
+    & $LMain "Health: $($report.Errors) error(s), $($report.Warnings) warning(s) - all phases ran (self-healing)." $(if ($report.Errors -gt 0) { 'WARN' } else { 'SUCCESS' })
     & $LMain "Done. Logs: $LogsDir | Reports: $ReportsDir | Backups: $BackupDir" 'SUCCESS'
+}
+
+function Invoke-EsdeDoctor {
+    # Diagnostics + safe self-repair only (no media/emulator/git changes).
+    Initialize-Health
+    Write-EsdeSection -Title 'ES-DE Auto Suite - Doctor (diagnose & self-repair)' -Category 'Main'
+    & $LMain "Data dir: $($Layout.DataDir) | ROM dir: $($Layout.RomDir) | Media dir: $($Layout.MediaDir)" 'INFO'
+    $freeGB = Get-FreeSpaceGB -Path $Layout.DataDir
+    & $LMain "Free space: $freeGB GB | Work dir writable: $(Test-PathWritable -Path $WorkRoot)" 'INFO'
+    Repair-EsdeStructure -Layout $Layout -Logger $LMain -DryRun:$DryRun | Out-Null
+    if ((Test-Path -LiteralPath $Layout.SettingsFile) -and -not (Test-XmlWellFormed -Path $Layout.SettingsFile)) {
+        Repair-XmlFile -Path $Layout.SettingsFile -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun | Out-Null
+    }
+    $bad = 0
+    foreach ($sys in @(Get-EsdeSystems -Layout $Layout)) {
+        if ((Test-Path -LiteralPath $sys.Gamelist) -and -not (Test-XmlWellFormed -Path $sys.Gamelist)) {
+            Repair-XmlFile -Path $sys.Gamelist -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun | Out-Null
+            $bad++
+        }
+    }
+    & $LMain "Doctor complete: structure verified, $bad malformed gamelist(s) handled. Findings: $(@(Get-HealthFindings).Count)." 'SUCCESS'
 }
 
 # ---------------------------------------------------------------------------
@@ -380,6 +490,7 @@ try {
     switch ($Mode) {
         'Watch'   { Start-EsdeWatcher -EmuDefs $emuDefsForMode }
         'Restore' { Invoke-EsdeRestore }
+        'Doctor'  { Invoke-EsdeDoctor }
         default   { Invoke-EsdeSetup }
     }
     exit 0
