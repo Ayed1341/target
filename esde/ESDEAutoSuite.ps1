@@ -312,7 +312,9 @@ function Invoke-EsdeSetup {
     # ---- Phase 11: emulator graphics optimization ----
     Write-EsdeSection -Title 'Phase 11 - Emulator Graphics Optimization' -Category 'Optimization'
     if (-not $SkipOptimize) {
-        $emuRoots = Get-EmuRoots
+        # @() so an empty result stays an array (a returned empty array collapses
+        # to $null, which would break .Count under StrictMode).
+        $emuRoots = @(Get-EmuRoots)
         if ($emuRoots.Count -gt 0) {
             & $LOpt "ES-DE emulator root(s): $($emuRoots -join '; ') (GPU vendor: $($hw.GpuVendor))" 'INFO'
             $emulators = @(Get-EsdeEmulators -Roots $emuRoots -Definitions $emuDefs)

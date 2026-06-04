@@ -1973,11 +1973,31 @@ function Read-Gamelist {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string] $Path)
 
-    $result = @{ Xml = $null; Games = @(); Ok = $false; Error = $null }
+    $result = @{ Xml = $null; Games = @(); Ok = $false; Error = $null; Prefix = '' }
     if (-not (Test-Path -LiteralPath $Path)) { $result.Error = 'not found'; return $result }
     try {
-        [xml]$xml = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
-        $result.Xml   = $xml
+        $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+        # ES-DE gamelists can contain TWO top-level elements: an optional
+        # <alternativeEmulator>...</alternativeEmulator> block followed by
+        # <gameList>...</gameList>. That is not a single-rooted XML document, so
+        # [xml] rejects it. Extract just the gameList element for parsing and keep
+        # everything before it as a prefix to write back verbatim (preserving the
+        # per-system standalone-emulator choice).
+        $startIdx = $raw.IndexOf('<gameList')
+        if ($startIdx -ge 0) {
+            $endTag = '</gameList>'
+            $endIdx = $raw.LastIndexOf($endTag)
+            if ($endIdx -ge 0) {
+                $glText = $raw.Substring($startIdx, ($endIdx - $startIdx) + $endTag.Length)
+            } else {
+                $glText = $raw.Substring($startIdx)   # self-closed / unterminated
+            }
+            $result.Prefix = $raw.Substring(0, $startIdx).TrimEnd()
+            [xml]$xml = $glText
+        } else {
+            [xml]$xml = $raw
+        }
+        $result.Xml = $xml
         if ($xml.gameList) {
             $result.Games = @($xml.gameList.SelectNodes('game'))
         }
@@ -1989,6 +2009,29 @@ function Read-Gamelist {
 }
 
 function Get-GameMediaTags { return $script:MediaTags }
+
+function Get-RelativePathManual {
+    <#
+    .SYNOPSIS
+        Returns a forward-slash relative path from a directory to a file, including
+        ../ segments when needed (works on Windows PowerShell 5.1 via System.Uri).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $FromDir,
+        [Parameter(Mandatory = $true)][string] $ToPath
+    )
+    try {
+        $fromUri = New-Object System.Uri(($FromDir.TrimEnd('\','/') + [System.IO.Path]::DirectorySeparatorChar))
+        $toUri   = New-Object System.Uri($ToPath)
+        $rel     = [Uri]::UnescapeDataString($fromUri.MakeRelativeUri($toUri).ToString())
+        $rel     = $rel -replace '\\','/'
+        if (-not $rel.StartsWith('.')) { $rel = './' + $rel }
+        return $rel
+    } catch {
+        return ('./' + (Split-Path $ToPath -Leaf))
+    }
+}
 
 function Resolve-RelativeMediaPath {
     <#
@@ -2036,6 +2079,7 @@ function Repair-Gamelist {
     }
     $baseDir = Split-Path $GamelistPath -Parent
     $xml     = $g.Xml
+    $prefix  = $g.Prefix
     $stats.Games = @($g.Games).Count
 
     # Index existing media files by stem within each ES-DE media subfolder.
@@ -2091,7 +2135,9 @@ function Repair-Gamelist {
                 $stemKey = $romStem.ToLower()
                 if ($mediaIndex[$folder].ContainsKey($stemKey)) {
                     $target = $mediaIndex[$folder][$stemKey]
-                    $rel = './' + ($target.Substring($baseDir.Length).TrimStart('\','/') -replace '\\','/')
+                    # downloaded_media is a SIBLING of gamelists, so compute a true
+                    # relative path (handles ../) rather than assuming containment.
+                    $rel = Get-RelativePathManual -FromDir $baseDir -ToPath $target
                     if (-not $DryRun) { $node.InnerText = $rel }
                     $stats.Repaired++; $stats.Changed = $true; $fixed = $true
                 }
@@ -2106,7 +2152,7 @@ function Repair-Gamelist {
 
     if (($stats.Changed -or $stats.Duplicates -gt 0) -and -not $DryRun) {
         Backup-File -Path $GamelistPath -BackupRoot $BackupRoot | Out-Null
-        Save-XmlClean -Xml $xml -Path $GamelistPath
+        Save-Gamelist -Xml $xml -Prefix $prefix -Path $GamelistPath
         & $Logger "Repaired gamelist $GamelistPath (dupes=$($stats.Duplicates), fixed=$($stats.Repaired), stripped=$($stats.Removed))." 'SUCCESS'
     } elseif ($DryRun -and ($stats.Changed -or $stats.Duplicates -gt 0)) {
         & $Logger "[DRY-RUN] Would repair $GamelistPath (dupes=$($stats.Duplicates), fixed=$($stats.Repaired), stripped=$($stats.Removed))." 'INFO'
@@ -2134,6 +2180,44 @@ function Save-XmlClean {
     $settings.OmitXmlDeclaration = $false
     $writer = [System.Xml.XmlWriter]::Create($Path, $settings)
     try { $Xml.Save($writer) } finally { $writer.Dispose() }
+}
+
+function Save-Gamelist {
+    <#
+    .SYNOPSIS
+        Writes a gamelist back in ES-DE's exact format: an optional prefix (the XML
+        declaration and any <alternativeEmulator> block) followed by the indented
+        <gameList> element. Preserves the per-system standalone-emulator choice.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][xml] $Xml,
+        [AllowEmptyString()][string] $Prefix = '',
+        [Parameter(Mandatory = $true)][string] $Path
+    )
+    $dir = Split-Path $Path -Parent
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
+
+    # Serialize just the gameList element (no XML declaration) with indentation.
+    $settings = New-Object System.Xml.XmlWriterSettings
+    $settings.Indent = $true
+    $settings.IndentChars = '  '
+    $settings.OmitXmlDeclaration = $true
+    $sb = New-Object System.Text.StringBuilder
+    $sw = New-Object System.IO.StringWriter($sb)
+    $writer = [System.Xml.XmlWriter]::Create($sw, $settings)
+    try { $Xml.Save($writer) } finally { $writer.Dispose(); $sw.Dispose() }
+    $glText = $sb.ToString()
+
+    $nl = "`r`n"
+    if ([string]::IsNullOrWhiteSpace($Prefix)) {
+        $out = '<?xml version="1.0"?>' + $nl + $glText
+    } elseif ($Prefix -match '<\?xml') {
+        $out = $Prefix + $nl + $glText
+    } else {
+        $out = '<?xml version="1.0"?>' + $nl + $Prefix + $nl + $glText
+    }
+    [System.IO.File]::WriteAllText($Path, $out, (New-Object System.Text.UTF8Encoding($false)))
 }
 
 # ----- module: DuplicateDetection -----
@@ -2563,14 +2647,16 @@ function Invoke-OrphanCleanup {
         [Parameter(Mandatory = $true)][string] $SystemName,
         [Parameter(Mandatory = $true)][string] $SystemRomDir,
         [Parameter(Mandatory = $true)][string] $SystemMediaDir,
-        [Parameter(Mandatory = $true)][System.Collections.Generic.HashSet[string]] $RomStems,
+        # Not mandatory: a system may have zero detected ROM stems, and a mandatory
+        # parameter rejects an empty collection.
+        [System.Collections.Generic.HashSet[string]] $RomStems,
         [Parameter(Mandatory = $true)][string] $BackupRoot,
         [Parameter(Mandatory = $true)][scriptblock] $Logger,
         [switch] $DryRun
     )
     $quarantined = 0
     if (-not (Test-Path -LiteralPath $SystemMediaDir)) { return 0 }
-    if ($RomStems.Count -eq 0) {
+    if ($null -eq $RomStems -or $RomStems.Count -eq 0) {
         # No ROMs known: do not treat everything as orphaned (safety).
         & $Logger "Skipping orphan cleanup for '$SystemName' (no ROMs detected)." 'INFO'
         return 0
@@ -4350,7 +4436,9 @@ function Invoke-EsdeSetup {
     # ---- Phase 11: emulator graphics optimization ----
     Write-EsdeSection -Title 'Phase 11 - Emulator Graphics Optimization' -Category 'Optimization'
     if (-not $SkipOptimize) {
-        $emuRoots = Get-EmuRoots
+        # @() so an empty result stays an array (a returned empty array collapses
+        # to $null, which would break .Count under StrictMode).
+        $emuRoots = @(Get-EmuRoots)
         if ($emuRoots.Count -gt 0) {
             & $LOpt "ES-DE emulator root(s): $($emuRoots -join '; ') (GPU vendor: $($hw.GpuVendor))" 'INFO'
             $emulators = @(Get-EsdeEmulators -Roots $emuRoots -Definitions $emuDefs)

@@ -19,14 +19,16 @@ function Invoke-OrphanCleanup {
         [Parameter(Mandatory = $true)][string] $SystemName,
         [Parameter(Mandatory = $true)][string] $SystemRomDir,
         [Parameter(Mandatory = $true)][string] $SystemMediaDir,
-        [Parameter(Mandatory = $true)][System.Collections.Generic.HashSet[string]] $RomStems,
+        # Not mandatory: a system may have zero detected ROM stems, and a mandatory
+        # parameter rejects an empty collection.
+        [System.Collections.Generic.HashSet[string]] $RomStems,
         [Parameter(Mandatory = $true)][string] $BackupRoot,
         [Parameter(Mandatory = $true)][scriptblock] $Logger,
         [switch] $DryRun
     )
     $quarantined = 0
     if (-not (Test-Path -LiteralPath $SystemMediaDir)) { return 0 }
-    if ($RomStems.Count -eq 0) {
+    if ($null -eq $RomStems -or $RomStems.Count -eq 0) {
         # No ROMs known: do not treat everything as orphaned (safety).
         & $Logger "Skipping orphan cleanup for '$SystemName' (no ROMs detected)." 'INFO'
         return 0
