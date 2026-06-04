@@ -330,7 +330,7 @@ function Get-SdlGuid {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string] $Vid,
-        [string] $Pid = '0000',
+        [string] $ProductId = '0000',
         [string] $Connection = 'USB'
     )
     function leHex([string]$h) {
@@ -339,7 +339,7 @@ function Get-SdlGuid {
     }
     $bus = if ($Connection -match '(?i)bluetooth') { '0500' } else { '0300' }
     $v = leHex $Vid
-    $p = if ($Pid) { leHex $Pid } else { '0000' }
+    $p = if ($ProductId) { leHex $ProductId } else { '0000' }
     return ($bus + '0000' + $v + '0000' + $p + '0000' + '00000000').ToLower()
 }
 
@@ -353,7 +353,7 @@ function New-SdlMappingLine {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][object] $Controller)
     $p    = Get-ControllerInputProfile -Family $Controller.Family
-    $guid = Get-SdlGuid -Vid $Controller.Vid -Pid $Controller.Pid -Connection $Controller.Connection
+    $guid = Get-SdlGuid -Vid $Controller.Vid -ProductId $Controller.Pid -Connection $Controller.Connection
     $name = ($Controller.FriendlyName -replace ',', ' ')
     $map  = @(
         "a:b$($p.a)","b:b$($p.b)","x:b$($p.x)","y:b$($p.y)",

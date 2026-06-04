@@ -174,9 +174,6 @@ function Start-EsdeWatcher {
 function Set-EsdeControllers {
     param([object[]] $Controllers)
     if (-not $Controllers -or $Controllers.Count -eq 0) { & $LCtl "No controllers connected." 'INFO'; return }
-    foreach ($c in $Controllers) {
-        & $LCtl "Controller: $($c.FriendlyName) [VID=$($c.Vid) PID=$($c.Pid)] $($c.Family)/$($c.ApiType)/$($c.Connection) - $($c.Vendor)" 'INFO'
-    }
     $raExe = Find-RetroArchExe
     if ($raExe) {
         $raDir = Split-Path $raExe -Parent
