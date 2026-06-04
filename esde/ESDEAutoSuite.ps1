@@ -468,21 +468,39 @@ function Invoke-EsdeSetup {
         }
     } catch { & $LCtl "Phase 12 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Controllers' 'Error' $_.Exception.Message }
 
-    # ---- Phase 13: advanced BIOS validation (MD5 + wrong-location) ----
+    # ---- Phase 13: advanced BIOS validation + relocate/propagate (no downloads) ----
     try {
         Write-EsdeSection -Title 'Phase 13 - BIOS Validation' -Category 'Main'
-        $biosDir = $null
         $biosCandidates = New-Object System.Collections.Generic.List[string]
         $biosCandidates.Add((Join-Path (Split-Path $Layout.RomDir -Parent) 'bios'))
         $biosCandidates.Add((Join-Path $Layout.RomDir 'bios'))
         $biosCandidates.Add((Join-Path $Layout.DataDir 'bios'))
         $raExe2 = Find-RetroArchExe
         if ($raExe2) { $biosCandidates.Add((Join-Path (Split-Path $raExe2 -Parent) 'system')) }
-        foreach ($cand in $biosCandidates) { if ($cand -and (Test-Path -LiteralPath $cand)) { $biosDir = $cand; break } }
+        foreach ($emuRoot3 in (Get-EmuRoots)) {
+            foreach ($sub in @('pcsx2\bios','duckstation\bios','rpcs3\dev_flash','flycast\data','dolphin\Sys','bios')) {
+                $biosCandidates.Add((Join-Path $emuRoot3 $sub))
+            }
+        }
+        $allBiosDirs = @($biosCandidates | Where-Object { $_ } | Select-Object -Unique)
+        $biosDir = $null
+        foreach ($cand in $allBiosDirs) { if (Test-Path -LiteralPath $cand) { $biosDir = $cand; break } }
         if (-not $biosDir) { $biosDir = Join-Path (Split-Path $Layout.RomDir -Parent) 'bios' }
+
         $bd = @(Test-BiosAdvanced -BiosDir $biosDir -Requirements @($mediaDefs.biosRequirements) -Logger $LMain)
+        # Fix directions: relocate wrong-placed BIOS and propagate present ones to
+        # every emulator BIOS folder. Copyrighted BIOS are NEVER downloaded.
+        $fix = Invoke-BiosRelocate -Records $bd -CanonicalDir $biosDir -CandidateDirs $allBiosDirs -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun
+        if (-not $DryRun -and ($fix.Relocated -gt 0 -or $fix.Propagated -gt 0)) {
+            $bd = @(Test-BiosAdvanced -BiosDir $biosDir -Requirements @($mediaDefs.biosRequirements) -Logger $LMain)
+        }
         $report.BiosDetailed = $bd
         $report.Bios = @($bd | Where-Object { $_.Status -ne 'Present' } | ForEach-Object { @{ File=$_.File; System="$($_.System) [$($_.Status)]" } })
+        $stillMissing = @($bd | Where-Object { $_.Status -eq 'Missing' }).Count
+        if ($stillMissing -gt 0) {
+            & $LMain "$stillMissing BIOS file(s) are genuinely missing. These are copyrighted console firmware and are NOT downloaded - provide your own dumps in $biosDir (see Bios_Report.html for filenames/locations)." 'WARN'
+            Add-HealthFinding 'BIOS' 'Warning' "$stillMissing BIOS missing - supply legally-obtained dumps in $biosDir"
+        }
     } catch { & $LMain "Phase 13 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'BIOS' 'Error' $_.Exception.Message }
 
     # ---- Phase 13b: ES-DE environment audit ----
