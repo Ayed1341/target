@@ -100,10 +100,16 @@ function Invoke-MediaReorganization {
     )
 
     $stats = @{ FoldersCreated = 0; Moved = 0; Skipped = 0; Errors = 0 }
-    if (-not (Test-Path -LiteralPath $SystemMediaDir)) { return $stats }
 
+    # Always manage the full ES-DE media folder set for the system, creating the
+    # media directory itself if it does not exist yet (so every system ends up
+    # with a complete, correct downloaded_media structure).
     $esdeFolders = @($Definitions.esdeMediaFolders)
+    if (-not (Test-Path -LiteralPath $SystemMediaDir) -and -not $DryRun) {
+        New-Item -Path $SystemMediaDir -ItemType Directory -Force | Out-Null
+    }
     $stats.FoldersCreated = New-EsdeMediaFolders -SystemMediaDir $SystemMediaDir -MediaFolders $esdeFolders -DryRun:$DryRun
+    if (-not (Test-Path -LiteralPath $SystemMediaDir)) { return $stats }   # dry-run with no dir
 
     $valid = @{}; foreach ($f in $esdeFolders) { $valid[$f.ToLower()] = $true }
 

@@ -135,9 +135,11 @@ function Set-IniValue {
     param(
         [Parameter(Mandatory = $true)]
         [System.Collections.Specialized.OrderedDictionary] $Data,
-        [Parameter(Mandatory = $true)] [string] $Section,
+        # AllowEmptyString: emulators such as melonDS store keys with no section
+        # (the global/section-less area), so an empty section name is valid.
+        [Parameter(Mandatory = $true)] [AllowEmptyString()] [string] $Section,
         [Parameter(Mandatory = $true)] [string] $Key,
-        [Parameter(Mandatory = $true)] [string] $Value
+        [Parameter(Mandatory = $true)] [AllowEmptyString()] [string] $Value
     )
 
     if (-not $Data.Contains($Section)) { $Data[$Section] = [ordered]@{} }
