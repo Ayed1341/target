@@ -22,7 +22,8 @@ function Test-EsSystemsXml {
     $path = Join-Path $Layout.CustomSystems 'es_systems.xml'
     if (-not (Test-Path -LiteralPath $path)) { return @{ Present = $false; Valid = $true; Count = 0; Path = $path } }
     try {
-        [xml]$xml = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+        $xml = New-Object System.Xml.XmlDocument
+        $xml.Load($path)
         $count = @($xml.SelectNodes('//system')).Count
         return @{ Present = $true; Valid = $true; Count = $count; Path = $path }
     } catch {

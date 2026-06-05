@@ -124,7 +124,11 @@ function Get-EsdeSetting {
     )
     if (-not (Test-Path -LiteralPath $SettingsFile)) { return $null }
     try {
-        [xml]$xml = Get-Content -LiteralPath $SettingsFile -Raw -Encoding UTF8
+        # XmlDocument.Load reads the file with correct encoding/BOM detection;
+        # [xml](Get-Content -Raw) fails on a UTF-8 BOM ("Data at the root level
+        # is invalid"), which would make us silently fall back to default paths.
+        $xml = New-Object System.Xml.XmlDocument
+        $xml.Load($SettingsFile)
         $node = $xml.SelectSingleNode("//*[@name='$Name']")
         if ($node -and $node.Attributes['value']) { return $node.Attributes['value'].Value }
     } catch { }

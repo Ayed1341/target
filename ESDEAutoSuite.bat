@@ -1430,7 +1430,11 @@ function Get-EsdeSetting {
     )
     if (-not (Test-Path -LiteralPath $SettingsFile)) { return $null }
     try {
-        [xml]$xml = Get-Content -LiteralPath $SettingsFile -Raw -Encoding UTF8
+        # XmlDocument.Load reads the file with correct encoding/BOM detection;
+        # [xml](Get-Content -Raw) fails on a UTF-8 BOM ("Data at the root level
+        # is invalid"), which would make us silently fall back to default paths.
+        $xml = New-Object System.Xml.XmlDocument
+        $xml.Load($SettingsFile)
         $node = $xml.SelectSingleNode("//*[@name='$Name']")
         if ($node -and $node.Attributes['value']) { return $node.Attributes['value'].Value }
     } catch { }
@@ -1677,8 +1681,13 @@ function Test-XmlWellFormed {
         if ($i -ge 0) {
             $e = $raw.LastIndexOf('</gameList>')
             if ($e -ge 0) { $raw = $raw.Substring($i, ($e - $i) + 11) } else { $raw = $raw.Substring($i) }
+            $null = [xml]$raw
+        } else {
+            # Single-root file (e.g. es_settings.xml): load from disk so a UTF-8 BOM
+            # or declared encoding is handled correctly (a valid file is not flagged).
+            $doc = New-Object System.Xml.XmlDocument
+            $doc.Load($Path)
         }
-        $null = [xml]$raw
         return $true
     } catch { return $false }
 }
@@ -3946,7 +3955,8 @@ function Test-EsSystemsXml {
     $path = Join-Path $Layout.CustomSystems 'es_systems.xml'
     if (-not (Test-Path -LiteralPath $path)) { return @{ Present = $false; Valid = $true; Count = 0; Path = $path } }
     try {
-        [xml]$xml = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+        $xml = New-Object System.Xml.XmlDocument
+        $xml.Load($path)
         $count = @($xml.SelectNodes('//system')).Count
         return @{ Present = $true; Valid = $true; Count = $count; Path = $path }
     } catch {

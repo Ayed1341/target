@@ -160,8 +160,13 @@ function Test-XmlWellFormed {
         if ($i -ge 0) {
             $e = $raw.LastIndexOf('</gameList>')
             if ($e -ge 0) { $raw = $raw.Substring($i, ($e - $i) + 11) } else { $raw = $raw.Substring($i) }
+            $null = [xml]$raw
+        } else {
+            # Single-root file (e.g. es_settings.xml): load from disk so a UTF-8 BOM
+            # or declared encoding is handled correctly (a valid file is not flagged).
+            $doc = New-Object System.Xml.XmlDocument
+            $doc.Load($Path)
         }
-        $null = [xml]$raw
         return $true
     } catch { return $false }
 }
