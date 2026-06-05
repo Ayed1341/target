@@ -29,6 +29,8 @@ param(
     [switch] $Themes,
     [switch] $Schedule,
     [switch] $Shortcut,
+    [switch] $AutoFav,
+    [switch] $Compress,
     [int]    $WatchIntervalSeconds = 5
 )
 
@@ -52,9 +54,9 @@ $ConfigDir  = Join-Path $ScriptDir 'config'
 if (Test-Path -LiteralPath $ModulesDir) {
     foreach ($m in @('EsdeLogging','ConfigParser','Hardware','ProfileGeneration','EsdeDiscovery',
                      'HealthSelfHeal','BackupEngine','MediaClassification','MediaReorganization','RetroBatMigration',
-                     'MetadataRepair','GamelistEnrich','DuplicateDetection','MissingMedia','MediaRecovery','MediaAudit','MediaIntegrity','MediaDownload','Cleanup',
-                     'EmulatorDetection','EsdeEmulators','EmulatorGap','EmulatorTuning','AdvancedTuning','SystemTuning','RomLibrary','RomVerify','RaPlaylists','LibraryAnalytics','LibraryAnalytics2','SaveManager','CollectionsManager','ThemeManager',
-                     'BiosAdvanced','EsdeEnvironmentAudit','EsdeUx','SystemOps','GraphicsOptimization',
+                     'MetadataRepair','GamelistEnrich','GamelistQuality','DuplicateDetection','MissingMedia','MediaRecovery','MediaAudit','MediaIntegrity','MediaHygiene','MediaDownload','Cleanup',
+                     'EmulatorDetection','EsdeEmulators','EmulatorGap','EmulatorTuning','AdvancedTuning','SystemTuning','RomLibrary','RomVerify','RomCompress','RaPlaylists','LibraryAnalytics','LibraryAnalytics2','LibraryInsights','SaveManager','CollectionsManager','CollectionsPlus','ThemeManager',
+                     'BiosAdvanced','EsdeEnvironmentAudit','EsdeUx','SystemOps','PortabilityOps','GraphicsOptimization',
                      'ControllerManagement','Reporting','ReportingPlus','GitIntegration')) {
         Import-Module (Join-Path $ModulesDir "$m.psm1") -Force -DisableNameChecking
     }
@@ -235,6 +237,10 @@ function Invoke-EsdeSetup {
             StorageHealth = @(); Telemetry = @{}; LogsRotated = 0; ConfigDrift = 0; Update = @{}
             CrossSystemDuplicates = 0; RegionDistribution = @{}; Completion = @{}; BadArchives = 0
             HealthScore = 100; PlaytimeTop = @(); NewestAdditions = @()
+            AutoCollections = @{}; AutoFavorited = 0; SanityFixed = 0; UnlistedAdded = 0
+            MediaNamesFixed = 0; CrossSystemMediaDup = 0; BrokenM3u = 0
+            PerSystemStats = @(); AbandonedGames = 0; Savestates = 0; GamelistDiff = @()
+            ControllerBundle = 0; DiskForecastMB = 0; NetworkPaths = @(); ChdConverted = 0; ChdSavedMB = 0.0
         }
     }
 
@@ -375,6 +381,14 @@ function Invoke-EsdeSetup {
         & $LMedia "Integrity: $($report.Audit.IntegrityQuarantined) corrupt quarantined, $($report.Audit.IntegrityFixed) extension-less fixed." 'INFO'
     } catch { & $LMedia "Phase 5d error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'MediaIntegrity' 'Error' $_.Exception.Message }
 
+    # ---- Phase 5e: media filename hygiene ----
+    try {
+        Write-EsdeSection -Title 'Phase 5e - Media Filename Hygiene' -Category 'Media'
+        foreach ($sys in $systems) { $report.Audit.MediaNamesFixed += (Repair-MediaFilenames -SystemMediaDir $sys.MediaDir -BackupRoot $BackupDir -Logger $LMedia -DryRun:$DryRun) }
+        $report.Audit.CrossSystemMediaDup = (Find-CrossSystemMediaDup -MediaDir $Layout.MediaDir)
+        & $LMedia "Filename hygiene: $($report.Audit.MediaNamesFixed) renamed; $($report.Audit.CrossSystemMediaDup) image(s) reused across 3+ systems." 'INFO'
+    } catch { & $LMedia "Phase 5e error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'MediaHygiene' 'Error' $_.Exception.Message }
+
     # ---- Phase 6: metadata repair (self-heals malformed gamelists) ----
     try {
         Write-EsdeSection -Title 'Phase 6 - Metadata Repair' -Category 'Metadata'
@@ -403,6 +417,19 @@ function Invoke-EsdeSetup {
             if ($sr.Total -gt 0) { $report.Audit.ScrapeRatio += @{ System=$sr.System; Total=$sr.Total; Scraped=$sr.Scraped; Percent=$sr.Percent; DuplicateNames=$sr.DuplicateNames } }
         }
     } catch { & $LMeta "Phase 6b error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Enrich' 'Error' $_.Exception.Message }
+
+    # ---- Phase 6c: gamelist quality (m3u check; sanity/unlisted under /enrich) ----
+    try {
+        Write-EsdeSection -Title 'Phase 6c - Gamelist Quality' -Category 'Metadata'
+        foreach ($sys in $systems) { $report.Audit.BrokenM3u += (Test-M3uPlaylists -SystemRomDir $sys.RomPath) }
+        if ($EnrichMeta) {
+            foreach ($sys in $systems) {
+                $report.Audit.SanityFixed   += (Repair-MetadataSanity -GamelistPath $sys.Gamelist -BackupRoot $BackupDir -Logger $LMeta -DryRun:$DryRun)
+                $report.Audit.UnlistedAdded += (Add-UnlistedGames -GamelistPath $sys.Gamelist -SystemRomDir $sys.RomPath -BackupRoot $BackupDir -Logger $LMeta -DryRun:$DryRun)
+            }
+        }
+        & $LMeta "Gamelist quality: $($report.Audit.BrokenM3u) broken .m3u, $($report.Audit.SanityFixed) sanity fix(es), $($report.Audit.UnlistedAdded) unlisted ROM(s) added." 'INFO'
+    } catch { & $LMeta "Phase 6c error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'GamelistQuality' 'Error' $_.Exception.Message }
 
     # ---- Phase 7: duplicate detection ----
     try {
@@ -509,6 +536,19 @@ function Invoke-EsdeSetup {
         & $LMedia "Extended: $($report.Audit.CrossSystemDuplicates) cross-system dup(s), $($comp.PlayedPercent)% played, $($report.Audit.BadArchives) bad archive(s)." 'SUCCESS'
     } catch { & $LMedia "Phase 8e error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'ExtAnalytics' 'Error' $_.Exception.Message }
 
+    # ---- Phase 8f: library insights (stats, abandoned, savestates, diff, forecast) ----
+    try {
+        Write-EsdeSection -Title 'Phase 8f - Library Insights' -Category 'Media'
+        $report.Audit.PerSystemStats = @(Get-PerSystemGamelistStats -Systems $systems)
+        $report.Audit.AbandonedGames = (Get-AbandonedGames -Systems $systems)
+        $report.Audit.Savestates = (Get-SavestateInventory -Roots @(@(Get-EmuRoots) + $Layout.RomDir))
+        $report.Audit.GamelistDiff = @(Get-GamelistDiff -Systems $systems -BackupRoot $BackupDir)
+        $report.Audit.DiskForecastMB = (Get-DiskSpaceForecast -MediaDir $Layout.MediaDir -MissingPerSystem @($report.MissingMedia.PerSystem))
+        $report.Audit.NetworkPaths = @(Test-NetworkPaths -Paths @($Layout.RomDir, $Layout.MediaDir, $Layout.DataDir))
+        foreach ($np in $report.Audit.NetworkPaths) { Add-HealthFinding 'Network' 'Warning' "On a network share (slower): $np" }
+        & $LMedia "Insights: $($report.Audit.AbandonedGames) abandoned, $($report.Audit.Savestates) save-state(s), ~$($report.Audit.DiskForecastMB) MB to fill missing media." 'SUCCESS'
+    } catch { & $LMedia "Phase 8f error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Insights' 'Error' $_.Exception.Message }
+
     # ---- Phase 9: media download (missing only) ----
     try {
         Write-EsdeSection -Title 'Phase 9 - Media Download (missing only)' -Category 'Downloads'
@@ -594,6 +634,22 @@ function Invoke-EsdeSetup {
             }
         } else { & $LOpt "RetroArch not found; playlists/features skipped." 'INFO' }
     } catch { & $LOpt "Phase 11e error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'RaFeatures' 'Error' $_.Exception.Message }
+
+    # ---- Phase 11f: CHD compression (opt-in: /compress; needs chdman) ----
+    try {
+        Write-EsdeSection -Title 'Phase 11f - CHD Compression' -Category 'Optimization'
+        if ($Compress) {
+            $chdman = Find-Chdman -EmulatorRoots @(Get-EmuRoots)
+            if ($chdman) {
+                & $LOpt "Using chdman: $chdman" 'INFO'
+                foreach ($sys in $systems) {
+                    $cr = Invoke-ChdCompression -SystemRomDir $sys.RomPath -Chdman $chdman -BackupRoot $BackupDir -Logger $LOpt -DryRun:$DryRun
+                    $report.Audit.ChdConverted += $cr.Converted; $report.Audit.ChdSavedMB += $cr.SavedMB
+                }
+                & $LOpt "CHD: converted $($report.Audit.ChdConverted) image(s), saved ~$($report.Audit.ChdSavedMB) MB." 'SUCCESS'
+            } else { & $LOpt "chdman not found; install MAME tools or place chdman.exe under an emulator folder." 'WARN' }
+        } else { & $LOpt "CHD compression skipped (pass /compress to enable)." 'INFO' }
+    } catch { & $LOpt "Phase 11f error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'ChdCompress' 'Error' $_.Exception.Message }
 
     # ---- Phase 11b: missing-emulator gap analysis ----
     try {
@@ -724,6 +780,17 @@ function Invoke-EsdeSetup {
         if ($Shortcut) { $report.Audit.ShortcutCreated = (New-EsdeShortcut -Target $LauncherSelfPath -ShortcutName 'ES-DE Auto Suite' -Logger $LMain -DryRun:$DryRun) }
         & $LMain "System ops: storage $(@($report.Audit.StorageHealth).Count) disk(s), config drift $($report.Audit.ConfigDrift) file(s), logs rotated $($report.Audit.LogsRotated)." 'SUCCESS'
     } catch { & $LMain "Phase 13d error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'SystemOps' 'Error' $_.Exception.Message }
+
+    # ---- Phase 13e: auto-collections, auto-favorites and portable bundles ----
+    try {
+        Write-EsdeSection -Title 'Phase 13e - Smart Collections & Bundles' -Category 'Main'
+        $records = @(Get-AllGameRecords -Systems $systems)
+        $report.Audit.AutoCollections = (New-AutoCollections -Records $records -CollectionsDir $Layout.Collections -Logger $LMain -DryRun:$DryRun)
+        if ($AutoFav) { $report.Audit.AutoFavorited = (Set-AutoFavorites -Systems $systems -TopPerSystem 5 -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun) }
+        $report.Audit.ControllerBundle = (Export-ControllerBundle -Layout $Layout -EmulatorRoots @(Get-EmuRoots) -OutDir (Join-Path $ReportsDir 'controller_bundle') -Logger $LMain -DryRun:$DryRun)
+        Export-PortableBundle -Layout $Layout -Systems $systems -OutFile (Join-Path $ReportsDir 'portable.json') | Out-Null
+        & $LMain "Smart collections + bundles written (genre/decade/never-played/kids; controller bundle; portable.json)." 'SUCCESS'
+    } catch { & $LMain "Phase 13e error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'SmartCollections' 'Error' $_.Exception.Message }
 
     # ---- Phase 14: reports (incl. health) ----
     try {
