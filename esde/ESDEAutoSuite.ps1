@@ -33,6 +33,7 @@ param(
     [switch] $Compress,
     [switch] $InstallEmulators,
     [switch] $AllowPrerelease,
+    [switch] $ScrapeAll,
     [int]    $WatchIntervalSeconds = 5
 )
 
@@ -67,6 +68,9 @@ if (Test-Path -LiteralPath $ModulesDir) {
 # ---------------------------------------------------------------------------
 # Resolve ES-DE + working directories
 # ---------------------------------------------------------------------------
+# /scrapeall is a focused "just fill my media" mode: force downloads on and skip
+# the heavy non-media phases so it stays fast to re-run day after day.
+if ($ScrapeAll) { $SkipDownload = $false; $SkipOptimize = $true; $SkipGit = $true }
 if (-not $EsdeRoot) { $EsdeRoot = $ScriptDir }
 $dataDir = Find-EsdeDataDir -StartPath $EsdeRoot
 if (-not $dataDir) {
@@ -564,15 +568,30 @@ function Invoke-EsdeSetup {
             [void](Import-ScraperCredentials -SearchDirs $credDirs -Logger $LDown)
             Reset-ScraperState
             if (Test-ScraperCredentials) {
+                if ($ScrapeAll) { & $LDown "Scrape-all mode: filling every missing media item until the library is complete or the daily quota stops us (it resumes on the next run)." 'INFO' }
                 $totDl = 0; $closed = $false
-                foreach ($sys in $systems) {
-                    $mm = $missingPerSystem | Where-Object { $_.System -eq $sys.Name } | Select-Object -First 1
-                    if (-not $mm -or @($mm.Records).Count -eq 0) { continue }
-                    $d = Invoke-MediaDownloadForSystem -SystemRomDir $sys.RomPath -SystemMediaDir $sys.MediaDir -MissingResult $mm -Logger $LDown -DryRun:$DryRun
-                    $totDl += [int]$d.Downloaded
-                    & $LDown "$($sys.Name): attempted=$($d.Attempted) downloaded=$($d.Downloaded) skipped=$($d.Skipped)." 'INFO'
-                    if ($d.Closed) { $closed = $true; break }
-                }
+                $maxPasses = if ($ScrapeAll) { 25 } else { 1 }
+                $pass = 0
+                do {
+                    $pass++
+                    $passDl = 0
+                    foreach ($sys in $systems) {
+                        if ($closed) { break }
+                        # Re-scan missing media each pass in scrape-all mode so already
+                        # downloaded items drop out and we converge on a full library.
+                        if ($ScrapeAll) {
+                            $mm = Get-MissingMediaForSystem -SystemName $sys.Name -SystemRomDir $sys.RomPath -SystemMediaDir $sys.MediaDir -GamelistPath $sys.Gamelist
+                        } else {
+                            $mm = $missingPerSystem | Where-Object { $_.System -eq $sys.Name } | Select-Object -First 1
+                        }
+                        if (-not $mm -or @($mm.Records).Count -eq 0) { continue }
+                        $d = Invoke-MediaDownloadForSystem -SystemRomDir $sys.RomPath -SystemMediaDir $sys.MediaDir -MissingResult $mm -Logger $LDown -DryRun:$DryRun
+                        $totDl += [int]$d.Downloaded; $passDl += [int]$d.Downloaded
+                        if (-not $ScrapeAll -or $d.Downloaded -gt 0) { & $LDown "$($sys.Name): attempted=$($d.Attempted) downloaded=$($d.Downloaded) skipped=$($d.Skipped)." 'INFO' }
+                        if ($d.Closed) { $closed = $true; break }
+                    }
+                    if ($ScrapeAll -and -not $closed) { & $LDown "Scrape-all pass $pass complete: $passDl new file(s)." 'INFO' }
+                } while ($ScrapeAll -and -not $closed -and $passDl -gt 0 -and $pass -lt $maxPasses -and -not $DryRun)
                 $q = Get-ScraperQuotaSummary
                 $report.Audit.ScraperQuota = $q
                 $report.Audit.MediaDownloaded = $totDl
