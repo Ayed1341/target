@@ -25,6 +25,7 @@ param(
     [switch] $GenerateMedia,
     [switch] $TuneEsde,
     [switch] $EnrichMeta,
+    [switch] $OneGameOneRegion,
     [int]    $WatchIntervalSeconds = 5
 )
 
@@ -49,7 +50,8 @@ if (Test-Path -LiteralPath $ModulesDir) {
     foreach ($m in @('EsdeLogging','ConfigParser','Hardware','ProfileGeneration','EsdeDiscovery',
                      'HealthSelfHeal','BackupEngine','MediaClassification','MediaReorganization','RetroBatMigration',
                      'MetadataRepair','GamelistEnrich','DuplicateDetection','MissingMedia','MediaRecovery','MediaAudit','MediaIntegrity','MediaDownload','Cleanup',
-                     'EmulatorDetection','EsdeEmulators','EmulatorGap','EmulatorTuning','RomLibrary','BiosAdvanced','EsdeEnvironmentAudit','EsdeUx','GraphicsOptimization',
+                     'EmulatorDetection','EsdeEmulators','EmulatorGap','EmulatorTuning','AdvancedTuning','RomLibrary','LibraryAnalytics','SaveManager','CollectionsManager',
+                     'BiosAdvanced','EsdeEnvironmentAudit','EsdeUx','GraphicsOptimization',
                      'ControllerManagement','Reporting','ReportingPlus','GitIntegration')) {
         Import-Module (Join-Path $ModulesDir "$m.psm1") -Force -DisableNameChecking
     }
@@ -215,6 +217,10 @@ function Invoke-EsdeSetup {
             RomStats = @(); ScrapeRatio = @(); MultiDiscPlaylists = 0; CompressionAdvisory = @()
             MediaTypeTotals = @{}; TopLargest = @(); ConfigsArchived = 0
             RetroArchExtras = $false; UxApplied = 0; UxTuned = $false
+            SavesArchived = 0; OrphanSaves = 0; CustomCollections = @{}; RegionHidden = 0
+            Statistics = @{}; DuplicateRoms = 0; BadExtensions = @(); CheatFiles = 0
+            CustomSystemSuggestions = @(); ManifestSystems = 0
+            ShaderApplied = ''; LatencyTuned = $false
         }
     }
 
@@ -280,6 +286,13 @@ function Invoke-EsdeSetup {
             Backup-File -Path $Layout.SettingsFile -BackupRoot $BackupDir | Out-Null
         } else { & $LMain "[DRY-RUN] Backup snapshot skipped." 'INFO' }
     } catch { & $LMain "Phase 3 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Backup' 'Error' $_.Exception.Message }
+
+    # ---- Phase 3b: protect save data (saves / states / memory cards) ----
+    try {
+        Write-EsdeSection -Title 'Phase 3b - Save Data Protection' -Category 'Main'
+        $report.Audit.SavesArchived = (Backup-SaveData -RomDir $Layout.RomDir -EmulatorRoots @(Get-EmuRoots) -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun)
+        & $LMain "Save data archived: $($report.Audit.SavesArchived) file(s)." 'INFO'
+    } catch { & $LMain "Phase 3b error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'SaveBackup' 'Error' $_.Exception.Message }
 
     # ---- Phase 4: RetroBat / in-place media migration ----
     try {
@@ -380,7 +393,7 @@ function Invoke-EsdeSetup {
     # ---- Phase 7: duplicate detection ----
     try {
         Write-EsdeSection -Title 'Phase 7 - Duplicate Detection' -Category 'Media'
-        $dup = Find-DuplicateMedia -MediaDir $Layout.MediaDir
+        $dup = Find-DuplicateMedia -MediaDir $Layout.MediaDir -CacheFile (Join-Path $WorkRoot 'mediahash.cache')
         & $LMedia "Hashed $($dup.TotalFiles) media file(s): $($dup.DuplicateFiles) duplicate(s), $([math]::Round($dup.ReclaimableBytes/1MB,2)) MB reclaimable." 'INFO'
         $removed = Invoke-DuplicateCleanup -Groups @($dup.Groups) -BackupRoot $BackupDir -Logger $LMedia -DryRun:$DryRun
         if ($removed -gt 0) { & $LMedia "Removed $removed redundant same-folder duplicate(s)." 'SUCCESS' }
@@ -442,6 +455,26 @@ function Invoke-EsdeSetup {
         & $LMedia "ROM library: $totalRoms ROM(s) across $(@($report.Audit.RomStats).Count) system(s); $($report.Audit.MultiDiscPlaylists) multi-disc playlist(s) created." 'SUCCESS'
     } catch { & $LMedia "Phase 8c error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'RomLibrary' 'Error' $_.Exception.Message }
 
+    # ---- Phase 8d: library analytics (stats, dup ROMs, extensions, saves, manifest) ----
+    try {
+        Write-EsdeSection -Title 'Phase 8d - Library Analytics' -Category 'Media'
+        $report.Audit.Statistics = (Get-LibraryStatistics -Systems $systems)
+        $extMap = ConvertTo-Ht $mediaDefs.systemExtensions
+        $report.Audit.BadExtensions = @(Test-RomExtensions -Systems $systems -ExtMap $extMap)
+        $dupRomTotal = 0; $orphanSaveTotal = 0
+        foreach ($sys in $systems) {
+            $dupRomTotal += @(Find-DuplicateRoms -SystemRomDir $sys.RomPath).Count
+            $orphanSaveTotal += @(Get-OrphanedSaves -SystemRomDir $sys.RomPath).Count
+        }
+        $report.Audit.DuplicateRoms = $dupRomTotal
+        $report.Audit.OrphanSaves = $orphanSaveTotal
+        $report.Audit.CheatFiles = (Get-CheatFiles -Roots @(@(Get-EmuRoots) + $Layout.RomDir))
+        $report.Audit.CustomSystemSuggestions = @(Get-CustomSystemsSuggestion -Layout $Layout -Systems $systems)
+        $report.Audit.ManifestSystems = (Export-LibraryManifest -Systems $systems -OutFile (Join-Path $ReportsDir 'Library_Manifest.json'))
+        $st = $report.Audit.Statistics
+        & $LMedia "Analytics: $($st.TotalGames) games, $($st.TotalPlaytimeHours)h played, $dupRomTotal dup ROM set(s), $orphanSaveTotal orphan save(s), $($report.Audit.CheatFiles) cheat file(s)." 'SUCCESS'
+    } catch { & $LMedia "Phase 8d error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Analytics' 'Error' $_.Exception.Message }
+
     # ---- Phase 9: media download (missing only) ----
     try {
         Write-EsdeSection -Title 'Phase 9 - Media Download (missing only)' -Category 'Downloads'
@@ -499,6 +532,19 @@ function Invoke-EsdeSetup {
             if ($raExeT) { $report.Audit.RetroArchExtras = (Set-RetroArchExtras -RetroArchDir (Split-Path $raExeT -Parent) -BackupRoot $BackupDir -Logger $LOpt -DryRun:$DryRun) }
         } else { & $LOpt "RetroArch extra tuning skipped (pass /tune to enable)." 'INFO' }
     } catch { & $LOpt "Phase 11c error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'EmulatorTuning' 'Error' $_.Exception.Message }
+
+    # ---- Phase 11d: advanced RetroArch tuning (shader + latency; /tune) ----
+    try {
+        Write-EsdeSection -Title 'Phase 11d - Advanced Tuning' -Category 'Optimization'
+        if ($TuneEsde) {
+            $raExeA = Find-RetroArchExe
+            if ($raExeA) {
+                $raDirA = Split-Path $raExeA -Parent
+                $report.Audit.ShaderApplied = (Set-RetroArchShaderPreset -RetroArchDir $raDirA -BackupRoot $BackupDir -Logger $LOpt -DryRun:$DryRun)
+                $report.Audit.LatencyTuned  = (Set-RetroArchLatency -RetroArchDir $raDirA -Tier $tier -BackupRoot $BackupDir -Logger $LOpt -DryRun:$DryRun)
+            } else { & $LOpt "RetroArch not found; advanced tuning skipped." 'INFO' }
+        } else { & $LOpt "Advanced tuning skipped (pass /tune to enable)." 'INFO' }
+    } catch { & $LOpt "Phase 11d error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'AdvancedTuning' 'Error' $_.Exception.Message }
 
     # ---- Phase 11b: missing-emulator gap analysis ----
     try {
@@ -597,6 +643,19 @@ function Invoke-EsdeSetup {
         }
         & $LMain "Environment audit: online=$($report.Audit.Online), language=$($report.Audit.Language), themes=$(@($th.Installed).Count), es_systems=$($ess.Count), empty systems=$(@($report.Audit.EmptySystems).Count)." 'SUCCESS'
     } catch { & $LMain "Phase 13b error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'EnvAudit' 'Error' $_.Exception.Message }
+
+    # ---- Phase 13c: custom collections + optional 1G1R region hiding ----
+    try {
+        Write-EsdeSection -Title 'Phase 13c - Collections & 1G1R' -Category 'Main'
+        $col = New-EsdeCollections -Systems $systems -CollectionsDir $Layout.Collections -Logger $LMain -DryRun:$DryRun
+        $report.Audit.CustomCollections = @{ Favorites=$col.Favorites; Played=$col.Played }
+        if ($OneGameOneRegion) {
+            foreach ($sys in $systems) {
+                $report.Audit.RegionHidden += (Invoke-RegionHide -GamelistPath $sys.Gamelist -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun)
+            }
+            & $LMain "1G1R: hid $($report.Audit.RegionHidden) non-preferred-region duplicate(s)." 'SUCCESS'
+        } else { & $LMain "1G1R region hiding skipped (pass /onegame to enable)." 'INFO' }
+    } catch { & $LMain "Phase 13c error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Collections' 'Error' $_.Exception.Message }
 
     # ---- Phase 14: reports (incl. health) ----
     try {

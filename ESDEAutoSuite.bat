@@ -60,6 +60,7 @@ if /i "%~1"=="/hashroms"   set "EXTRA=!EXTRA! -HashRoms"
 if /i "%~1"=="/genmedia"   set "EXTRA=!EXTRA! -GenerateMedia"
 if /i "%~1"=="/tune"       set "EXTRA=!EXTRA! -TuneEsde"
 if /i "%~1"=="/enrich"     set "EXTRA=!EXTRA! -EnrichMeta"
+if /i "%~1"=="/onegame"    set "EXTRA=!EXTRA! -OneGameOneRegion"
 if /i "%~1"=="/nomigrate"  set "EXTRA=!EXTRA! -SkipMigration"
 if /i "%~1"=="-nomigrate"  set "EXTRA=!EXTRA! -SkipMigration"
 if /i "%~1"=="/nodownload" set "EXTRA=!EXTRA! -SkipDownload"
@@ -97,6 +98,7 @@ param(
     [switch] $GenerateMedia,
     [switch] $TuneEsde,
     [switch] $EnrichMeta,
+    [switch] $OneGameOneRegion,
     [int] $WatchIntervalSeconds = 5
 )
 Set-StrictMode -Version Latest
@@ -282,6 +284,40 @@ $script:EmbeddedMediaJson = @'
         "pcenginecd": [ "retroarch" ],
         "epic": [ "steam" ],
         "steam": [ "steam" ]
+    },
+
+    "systemExtensions": {
+        "nes": [ ".nes", ".zip", ".7z", ".unif", ".fds" ],
+        "famicom": [ ".nes", ".zip", ".7z", ".fds" ],
+        "snes": [ ".sfc", ".smc", ".zip", ".7z", ".bs" ],
+        "n64": [ ".n64", ".z64", ".v64", ".zip", ".7z" ],
+        "gc": [ ".iso", ".gcm", ".gcz", ".rvz", ".ciso" ],
+        "wii": [ ".iso", ".wbfs", ".rvz", ".gcz", ".wad" ],
+        "wiiu": [ ".wua", ".rpx", ".wux" ],
+        "switch": [ ".nsp", ".xci", ".nca", ".nso" ],
+        "gb": [ ".gb", ".zip", ".7z" ],
+        "gba": [ ".gba", ".zip", ".7z" ],
+        "gbc": [ ".gbc", ".gb", ".zip", ".7z" ],
+        "nds": [ ".nds", ".zip", ".7z" ],
+        "3ds": [ ".3ds", ".cia", ".cci", ".cxi" ],
+        "psx": [ ".chd", ".cue", ".pbp", ".m3u", ".ccd", ".iso" ],
+        "ps2": [ ".chd", ".iso", ".cso", ".gz", ".bin" ],
+        "ps3": [ ".ps3", ".iso" ],
+        "psp": [ ".iso", ".cso", ".pbp", ".chd" ],
+        "dreamcast": [ ".chd", ".gdi", ".cdi", ".cue" ],
+        "saturn": [ ".chd", ".cue", ".iso", ".ccd", ".mds" ],
+        "genesis": [ ".md", ".gen", ".bin", ".smd", ".zip", ".7z" ],
+        "megadrive": [ ".md", ".gen", ".bin", ".smd", ".zip", ".7z" ],
+        "atari2600": [ ".a26", ".bin", ".zip", ".7z" ],
+        "atari5200": [ ".a52", ".bin", ".zip", ".7z" ],
+        "c64": [ ".d64", ".t64", ".crt", ".prg", ".zip", ".7z" ],
+        "amiga": [ ".adf", ".hdf", ".lha", ".zip", ".7z", ".ipf" ],
+        "amigacd32": [ ".chd", ".cue", ".iso" ],
+        "3do": [ ".chd", ".cue", ".iso" ],
+        "arcade": [ ".zip", ".7z", ".chd" ],
+        "mame": [ ".zip", ".7z", ".chd" ],
+        "xbox": [ ".iso", ".xbe" ],
+        "xbox360": [ ".iso", ".xex", ".god" ]
     },
 
     "biosRequirements": [
@@ -2626,18 +2662,50 @@ function Find-DuplicateMedia {
         ReclaimableBytes.
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][string] $MediaDir)
+    param(
+        [Parameter(Mandatory = $true)][string] $MediaDir,
+        [string] $CacheFile
+    )
+
+    # Optional persistent hash cache keyed by path -> "size|mtimeTicks|sha256" so
+    # unchanged files are not re-hashed on subsequent runs (big speed-up on large
+    # libraries). Cache is validated by size+last-write-time.
+    $cache = @{}
+    if ($CacheFile -and (Test-Path -LiteralPath $CacheFile)) {
+        try {
+            foreach ($line in (Get-Content -LiteralPath $CacheFile -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+                $i = $line.IndexOf('|'); if ($i -lt 1) { continue }
+                $cache[$line.Substring(0,$i)] = $line.Substring($i+1)
+            }
+        } catch { }
+    }
+    $newCache = New-Object System.Collections.Generic.List[string]
 
     $byHash = @{}
     $total  = 0
     if (Test-Path -LiteralPath $MediaDir) {
         Get-ChildItem -LiteralPath $MediaDir -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-            $h = Get-FileSha256 -Path $_.FullName
+            $sig = "$($_.Length)|$($_.LastWriteTimeUtc.Ticks)"
+            $h = $null
+            if ($cache.ContainsKey($_.FullName)) {
+                $cached = $cache[$_.FullName]
+                $bar = $cached.LastIndexOf('|')
+                if ($bar -gt 0 -and $cached.Substring(0,$bar) -eq $sig) { $h = $cached.Substring($bar+1) }
+            }
+            if (-not $h) { $h = Get-FileSha256 -Path $_.FullName }
             if (-not $h) { return }
+            if ($CacheFile) { $newCache.Add("$($_.FullName)|$sig|$h") }
             $total++
             if (-not $byHash.ContainsKey($h)) { $byHash[$h] = New-Object System.Collections.Generic.List[object] }
             $byHash[$h].Add($_)
         }
+    }
+    if ($CacheFile -and $newCache.Count -gt 0) {
+        try {
+            $cd = Split-Path $CacheFile -Parent
+            if ($cd -and -not (Test-Path -LiteralPath $cd)) { New-Item -Path $cd -ItemType Directory -Force | Out-Null }
+            [System.IO.File]::WriteAllLines($CacheFile, $newCache.ToArray(), (New-Object System.Text.UTF8Encoding($false)))
+        } catch { }
     }
 
     $groups = New-Object System.Collections.Generic.List[object]
@@ -4086,6 +4154,83 @@ function Backup-AllEmulatorConfigs {
     return $count
 }
 
+# ----- module: AdvancedTuning -----
+<#
+.SYNOPSIS
+    Advanced RetroArch tuning: 4K-appropriate shader preset and latency settings.
+.DESCRIPTION
+    Only applies what the install actually supports - a shader preset is set just
+    when a matching preset file exists, and latency settings scale with the
+    performance tier. retroarch.cfg is backed up before any change.
+#>
+
+Set-StrictMode -Version Latest
+
+function Set-RetroArchShaderPreset {
+    <#
+    .SYNOPSIS
+        Enables a sensible shader preset if one is present in the RetroArch shaders
+        tree (prefers a sharp-bilinear/CRT preset). Returns the preset path or ''.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $RetroArchDir,
+        [Parameter(Mandatory = $true)][string] $BackupRoot,
+        [Parameter(Mandatory = $true)][scriptblock] $Logger,
+        [switch] $DryRun
+    )
+    $cfg = Join-Path $RetroArchDir 'retroarch.cfg'
+    if (-not (Test-Path -LiteralPath $cfg)) { return '' }
+    $preset = $null
+    foreach ($sub in @('shaders\shaders_slang','shaders\shaders_glsl')) {
+        $base = Join-Path $RetroArchDir $sub
+        if (-not (Test-Path -LiteralPath $base)) { continue }
+        foreach ($pat in @('sharp-bilinear-simple.*','sharp-bilinear.*','crt-geom.*','crt-lottes.*')) {
+            $hit = Get-ChildItem -LiteralPath $base -Recurse -File -Filter ($pat) -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($hit) { $preset = $hit.FullName; break }
+        }
+        if ($preset) { break }
+    }
+    if (-not $preset) { & $Logger "No RetroArch shader presets found; skipping shader config." 'INFO'; return '' }
+    if ($DryRun) { & $Logger "[DRY-RUN] Would set shader preset $preset." 'INFO'; return $preset }
+    Backup-File -Path $cfg -BackupRoot $BackupRoot | Out-Null
+    Set-FlatConfigValue -Path $cfg -Key 'video_shader_enable' -Value 'true' -Quote
+    Set-FlatConfigValue -Path $cfg -Key 'video_shader' -Value $preset -Quote
+    & $Logger "Applied RetroArch shader preset: $(Split-Path $preset -Leaf)." 'SUCCESS'
+    return $preset
+}
+
+function Set-RetroArchLatency {
+    <#
+    .SYNOPSIS
+        Applies latency-reduction settings scaled to the performance tier (a strong
+        rig can afford frame delay / run-ahead). Returns $true if applied.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $RetroArchDir,
+        [Parameter(Mandatory = $true)][string] $Tier,
+        [Parameter(Mandatory = $true)][string] $BackupRoot,
+        [Parameter(Mandatory = $true)][scriptblock] $Logger,
+        [switch] $DryRun
+    )
+    $cfg = Join-Path $RetroArchDir 'retroarch.cfg'
+    if (-not (Test-Path -LiteralPath $cfg)) { return $false }
+    if ($DryRun) { & $Logger "[DRY-RUN] Would apply RetroArch latency tuning ($Tier)." 'INFO'; return $false }
+    Backup-File -Path $cfg -BackupRoot $BackupRoot | Out-Null
+    # Frame delay (ms shaved off; higher tier can sustain more); run-ahead 1 frame
+    # only for high/ultra tiers which have CPU headroom.
+    $frameDelay = switch ($Tier) { 'FourK' {4} 'HighEnd' {4} 'MidRange' {2} default {0} }
+    $runAhead   = if ($Tier -in @('FourK','HighEnd')) { 'true' } else { 'false' }
+    Set-FlatConfigValue -Path $cfg -Key 'video_frame_delay' -Value "$frameDelay" -Quote
+    Set-FlatConfigValue -Path $cfg -Key 'video_frame_delay_auto' -Value 'true' -Quote
+    Set-FlatConfigValue -Path $cfg -Key 'run_ahead_enabled' -Value $runAhead -Quote
+    Set-FlatConfigValue -Path $cfg -Key 'run_ahead_frames' -Value '1' -Quote
+    Set-FlatConfigValue -Path $cfg -Key 'run_ahead_secondary_instance' -Value 'true' -Quote
+    & $Logger "Applied RetroArch latency tuning (frame_delay=$frameDelay, run_ahead=$runAhead) for tier $Tier." 'SUCCESS'
+    return $true
+}
+
 # ----- module: RomLibrary -----
 <#
 .SYNOPSIS
@@ -4180,6 +4325,379 @@ function Get-CompressionAdvisory {
         }
     }
     return @{ Count=$candidates.Count; ApproxBytes=$bytes }
+}
+
+# ----- module: LibraryAnalytics -----
+<#
+.SYNOPSIS
+    Library analytics: statistics, duplicate-ROM detection, ROM extension checks,
+    cheat-file inventory, custom-systems suggestions and a portable library manifest.
+#>
+
+Set-StrictMode -Version Latest
+
+$script:AnNonRom = @('.txt','.xml','.dat','.jpg','.png','.bin','.m3u','.srm','.state','.cfg','.sav','.cht')
+
+function Get-LibraryStatistics {
+    <#
+    .SYNOPSIS
+        Aggregates genre distribution, release-decade distribution, total games and
+        total playtime across all systems' gamelists.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][object[]] $Systems)
+    $genres = @{}; $decades = @{}; $totalGames = 0; $totalPlaytime = 0
+    foreach ($sys in $Systems) {
+        if (-not (Test-Path -LiteralPath $sys.Gamelist)) { continue }
+        $g = Read-Gamelist -Path $sys.Gamelist
+        if (-not $g.Ok) { continue }
+        foreach ($game in @($g.Games)) {
+            $totalGames++
+            $gn = $game.SelectSingleNode('genre')
+            if ($gn -and $gn.InnerText) {
+                $key = ($gn.InnerText -split '[,/]')[0].Trim()
+                if ($key) { if (-not $genres.ContainsKey($key)) { $genres[$key]=0 }; $genres[$key]++ }
+            }
+            $rd = $game.SelectSingleNode('releasedate')
+            if ($rd -and $rd.InnerText -match '^(\d{4})') {
+                $decade = [string]([int]([int]$Matches[1] / 10) * 10) + 's'
+                if (-not $decades.ContainsKey($decade)) { $decades[$decade]=0 }; $decades[$decade]++
+            }
+            $pt = $game.SelectSingleNode('playtime')
+            if ($pt) { $v=0; if ([int]::TryParse($pt.InnerText,[ref]$v)) { $totalPlaytime += $v } }
+        }
+    }
+    $topGenres = @($genres.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 10 | ForEach-Object { @{ Genre=$_.Key; Count=$_.Value } })
+    $decadeArr = @($decades.GetEnumerator() | Sort-Object Name | ForEach-Object { @{ Decade=$_.Key; Count=$_.Value } })
+    return @{ TotalGames=$totalGames; TotalPlaytimeHours=[math]::Round($totalPlaytime/3600,1); TopGenres=$topGenres; Decades=$decadeArr }
+}
+
+function Test-RomExtensions {
+    <#
+    .SYNOPSIS
+        Reports ROM files whose extension is not in the system's allowed list.
+    .PARAMETER ExtMap
+        Hashtable system-name -> array of allowed extensions (lowercase, with dot).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]]  $Systems,
+        [Parameter(Mandatory = $true)][hashtable] $ExtMap
+    )
+    $records = New-Object System.Collections.Generic.List[object]
+    foreach ($sys in $Systems) {
+        if (-not $ExtMap.ContainsKey($sys.Name)) { continue }
+        $allowed = @($ExtMap[$sys.Name]) + @('.m3u','.txt')
+        if (-not (Test-Path -LiteralPath $sys.RomPath)) { continue }
+        $bad = New-Object System.Collections.Generic.List[string]
+        Get-ChildItem -LiteralPath $sys.RomPath -File -ErrorAction SilentlyContinue | ForEach-Object {
+            $e = $_.Extension.ToLower()
+            if ($script:AnNonRom -contains $e) { return }
+            if ($allowed -notcontains $e) { $bad.Add($_.Name) }
+        }
+        if ($bad.Count -gt 0) { $records.Add(@{ System=$sys.Name; Count=$bad.Count }) }
+    }
+    return $records.ToArray()
+}
+
+function Find-DuplicateRoms {
+    <#
+    .SYNOPSIS
+        Finds byte-identical ROMs (same content, different names) within a system,
+        hashing only same-size candidates and skipping files above MaxSizeMB.
+        Report only - never deletes.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $SystemRomDir, [int] $MaxSizeMB = 512)
+    if (-not (Test-Path -LiteralPath $SystemRomDir)) { return @() }
+    $limit = $MaxSizeMB * 1MB
+    $bySize = @{}
+    Get-ChildItem -LiteralPath $SystemRomDir -File -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($script:AnNonRom -contains $_.Extension.ToLower()) { return }
+        if ($_.Length -gt $limit -or $_.Length -eq 0) { return }
+        if (-not $bySize.ContainsKey($_.Length)) { $bySize[$_.Length] = New-Object System.Collections.Generic.List[object] }
+        $bySize[$_.Length].Add($_)
+    }
+    $dups = New-Object System.Collections.Generic.List[object]
+    foreach ($sz in $bySize.Keys) {
+        $cands = $bySize[$sz]
+        if ($cands.Count -lt 2) { continue }
+        $byHash = @{}
+        foreach ($f in $cands) {
+            $h = Get-FileSha256 -Path $f.FullName
+            if (-not $h) { continue }
+            if (-not $byHash.ContainsKey($h)) { $byHash[$h] = New-Object System.Collections.Generic.List[string] }
+            $byHash[$h].Add($f.Name)
+        }
+        foreach ($h in $byHash.Keys) { if ($byHash[$h].Count -gt 1) { $dups.Add(@{ Files=@($byHash[$h]) }) } }
+    }
+    return $dups.ToArray()
+}
+
+function Get-CheatFiles {
+    [CmdletBinding()]
+    param([string[]] $Roots = @())
+    $count = 0
+    foreach ($r in $Roots) {
+        if (-not $r -or -not (Test-Path -LiteralPath $r)) { continue }
+        $count += @(Get-ChildItem -LiteralPath $r -File -Recurse -Depth 5 -Filter '*.cht' -ErrorAction SilentlyContinue).Count
+    }
+    return $count
+}
+
+function Get-CustomSystemsSuggestion {
+    <#
+    .SYNOPSIS
+        ROM sub-folders that are not declared in custom es_systems.xml - candidates
+        for a custom system entry. Returns names.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.Specialized.OrderedDictionary] $Layout,
+        [Parameter(Mandatory = $true)][object[]] $Systems
+    )
+    $known = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    $ess = Join-Path $Layout.CustomSystems 'es_systems.xml'
+    if (Test-Path -LiteralPath $ess) {
+        try {
+            $doc = New-Object System.Xml.XmlDocument; $doc.Load($ess)
+            foreach ($n in $doc.SelectNodes('//system/name')) { [void]$known.Add($n.InnerText) }
+        } catch { }
+    }
+    return @($Systems | Where-Object { $_.HasRoms -and -not $known.Contains($_.Name) } | ForEach-Object { $_.Name })
+}
+
+function Export-LibraryManifest {
+    <#
+    .SYNOPSIS
+        Writes a portable JSON manifest of systems, game counts and media counts.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]] $Systems,
+        [Parameter(Mandatory = $true)][string]   $OutFile
+    )
+    $entries = New-Object System.Collections.Generic.List[object]
+    foreach ($sys in $Systems) {
+        $games = 0
+        if (Test-Path -LiteralPath $sys.Gamelist) { $g = Read-Gamelist -Path $sys.Gamelist; if ($g.Ok) { $games = @($g.Games).Count } }
+        $mediaCount = 0
+        if (Test-Path -LiteralPath $sys.MediaDir) { $mediaCount = @(Get-ChildItem -LiteralPath $sys.MediaDir -File -Recurse -ErrorAction SilentlyContinue).Count }
+        $entries.Add(@{ system=$sys.Name; games=$games; mediaFiles=$mediaCount; hasRoms=[bool]$sys.HasRoms })
+    }
+    $dir = Split-Path $OutFile -Parent
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
+    @{ generated=(Get-Date -Format o); systems=$entries.ToArray() } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $OutFile -Encoding UTF8
+    return $entries.Count
+}
+
+# ----- module: SaveManager -----
+<#
+.SYNOPSIS
+    Save-data protection: archives emulator save files / save states / memory cards
+    (the most precious, irreplaceable user data) and reports orphaned saves.
+.DESCRIPTION
+    Never deletes anything. Copies known save locations into a timestamped archive
+    under the backup tree so a bad emulator update or config change can't lose your
+    progress. Also flags save files that no longer have a matching ROM.
+#>
+
+Set-StrictMode -Version Latest
+
+# Folder names that typically hold saves/states/memory cards across emulators.
+$script:SaveFolderNames = @('saves','states','savestates','memcards','memorycards','sav','battery','nand','saveData')
+$script:SaveExtensions  = @('.srm','.sav','.state','.ss0','.ss1','.mcr','.mcd','.ps2','.gme','.dsv','.fs','.bsv')
+
+function Backup-SaveData {
+    <#
+    .SYNOPSIS
+        Archives save data found under the emulator roots and the ROM directory.
+        Returns count of files archived.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]   $RomDir,
+        [string[]] $EmulatorRoots = @(),
+        [Parameter(Mandatory = $true)][string]   $BackupRoot,
+        [Parameter(Mandatory = $true)][scriptblock] $Logger,
+        [switch] $DryRun
+    )
+    $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+    $dest  = Join-Path $BackupRoot ("savedata_$stamp")
+    $count = 0
+    $roots = @(@($EmulatorRoots) + $RomDir | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)
+
+    foreach ($root in $roots) {
+        # 1) Whole save/state folders.
+        foreach ($folderName in $script:SaveFolderNames) {
+            Get-ChildItem -LiteralPath $root -Directory -Recurse -Depth 4 -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -ieq $folderName } | ForEach-Object {
+                    $files = @(Get-ChildItem -LiteralPath $_.FullName -File -Recurse -ErrorAction SilentlyContinue)
+                    foreach ($f in $files) {
+                        if ($f.FullName.Length -gt 240) { continue }
+                        if ($DryRun) { $count++; continue }
+                        $rel = $f.FullName.Substring($root.Length).TrimStart('\','/')
+                        $dst = Join-Path (Join-Path $dest (Split-Path $root -Leaf)) $rel
+                        $dstDir = Split-Path $dst -Parent
+                        if (-not (Test-Path -LiteralPath $dstDir)) { New-Item -Path $dstDir -ItemType Directory -Force | Out-Null }
+                        Copy-Item -LiteralPath $f.FullName -Destination $dst -Force -ErrorAction SilentlyContinue
+                        $count++
+                    }
+                }
+        }
+    }
+    # 2) Loose save files sitting next to ROMs.
+    if (Test-Path -LiteralPath $RomDir) {
+        Get-ChildItem -LiteralPath $RomDir -File -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+            Where-Object { $script:SaveExtensions -contains $_.Extension.ToLower() } | ForEach-Object {
+                if ($DryRun) { $count++; return }
+                $rel = $_.FullName.Substring($RomDir.Length).TrimStart('\','/')
+                $dst = Join-Path (Join-Path $dest 'roms') $rel
+                $dstDir = Split-Path $dst -Parent
+                if (-not (Test-Path -LiteralPath $dstDir)) { New-Item -Path $dstDir -ItemType Directory -Force | Out-Null }
+                Copy-Item -LiteralPath $_.FullName -Destination $dst -Force -ErrorAction SilentlyContinue
+                $count++
+            }
+    }
+    if ($count -gt 0 -and -not $DryRun) { & $Logger "Archived $count save/state file(s) to $dest." 'SUCCESS' }
+    elseif ($count -gt 0) { & $Logger "[DRY-RUN] Would archive $count save/state file(s)." 'INFO' }
+    return $count
+}
+
+function Get-OrphanedSaves {
+    <#
+    .SYNOPSIS
+        Returns save files (by stem) under the ROM dir that have no matching ROM.
+        Report only - never deleted (saves are irreplaceable).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $SystemRomDir)
+    $orphans = New-Object System.Collections.Generic.List[string]
+    if (-not (Test-Path -LiteralPath $SystemRomDir)) { return @() }
+    $romStems = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    Get-ChildItem -LiteralPath $SystemRomDir -File -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($script:SaveExtensions -notcontains $_.Extension.ToLower()) {
+            [void]$romStems.Add([System.IO.Path]::GetFileNameWithoutExtension($_.Name))
+        }
+    }
+    Get-ChildItem -LiteralPath $SystemRomDir -File -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+        Where-Object { $script:SaveExtensions -contains $_.Extension.ToLower() } | ForEach-Object {
+            $stem = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
+            if (-not $romStems.Contains($stem)) { $orphans.Add($_.Name) }
+        }
+    return $orphans.ToArray()
+}
+
+# ----- module: CollectionsManager -----
+<#
+.SYNOPSIS
+    ES-DE custom collections generation and 1G1R region hiding.
+.DESCRIPTION
+    * New-EsdeCollections - builds custom collection files ES-DE reads from the
+      collections folder: Favorites (from <favorite>) and Played (from <playcount>).
+    * Invoke-RegionHide - for region-duplicate ROM sets, keeps the preferred-region
+      copy visible and marks the others <hidden> in the gamelist (reversible via the
+      backup/restore system; never deletes ROMs).
+#>
+
+Set-StrictMode -Version Latest
+
+function New-EsdeCollections {
+    <#
+    .SYNOPSIS
+        Writes custom-Favorites.cfg and custom-Played.cfg into the collections dir,
+        using full ROM paths (the format ES-DE custom collections accept).
+        Returns @{ Favorites; Played }.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]] $Systems,
+        [Parameter(Mandatory = $true)][string]   $CollectionsDir,
+        [Parameter(Mandatory = $true)][scriptblock] $Logger,
+        [switch] $DryRun
+    )
+    $fav = New-Object System.Collections.Generic.List[string]
+    $played = New-Object System.Collections.Generic.List[string]
+    foreach ($sys in $Systems) {
+        if (-not (Test-Path -LiteralPath $sys.Gamelist)) { continue }
+        $g = Read-Gamelist -Path $sys.Gamelist
+        if (-not $g.Ok) { continue }
+        foreach ($game in @($g.Games)) {
+            $pn = $game.SelectSingleNode('path'); if (-not $pn -or -not $pn.InnerText) { continue }
+            $rel = ($pn.InnerText -replace '/','\') -replace '^\.\\',''
+            $full = Join-Path $sys.RomPath $rel
+            $f = $game.SelectSingleNode('favorite')
+            if ($f -and $f.InnerText -eq 'true') { $fav.Add($full) }
+            $pc = $game.SelectSingleNode('playcount')
+            if ($pc) { $v = 0; if ([int]::TryParse($pc.InnerText, [ref]$v) -and $v -gt 0) { $played.Add($full) } }
+        }
+    }
+    if (-not $DryRun) {
+        if (-not (Test-Path -LiteralPath $CollectionsDir)) { New-Item -Path $CollectionsDir -ItemType Directory -Force | Out-Null }
+        if ($fav.Count -gt 0)    { [System.IO.File]::WriteAllLines((Join-Path $CollectionsDir 'custom-Favorites.cfg'), $fav.ToArray(), (New-Object System.Text.UTF8Encoding($false))) }
+        if ($played.Count -gt 0) { [System.IO.File]::WriteAllLines((Join-Path $CollectionsDir 'custom-Played.cfg'), $played.ToArray(), (New-Object System.Text.UTF8Encoding($false))) }
+    }
+    & $Logger "Collections: $($fav.Count) favorite(s), $($played.Count) played title(s)." 'INFO'
+    return @{ Favorites = $fav.Count; Played = $played.Count }
+}
+
+function Invoke-RegionHide {
+    <#
+    .SYNOPSIS
+        For each region-duplicate group in a system, keeps the preferred-region copy
+        and marks the rest <hidden>. Returns count hidden.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $GamelistPath,
+        [string[]] $PreferredRegions = @('USA','World','Europe','Japan'),
+        [Parameter(Mandatory = $true)][string] $BackupRoot,
+        [Parameter(Mandatory = $true)][scriptblock] $Logger,
+        [switch] $DryRun
+    )
+    $hidden = 0
+    if (-not (Test-Path -LiteralPath $GamelistPath)) { return 0 }
+    $g = Read-Gamelist -Path $GamelistPath
+    if (-not $g.Ok) { return 0 }
+    $xml = $g.Xml
+
+    # Group games by region-insensitive base name.
+    $groups = @{}
+    foreach ($game in @($xml.gameList.SelectNodes('game'))) {
+        $nm = $game.SelectSingleNode('name'); $pn = $game.SelectSingleNode('path')
+        $label = if ($nm -and $nm.InnerText) { $nm.InnerText } elseif ($pn -and $pn.InnerText) { [System.IO.Path]::GetFileNameWithoutExtension($pn.InnerText) } else { $null }
+        if (-not $label) { continue }
+        $base = ([Regex]::Replace($label, '\s*[\(\[].*$', '')).Trim().ToLower()
+        if (-not $base) { continue }
+        if (-not $groups.ContainsKey($base)) { $groups[$base] = New-Object System.Collections.Generic.List[object] }
+        $groups[$base].Add([pscustomobject]@{ Node=$game; Label=$label })
+    }
+
+    function RegionRank([string]$label, [string[]]$prefs) {
+        for ($i=0; $i -lt $prefs.Count; $i++) { if ($label -match ('(?i)\(' + [Regex]::Escape($prefs[$i])) ) { return $i } }
+        return 999
+    }
+
+    $changed = $false
+    foreach ($base in $groups.Keys) {
+        $items = $groups[$base]
+        if ($items.Count -lt 2) { continue }
+        $ranked = $items | Sort-Object @{ Expression = { RegionRank $_.Label $PreferredRegions } }
+        $keep = $ranked[0]
+        foreach ($it in $ranked) {
+            if ($it -eq $keep) { continue }
+            $h = $it.Node.SelectSingleNode('hidden')
+            if (-not $h) { $h = $xml.CreateElement('hidden'); [void]$it.Node.AppendChild($h) }
+            if ($h.InnerText -ne 'true') { if (-not $DryRun) { $h.InnerText = 'true' }; $hidden++; $changed = $true }
+        }
+    }
+
+    if ($changed -and -not $DryRun) {
+        Backup-File -Path $GamelistPath -BackupRoot $BackupRoot | Out-Null
+        Save-Gamelist -Xml $xml -Prefix $g.Prefix -Path $GamelistPath
+        & $Logger "1G1R: hid $hidden non-preferred-region duplicate(s) in $(Split-Path (Split-Path $GamelistPath -Parent) -Leaf)." 'SUCCESS'
+    }
+    return $hidden
 }
 
 # ----- module: BiosAdvanced -----
@@ -6113,6 +6631,10 @@ function Invoke-EsdeSetup {
             RomStats = @(); ScrapeRatio = @(); MultiDiscPlaylists = 0; CompressionAdvisory = @()
             MediaTypeTotals = @{}; TopLargest = @(); ConfigsArchived = 0
             RetroArchExtras = $false; UxApplied = 0; UxTuned = $false
+            SavesArchived = 0; OrphanSaves = 0; CustomCollections = @{}; RegionHidden = 0
+            Statistics = @{}; DuplicateRoms = 0; BadExtensions = @(); CheatFiles = 0
+            CustomSystemSuggestions = @(); ManifestSystems = 0
+            ShaderApplied = ''; LatencyTuned = $false
         }
     }
 
@@ -6178,6 +6700,13 @@ function Invoke-EsdeSetup {
             Backup-File -Path $Layout.SettingsFile -BackupRoot $BackupDir | Out-Null
         } else { & $LMain "[DRY-RUN] Backup snapshot skipped." 'INFO' }
     } catch { & $LMain "Phase 3 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Backup' 'Error' $_.Exception.Message }
+
+    # ---- Phase 3b: protect save data (saves / states / memory cards) ----
+    try {
+        Write-EsdeSection -Title 'Phase 3b - Save Data Protection' -Category 'Main'
+        $report.Audit.SavesArchived = (Backup-SaveData -RomDir $Layout.RomDir -EmulatorRoots @(Get-EmuRoots) -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun)
+        & $LMain "Save data archived: $($report.Audit.SavesArchived) file(s)." 'INFO'
+    } catch { & $LMain "Phase 3b error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'SaveBackup' 'Error' $_.Exception.Message }
 
     # ---- Phase 4: RetroBat / in-place media migration ----
     try {
@@ -6278,7 +6807,7 @@ function Invoke-EsdeSetup {
     # ---- Phase 7: duplicate detection ----
     try {
         Write-EsdeSection -Title 'Phase 7 - Duplicate Detection' -Category 'Media'
-        $dup = Find-DuplicateMedia -MediaDir $Layout.MediaDir
+        $dup = Find-DuplicateMedia -MediaDir $Layout.MediaDir -CacheFile (Join-Path $WorkRoot 'mediahash.cache')
         & $LMedia "Hashed $($dup.TotalFiles) media file(s): $($dup.DuplicateFiles) duplicate(s), $([math]::Round($dup.ReclaimableBytes/1MB,2)) MB reclaimable." 'INFO'
         $removed = Invoke-DuplicateCleanup -Groups @($dup.Groups) -BackupRoot $BackupDir -Logger $LMedia -DryRun:$DryRun
         if ($removed -gt 0) { & $LMedia "Removed $removed redundant same-folder duplicate(s)." 'SUCCESS' }
@@ -6340,6 +6869,26 @@ function Invoke-EsdeSetup {
         & $LMedia "ROM library: $totalRoms ROM(s) across $(@($report.Audit.RomStats).Count) system(s); $($report.Audit.MultiDiscPlaylists) multi-disc playlist(s) created." 'SUCCESS'
     } catch { & $LMedia "Phase 8c error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'RomLibrary' 'Error' $_.Exception.Message }
 
+    # ---- Phase 8d: library analytics (stats, dup ROMs, extensions, saves, manifest) ----
+    try {
+        Write-EsdeSection -Title 'Phase 8d - Library Analytics' -Category 'Media'
+        $report.Audit.Statistics = (Get-LibraryStatistics -Systems $systems)
+        $extMap = ConvertTo-Ht $mediaDefs.systemExtensions
+        $report.Audit.BadExtensions = @(Test-RomExtensions -Systems $systems -ExtMap $extMap)
+        $dupRomTotal = 0; $orphanSaveTotal = 0
+        foreach ($sys in $systems) {
+            $dupRomTotal += @(Find-DuplicateRoms -SystemRomDir $sys.RomPath).Count
+            $orphanSaveTotal += @(Get-OrphanedSaves -SystemRomDir $sys.RomPath).Count
+        }
+        $report.Audit.DuplicateRoms = $dupRomTotal
+        $report.Audit.OrphanSaves = $orphanSaveTotal
+        $report.Audit.CheatFiles = (Get-CheatFiles -Roots @(@(Get-EmuRoots) + $Layout.RomDir))
+        $report.Audit.CustomSystemSuggestions = @(Get-CustomSystemsSuggestion -Layout $Layout -Systems $systems)
+        $report.Audit.ManifestSystems = (Export-LibraryManifest -Systems $systems -OutFile (Join-Path $ReportsDir 'Library_Manifest.json'))
+        $st = $report.Audit.Statistics
+        & $LMedia "Analytics: $($st.TotalGames) games, $($st.TotalPlaytimeHours)h played, $dupRomTotal dup ROM set(s), $orphanSaveTotal orphan save(s), $($report.Audit.CheatFiles) cheat file(s)." 'SUCCESS'
+    } catch { & $LMedia "Phase 8d error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Analytics' 'Error' $_.Exception.Message }
+
     # ---- Phase 9: media download (missing only) ----
     try {
         Write-EsdeSection -Title 'Phase 9 - Media Download (missing only)' -Category 'Downloads'
@@ -6397,6 +6946,19 @@ function Invoke-EsdeSetup {
             if ($raExeT) { $report.Audit.RetroArchExtras = (Set-RetroArchExtras -RetroArchDir (Split-Path $raExeT -Parent) -BackupRoot $BackupDir -Logger $LOpt -DryRun:$DryRun) }
         } else { & $LOpt "RetroArch extra tuning skipped (pass /tune to enable)." 'INFO' }
     } catch { & $LOpt "Phase 11c error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'EmulatorTuning' 'Error' $_.Exception.Message }
+
+    # ---- Phase 11d: advanced RetroArch tuning (shader + latency; /tune) ----
+    try {
+        Write-EsdeSection -Title 'Phase 11d - Advanced Tuning' -Category 'Optimization'
+        if ($TuneEsde) {
+            $raExeA = Find-RetroArchExe
+            if ($raExeA) {
+                $raDirA = Split-Path $raExeA -Parent
+                $report.Audit.ShaderApplied = (Set-RetroArchShaderPreset -RetroArchDir $raDirA -BackupRoot $BackupDir -Logger $LOpt -DryRun:$DryRun)
+                $report.Audit.LatencyTuned  = (Set-RetroArchLatency -RetroArchDir $raDirA -Tier $tier -BackupRoot $BackupDir -Logger $LOpt -DryRun:$DryRun)
+            } else { & $LOpt "RetroArch not found; advanced tuning skipped." 'INFO' }
+        } else { & $LOpt "Advanced tuning skipped (pass /tune to enable)." 'INFO' }
+    } catch { & $LOpt "Phase 11d error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'AdvancedTuning' 'Error' $_.Exception.Message }
 
     # ---- Phase 11b: missing-emulator gap analysis ----
     try {
@@ -6495,6 +7057,19 @@ function Invoke-EsdeSetup {
         }
         & $LMain "Environment audit: online=$($report.Audit.Online), language=$($report.Audit.Language), themes=$(@($th.Installed).Count), es_systems=$($ess.Count), empty systems=$(@($report.Audit.EmptySystems).Count)." 'SUCCESS'
     } catch { & $LMain "Phase 13b error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'EnvAudit' 'Error' $_.Exception.Message }
+
+    # ---- Phase 13c: custom collections + optional 1G1R region hiding ----
+    try {
+        Write-EsdeSection -Title 'Phase 13c - Collections & 1G1R' -Category 'Main'
+        $col = New-EsdeCollections -Systems $systems -CollectionsDir $Layout.Collections -Logger $LMain -DryRun:$DryRun
+        $report.Audit.CustomCollections = @{ Favorites=$col.Favorites; Played=$col.Played }
+        if ($OneGameOneRegion) {
+            foreach ($sys in $systems) {
+                $report.Audit.RegionHidden += (Invoke-RegionHide -GamelistPath $sys.Gamelist -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun)
+            }
+            & $LMain "1G1R: hid $($report.Audit.RegionHidden) non-preferred-region duplicate(s)." 'SUCCESS'
+        } else { & $LMain "1G1R region hiding skipped (pass /onegame to enable)." 'INFO' }
+    } catch { & $LMain "Phase 13c error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Collections' 'Error' $_.Exception.Message }
 
     # ---- Phase 14: reports (incl. health) ----
     try {
