@@ -56,7 +56,7 @@ if (Test-Path -LiteralPath $ModulesDir) {
                      'HealthSelfHeal','BackupEngine','MediaClassification','MediaReorganization','RetroBatMigration',
                      'MetadataRepair','GamelistEnrich','GamelistQuality','DuplicateDetection','MissingMedia','MediaRecovery','MediaAudit','MediaIntegrity','MediaHygiene','MediaDownload','Cleanup',
                      'EmulatorDetection','EsdeEmulators','EmulatorGap','EmulatorTuning','AdvancedTuning','SystemTuning','RomLibrary','RomVerify','RomCompress','RaPlaylists','LibraryAnalytics','LibraryAnalytics2','LibraryInsights','SaveManager','CollectionsManager','CollectionsPlus','ThemeManager',
-                     'BiosAdvanced','EsdeEnvironmentAudit','EsdeUx','SystemOps','PortabilityOps','GraphicsOptimization',
+                     'BiosAdvanced','EsdeEnvironmentAudit','EsdeUx','SystemOps','PortabilityOps','GraphicsOptimization','XboxEmulators',
                      'ControllerManagement','Reporting','ReportingPlus','GitIntegration')) {
         Import-Module (Join-Path $ModulesDir "$m.psm1") -Force -DisableNameChecking
     }
@@ -241,6 +241,8 @@ function Invoke-EsdeSetup {
             MediaNamesFixed = 0; CrossSystemMediaDup = 0; BrokenM3u = 0
             PerSystemStats = @(); AbandonedGames = 0; Savestates = 0; GamelistDiff = @()
             ControllerBundle = 0; DiskForecastMB = 0; NetworkPaths = @(); ChdConverted = 0; ChdSavedMB = 0.0
+            XboxEmulators = @(); XboxEepromRelocated = 0; XboxEepromValidated = 0; XboxEepromQuarantined = 0
+            XboxEepromAutoGen = 0; XboxBiosRelocated = 0; XboxBiosMissing = @(); XboxConfigured = 0; XboxReadiness = @()
         }
     }
 
@@ -712,6 +714,75 @@ function Invoke-EsdeSetup {
             Add-HealthFinding 'BIOS' 'Warning' "$stillMissing BIOS missing - supply legally-obtained dumps in $biosDir"
         }
     } catch { & $LMain "Phase 13 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'BIOS' 'Error' $_.Exception.Message }
+
+    # ---- Phase 13a-xbox: Xbox / Xbox 360 emulators (xemu, Cxbx-Reloaded, xenia) ----
+    try {
+        Write-EsdeSection -Title 'Phase 13a - Xbox / Xbox 360 Setup' -Category 'Main'
+        # $biosDir / $allBiosDirs may be unset if Phase 13 threw early - guard them.
+        if (-not (Get-Variable -Name biosDir -Scope Local -ErrorAction SilentlyContinue)) { $biosDir = $null }
+        if (-not (Get-Variable -Name allBiosDirs -Scope Local -ErrorAction SilentlyContinue)) { $allBiosDirs = @() }
+        # Search roots: emulator roots, ROM dir, BIOS dirs, ES-DE data dir.
+        $xboxRoots = New-Object System.Collections.Generic.List[string]
+        foreach ($er in @(Get-EmuRoots)) { if ($er) { $xboxRoots.Add($er) } }
+        if ($Layout.RomDir)  { $xboxRoots.Add($Layout.RomDir); $xboxRoots.Add((Join-Path $Layout.RomDir 'xbox')); $xboxRoots.Add((Join-Path $Layout.RomDir 'xbox360')) }
+        if ($Layout.DataDir) { $xboxRoots.Add($Layout.DataDir) }
+        if ($biosDir)        { $xboxRoots.Add($biosDir) }
+        foreach ($cand in @($allBiosDirs)) { if ($cand) { $xboxRoots.Add($cand) } }
+        $xboxRoots2 = @($xboxRoots | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)
+
+        $xemus = @(Get-XboxEmulators -Roots $xboxRoots2)
+        if ($xemus.Count -eq 0) {
+            & $LMain "No Xbox / Xbox 360 emulator (xemu, Cxbx-Reloaded, xenia) detected - skipping Xbox setup." 'INFO'
+        } else {
+            & $LMain "Detected Xbox emulator(s): $(@($xemus | ForEach-Object { $_.Id }) -join ', ')." 'INFO'
+            $report.Audit.XboxEmulators = @($xemus | ForEach-Object { @{ Id=$_.Id; Kind=$_.Kind; Dir=$_.Dir } })
+
+            # eeprom.bin: validate / relocate / enable auto-generation (settings data, safe).
+            $ee = Repair-XboxEeprom -XboxEmulators $xemus -SearchRoots $xboxRoots2 -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun
+            $report.Audit.XboxEepromRelocated   = [int]$ee.Relocated
+            $report.Audit.XboxEepromValidated   = [int]$ee.Validated
+            $report.Audit.XboxEepromQuarantined = [int]$ee.Quarantined
+            $report.Audit.XboxEepromAutoGen     = [int]$ee.AutoGen
+            if ($ee.Quarantined -gt 0) { Add-HealthFinding 'Xbox' 'Warning' "$($ee.Quarantined) corrupt eeprom.bin quarantined (regenerated on next launch)" }
+
+            # MCPX boot ROM + Xbox BIOS: relocate/propagate only - copyrighted, never downloaded.
+            $xb = Repair-XboxBios -XboxEmulators $xemus -SearchRoots $xboxRoots2 -Logger $LMain -DryRun:$DryRun
+            $report.Audit.XboxBiosRelocated = [int]$xb.Relocated
+            $missingBios = New-Object System.Collections.Generic.List[string]
+            if ($xb.MissingMcpx -gt 0) { $missingBios.Add('mcpx_1.0.bin (MCPX boot ROM)') }
+            if ($xb.MissingBios -gt 0) { $missingBios.Add('Xbox BIOS (e.g. Complex_4627.bin)') }
+            $report.Audit.XboxBiosMissing = @($missingBios)
+            if ($missingBios.Count -gt 0) {
+                Add-HealthFinding 'Xbox' 'Warning' "Missing copyrighted Xbox firmware: $($missingBios -join ', ') - supply your own dumps"
+            }
+
+            # Per-emulator configuration (paths + 4K graphics + no-boot fixes).
+            $configured = 0
+            foreach ($emu in $xemus) {
+                try {
+                    switch ($emu.Id) {
+                        'xemu'          { if (Set-XemuConfig  -Emu $emu -Tier $tier -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun) { $configured++ } }
+                        'cxbx-reloaded' { if (Set-CxbxConfig  -Emu $emu -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun) { $configured++ } }
+                        default {
+                            if ($emu.Kind -eq 'xbox360') {
+                                Initialize-XeniaDirs -Emu $emu -Logger $LMain -DryRun:$DryRun | Out-Null
+                                if (Set-XeniaConfig -Emu $emu -Tier $tier -GpuVendor $hw.GpuVendor -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun) { $configured++ }
+                            }
+                        }
+                    }
+                } catch { & $LMain "Xbox config error for $($emu.Id): $($_.Exception.Message)" 'WARN'; Add-HealthFinding 'Xbox' 'Warning' "$($emu.Id) config: $($_.Exception.Message)" }
+            }
+            $report.Audit.XboxConfigured = $configured
+
+            $report.Audit.XboxReadiness = @(Get-XboxReadiness -XboxEmulators $xemus)
+            foreach ($rd in $report.Audit.XboxReadiness) {
+                if (-not $rd.Ready) {
+                    $lack = @(); if (-not $rd.Mcpx) { $lack += 'MCPX' }; if (-not $rd.Bios) { $lack += 'BIOS' }; if (-not $rd.Hdd) { $lack += 'HDD image' }
+                    if ($lack.Count -gt 0) { & $LMain "$($rd.Emulator): not yet bootable - still need $($lack -join ', ')." 'WARN' }
+                }
+            }
+        }
+    } catch { & $LMain "Phase 13a (Xbox) error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Xbox' 'Error' $_.Exception.Message }
 
     # ---- Phase 13b: ES-DE environment audit ----
     try {
