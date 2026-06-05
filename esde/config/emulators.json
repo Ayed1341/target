@@ -70,6 +70,23 @@
             }
         },
         {
+            "id": "xemu",
+            "displayName": "xemu (Original Xbox)",
+            "folder": "xemu",
+            "executables": [ "xemu.exe" ],
+            "configType": "toml",
+            "configFiles": [ "xemu.toml" ],
+            "systems": [ "xbox" ],
+            "supports4K": true,
+            "download": {
+                "type": "github",
+                "repo": "xemu-project/xemu",
+                "assetPattern": "xemu-win-release\\.zip$",
+                "archive": "zip",
+                "stripRootFolder": false
+            }
+        },
+        {
             "id": "dolphin",
             "displayName": "Dolphin (GameCube / Wii)",
             "folder": "dolphin-emu",

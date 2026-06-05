@@ -14,6 +14,8 @@ REM    ESDEAutoSuite.bat /watch         Controller hotswap watcher.
 REM    ESDEAutoSuite.bat /nomigrate     Skip RetroBat media migration.
 REM    ESDEAutoSuite.bat /nodownload    Skip ScreenScraper downloads.
 REM    ESDEAutoSuite.bat /nooptimize    Skip emulator graphics optimization.
+REM    ESDEAutoSuite.bat /install       Download & install the best missing emulators.
+REM    ESDEAutoSuite.bat /prerelease    Allow prerelease/canary builds when installing.
 REM    ESDEAutoSuite.bat /nogit         Skip git commit/push.
 REM =========================================================================
 
@@ -66,6 +68,9 @@ if /i "%~1"=="/schedule"   set "EXTRA=!EXTRA! -Schedule"
 if /i "%~1"=="/shortcut"   set "EXTRA=!EXTRA! -Shortcut"
 if /i "%~1"=="/autofav"    set "EXTRA=!EXTRA! -AutoFav"
 if /i "%~1"=="/compress"   set "EXTRA=!EXTRA! -Compress"
+if /i "%~1"=="/install"    set "EXTRA=!EXTRA! -InstallEmulators"
+if /i "%~1"=="-install"    set "EXTRA=!EXTRA! -InstallEmulators"
+if /i "%~1"=="/prerelease" set "EXTRA=!EXTRA! -AllowPrerelease"
 if /i "%~1"=="/nomigrate"  set "EXTRA=!EXTRA! -SkipMigration"
 if /i "%~1"=="-nomigrate"  set "EXTRA=!EXTRA! -SkipMigration"
 if /i "%~1"=="/nodownload" set "EXTRA=!EXTRA! -SkipDownload"
@@ -110,6 +115,8 @@ param(
     [switch] $AutoFav,
     [switch] $Schedule,
     [switch] $Themes,
+    [switch] $InstallEmulators,
+    [switch] $AllowPrerelease,
     [int] $WatchIntervalSeconds = 5
 )
 Set-StrictMode -Version Latest
@@ -416,6 +423,23 @@ $script:EmbeddedEmuJson = @'
                 "type": "github",
                 "repo": "xenia-canary/xenia-canary-releases",
                 "assetPattern": "windows.zip$",
+                "archive": "zip",
+                "stripRootFolder": false
+            }
+        },
+        {
+            "id": "xemu",
+            "displayName": "xemu (Original Xbox)",
+            "folder": "xemu",
+            "executables": [ "xemu.exe" ],
+            "configType": "toml",
+            "configFiles": [ "xemu.toml" ],
+            "systems": [ "xbox" ],
+            "supports4K": true,
+            "download": {
+                "type": "github",
+                "repo": "xemu-project/xemu",
+                "assetPattern": "xemu-win-release\\.zip$",
                 "archive": "zip",
                 "stripRootFolder": false
             }
@@ -7189,6 +7213,621 @@ function Get-XboxReadiness {
     return $out.ToArray()
 }
 
+# ----- module: EmulatorInstall -----
+<#
+.SYNOPSIS
+    Emulator auto-installation module.
+.DESCRIPTION
+    Installs missing emulators required by RetroBat. Resolution of download URLs
+    is data-driven (config\emulators.json):
+      * type=github : queries the GitHub Releases API for the latest matching asset
+      * type=direct : uses a fixed official upstream URL
+    Archives are extracted with the RetroBat-bundled 7-Zip when available, falling
+    back to .NET ZIP extraction. Every step is logged and the install is verified
+    by re-detecting the emulator executable afterwards. Existing files are never
+    deleted; downloads land in a temp folder and are copied into place.
+#>
+
+Set-StrictMode -Version Latest
+
+function Get-SevenZipPath {
+    <#
+    .SYNOPSIS
+        Locates a usable 7-Zip executable (RetroBat bundles 7za under system\tools).
+    #>
+    [CmdletBinding()]
+    param([string] $RetroBatRoot)
+
+    $candidates = @()
+    if ($RetroBatRoot) {
+        $candidates += Join-Path $RetroBatRoot 'system\tools\7za.exe'
+        $candidates += Join-Path $RetroBatRoot 'system\tools\7z.exe'
+        $candidates += Join-Path $RetroBatRoot 'system\7za.exe'
+    }
+    foreach ($base in @(${env:ProgramFiles}, ${env:ProgramFiles(x86)})) {
+        if (-not [string]::IsNullOrWhiteSpace($base)) {
+            $candidates += Join-Path $base '7-Zip\7z.exe'
+        }
+    }
+
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
+    }
+    $cmd = Get-Command -Name '7z.exe', '7za.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
+
+function Resolve-DownloadUrl {
+    <#
+    .SYNOPSIS
+        Resolves the concrete download URL + file name for an emulator definition.
+    .OUTPUTS
+        Hashtable with Url and FileName, or $null when unresolvable.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)] [object] $Download)
+
+    switch ($Download.type) {
+        'direct' {
+            return @{ Url = $Download.url; FileName = (Split-Path $Download.url -Leaf) }
+        }
+        'github' {
+            $api = "https://api.github.com/repos/$($Download.repo)/releases/latest"
+            $headers = @{ 'User-Agent' = 'RetroBat-AutoSetup'; 'Accept' = 'application/vnd.github+json' }
+            if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $($env:GITHUB_TOKEN)" }
+            try {
+                $rel    = Invoke-RestMethod -Uri $api -Headers $headers -TimeoutSec 60 -ErrorAction Stop
+                $assets = @($rel.assets)
+
+                # Never select a non-Windows or non-x64 build. Exclude assets for
+                # other operating systems and CPU architectures up front so a loose
+                # fallback can't grab a macOS / Linux / ARM64 artifact.
+                $foreign = '(?i)(arm64|aarch64|armhf|armv7|riscv|linux|ubuntu|debian|mac|macos|osx|darwin|android|appimage|ios|\.dmg$|\.deb$|\.rpm$|\.tar\.|\.apk$)'
+                $windowsAssets = $assets | Where-Object {
+                    $_.name -match '(?i)\.(7z|zip|exe)$' -and $_.name -notmatch $foreign
+                }
+
+                # 1) Honour the definition's specific pattern (within Windows assets).
+                $match = $windowsAssets | Where-Object { $_.name -match $Download.assetPattern } | Select-Object -First 1
+                # 2) Prefer anything that explicitly looks like Windows x64.
+                if (-not $match) {
+                    $match = $windowsAssets | Where-Object { $_.name -match '(?i)(win|windows|x64|x86_64|64bit|amd64)' } | Select-Object -First 1
+                }
+                # 3) Last resort: any remaining Windows-safe archive.
+                if (-not $match) {
+                    $match = $windowsAssets | Select-Object -First 1
+                }
+                if ($match) {
+                    return @{ Url = $match.browser_download_url; FileName = $match.name }
+                }
+            } catch {
+                throw "GitHub API lookup failed for $($Download.repo): $($_.Exception.Message)"
+            }
+            return $null
+        }
+        default { return $null }
+    }
+}
+
+function Invoke-FileDownload {
+    <#
+    .SYNOPSIS
+        Downloads a file with retry / exponential backoff and verifies it is non-empty.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [string] $Url,
+        [Parameter(Mandatory = $true)] [string] $Destination,
+        [int] $MaxRetries = 4
+    )
+
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11
+    $delay = 2
+    for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+        try {
+            $progPref = $ProgressPreference
+            $ProgressPreference = 'SilentlyContinue'   # massive speed-up for Invoke-WebRequest
+            Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing -TimeoutSec 600 -Headers @{ 'User-Agent' = 'RetroBat-AutoSetup' } -ErrorAction Stop
+            $ProgressPreference = $progPref
+
+            if ((Test-Path -LiteralPath $Destination) -and ((Get-Item -LiteralPath $Destination).Length -gt 0)) {
+                return $true
+            }
+            throw 'Downloaded file is empty.'
+        } catch {
+            if ($attempt -ge $MaxRetries) { throw }
+            Start-Sleep -Seconds $delay
+            $delay *= 2
+        }
+    }
+    return $false
+}
+
+function Expand-DownloadedArchive {
+    <#
+    .SYNOPSIS
+        Extracts a downloaded archive into a destination folder.
+    .DESCRIPTION
+        Uses 7-Zip for .7z (and .zip when present); falls back to Expand-Archive
+        for .zip. Self-extracting .exe installers (e.g. MAME) are run with 7-Zip
+        which can open them as archives.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [string] $ArchivePath,
+        [Parameter(Mandatory = $true)] [string] $Destination,
+        [Parameter(Mandatory = $true)] [string] $ArchiveType,
+        [string] $SevenZip
+    )
+
+    if (-not (Test-Path -LiteralPath $Destination)) {
+        New-Item -Path $Destination -ItemType Directory -Force | Out-Null
+    }
+
+    # .7z and self-extracting .exe archives require 7-Zip. .zip can use 7-Zip
+    # when available (faster, handles edge cases) or fall back to .NET extraction.
+    $useSevenZip = ($ArchiveType -in @('7z', 'sfx')) -or ($ArchiveType -eq 'zip' -and $SevenZip)
+
+    if ($useSevenZip) {
+        if (-not $SevenZip) {
+            throw "Archive type '$ArchiveType' requires 7-Zip but none was found."
+        }
+        $sevenArgs = @('x', $ArchivePath, "-o$Destination", '-y', '-aoa')
+        $proc = Start-Process -FilePath $SevenZip -ArgumentList $sevenArgs -NoNewWindow -Wait -PassThru
+        if ($proc.ExitCode -ne 0) {
+            throw "7-Zip extraction failed (exit code $($proc.ExitCode))."
+        }
+    }
+    elseif ($ArchiveType -eq 'zip') {
+        Expand-Archive -LiteralPath $ArchivePath -DestinationPath $Destination -Force
+    }
+    else {
+        throw "Unsupported archive type: $ArchiveType"
+    }
+}
+
+function Move-ExtractedPayload {
+    <#
+    .SYNOPSIS
+        Copies extracted content into the emulator folder, optionally collapsing a
+        single redundant top-level folder (stripRootFolder).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [string] $StagingDir,
+        [Parameter(Mandatory = $true)] [string] $TargetDir,
+        [bool] $StripRootFolder = $false
+    )
+
+    if (-not (Test-Path -LiteralPath $TargetDir)) {
+        New-Item -Path $TargetDir -ItemType Directory -Force | Out-Null
+    }
+
+    $source = $StagingDir
+    if ($StripRootFolder) {
+        $entries = @(Get-ChildItem -LiteralPath $StagingDir -Force)
+        $dirs    = @($entries | Where-Object { $_.PSIsContainer })
+        $files   = @($entries | Where-Object { -not $_.PSIsContainer })
+        if ($dirs.Count -eq 1 -and $files.Count -eq 0) {
+            $source = $dirs[0].FullName
+        }
+    }
+
+    Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $TargetDir -Recurse -Force
+    }
+}
+
+function Install-Emulator {
+    <#
+    .SYNOPSIS
+        Downloads, extracts, installs and verifies a single emulator.
+    .OUTPUTS
+        Hashtable: Success (bool), Message (string), ExecutablePath (string|null).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] [object] $Emulator,
+        [Parameter(Mandatory = $true)] [string] $RetroBatRoot,
+        [Parameter(Mandatory = $true)] [scriptblock] $Logger
+    )
+
+    $log = { param($m, $l) & $Logger $m $l }
+
+    $def = $Emulator.Definition
+    & $log "Preparing installation of $($Emulator.DisplayName)..." 'INFO'
+
+    $resolved = Resolve-DownloadUrl -Download $def.download
+    if (-not $resolved) {
+        return @{ Success = $false; Message = "No download URL could be resolved."; ExecutablePath = $null }
+    }
+    & $log "Resolved download URL: $($resolved.Url)" 'INFO'
+
+    $tempBase = Join-Path $env:TEMP ("RetroBatSetup_{0}_{1}" -f $Emulator.Id, (Get-Date -Format 'yyyyMMddHHmmss'))
+    $dlPath   = Join-Path $tempBase $resolved.FileName
+    $staging  = Join-Path $tempBase 'extracted'
+    New-Item -Path $tempBase -ItemType Directory -Force | Out-Null
+
+    try {
+        & $log "Downloading $($resolved.FileName)..." 'INFO'
+        [void](Invoke-FileDownload -Url $resolved.Url -Destination $dlPath)
+        $sizeMB = [math]::Round((Get-Item -LiteralPath $dlPath).Length / 1MB, 2)
+        & $log "Download complete ($sizeMB MB)." 'SUCCESS'
+
+        $sevenZip = Get-SevenZipPath -RetroBatRoot $RetroBatRoot
+        $archType = $def.download.archive
+        & $log "Extracting archive (type=$archType)..." 'INFO'
+        Expand-DownloadedArchive -ArchivePath $dlPath -Destination $staging -ArchiveType $archType -SevenZip $sevenZip
+
+        $strip = $false
+        if ($def.download.PSObject.Properties.Name -contains 'stripRootFolder') {
+            $strip = [bool]$def.download.stripRootFolder
+        }
+        & $log "Installing into $($Emulator.FolderPath)..." 'INFO'
+        Move-ExtractedPayload -StagingDir $staging -TargetDir $Emulator.FolderPath -StripRootFolder $strip
+
+        # ---- Verify ----
+        $exe = Find-EmulatorExecutable -Folder $Emulator.FolderPath -Executables $def.executables
+        if ($exe) {
+            & $log "Verified: $($Emulator.DisplayName) executable present at $exe" 'SUCCESS'
+            return @{ Success = $true; Message = 'Installed and verified.'; ExecutablePath = $exe }
+        } else {
+            & $log "Installation completed but no expected executable was found." 'WARN'
+            return @{ Success = $false; Message = 'Executable not found after extraction.'; ExecutablePath = $null }
+        }
+    } catch {
+        & $log "Installation failed: $($_.Exception.Message)" 'ERROR'
+        return @{ Success = $false; Message = $_.Exception.Message; ExecutablePath = $null }
+    } finally {
+        if (Test-Path -LiteralPath $tempBase) {
+            Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+# ----- module: EmulatorAutoInstall -----
+<#
+.SYNOPSIS
+    ES-DE-native "install the best emulator if it is missing" engine (opt-in via
+    /install). Emulators are free, legally-redistributable software, so unlike
+    BIOS/ROMs they CAN be fetched automatically from their official upstreams.
+.DESCRIPTION
+    Builds an install plan from the emulator-gap analysis (only systems that have
+    ROMs but no working emulator), picks the single best downloadable emulator for
+    each, and installs it into the ES-DE Emulators root. Twenty safety/quality
+    features layered on top of the low-level download/extract helpers
+    (EmulatorInstall.psm1):
+
+      1  ES-DE-native install root (data-parent\Emulators), auto-created
+      2  Catalog-driven "best emulator per system" plan from the gap analysis
+      3  Multi-system emulators (e.g. Dolphin for gc+wii) de-duplicated to one install
+      4  Idempotent: skip anything already installed & verified
+      5  Online preflight - skip cleanly when offline
+      6  Free-disk-space preflight per install (configurable safety margin)
+      7  GitHub latest-release resolution, Windows-x64-only asset filtering
+      8  Prerelease/canary-aware resolution (repos that only ship prereleases)
+      9  Downloaded-size sanity check against the asset's reported size
+     10  Download retry with exponential backoff (reused helper)
+     11  Archive-type aware extraction (7z / zip / sfx) with .NET zip fallback
+     12  Atomic install with rollback (stage -> swap -> verify -> restore on failure)
+     13  Executable re-detection to verify the install really worked
+     14  Version manifest (.esde-autoinstall.json) for future update checks
+     15  Portable-mode marker for emulators that support it (portable.txt)
+     16  ES-DE custom es_find_rules.xml registration (never touches bundled rules)
+     17  Post-install auto-configuration handoff (Xbox emulators + graphics tuning)
+     18  Dry-run mode (plan + sizes, nothing downloaded)
+     19  Per-install logging + report keys + health findings on failure
+     20  Post-run remaining-gap summary (systems still needing a manual emulator)
+#>
+
+Set-StrictMode -Version Latest
+
+# Known ES-DE emulator names for es_find_rules.xml (only the ones we are sure of).
+$script:EsdeFindNames = @{
+    retroarch='RETROARCH'; pcsx2='PCSX2'; rpcs3='RPCS3'; xenia='XENIA'; xemu='XEMU'
+    dolphin='DOLPHIN'; cemu='CEMU'; ppsspp='PPSSPP'; duckstation='DUCKSTATION'
+    melonds='MELONDS'; mame='MAME'; flycast='FLYCAST'; redream='REDREAM'; mgba='MGBA'
+}
+# Emulators that key off a "portable.txt" marker to keep their data local.
+$script:PortableEmulators = @('xenia','xemu','cemu','ppsspp','duckstation')
+
+function Get-EmulatorInstallRoot {
+    <#
+    .SYNOPSIS
+        Resolves the directory new emulators are installed into. Prefers an existing
+        ES-DE Emulators root; otherwise data-parent\Emulators (not created here).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.Specialized.OrderedDictionary] $Layout,
+        [string[]] $ExistingRoots = @()
+    )
+    foreach ($r in $ExistingRoots) { if ($r -and (Test-Path -LiteralPath $r)) { return $r } }
+    return (Join-Path (Split-Path $Layout.DataDir -Parent) 'Emulators')
+}
+
+function Get-FreeSpaceMB {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $Path)
+    try {
+        $probe = $Path
+        while ($probe -and -not (Test-Path -LiteralPath $probe)) { $probe = Split-Path $probe -Parent }
+        if (-not $probe) { return [double]::MaxValue }
+        $root = [System.IO.Path]::GetPathRoot($probe)
+        if (-not $root) { return [double]::MaxValue }
+        $di = New-Object System.IO.DriveInfo($root)
+        return [math]::Round($di.AvailableFreeSpace / 1MB, 1)
+    } catch { return [double]::MaxValue }
+}
+
+function Resolve-EmulatorAsset {
+    <#
+    .SYNOPSIS
+        Resolves @{ Url; FileName; Tag; SizeBytes } for a download definition.
+        Supports prerelease/canary repos and Windows-x64-only asset filtering.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object] $Download,
+        [switch] $AllowPrerelease
+    )
+    if ($Download.type -eq 'direct') {
+        return @{ Url = $Download.url; FileName = (Split-Path $Download.url -Leaf); Tag = 'direct'; SizeBytes = 0 }
+    }
+    if ($Download.type -ne 'github') { return $null }
+
+    $headers = @{ 'User-Agent' = 'ESDE-AutoSuite'; 'Accept' = 'application/vnd.github+json' }
+    if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $($env:GITHUB_TOKEN)" }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+    $wantPre = $AllowPrerelease.IsPresent
+    if ($Download.PSObject.Properties.Name -contains 'prerelease') { $wantPre = $wantPre -or [bool]$Download.prerelease }
+
+    $rel = $null
+    try {
+        if ($wantPre) {
+            # Some projects (canary builds) only publish prereleases: take the newest
+            # release of any kind.
+            $list = Invoke-RestMethod -Uri "https://api.github.com/repos/$($Download.repo)/releases?per_page=10" -Headers $headers -TimeoutSec 60 -ErrorAction Stop
+            $rel  = @($list | Sort-Object { [datetime]$_.published_at } -Descending | Select-Object -First 1)[0]
+        } else {
+            $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$($Download.repo)/releases/latest" -Headers $headers -TimeoutSec 60 -ErrorAction Stop
+        }
+    } catch {
+        throw "GitHub lookup failed for $($Download.repo): $($_.Exception.Message)"
+    }
+    if (-not $rel) { return $null }
+
+    $assets  = @($rel.assets)
+    $foreign = '(?i)(arm64|aarch64|armhf|armv7|riscv|linux|ubuntu|debian|mac|macos|osx|darwin|android|appimage|ios|\.dmg$|\.deb$|\.rpm$|\.tar\.|\.apk$|symbols|debug|pdb)'
+    $winAssets = @($assets | Where-Object { $_.name -match '(?i)\.(7z|zip|exe)$' -and $_.name -notmatch $foreign })
+
+    $match = $null
+    if ($Download.PSObject.Properties.Name -contains 'assetPattern' -and $Download.assetPattern) {
+        $match = $winAssets | Where-Object { $_.name -match $Download.assetPattern } | Select-Object -First 1
+    }
+    if (-not $match) { $match = $winAssets | Where-Object { $_.name -match '(?i)(win|windows|x64|x86_64|64bit|amd64)' } | Select-Object -First 1 }
+    if (-not $match) { $match = $winAssets | Select-Object -First 1 }
+    if (-not $match) { return $null }
+
+    $size = 0; if ($match.PSObject.Properties.Name -contains 'size') { $size = [int64]$match.size }
+    $tag  = 'unknown'; if ($rel.PSObject.Properties.Name -contains 'tag_name' -and $rel.tag_name) { $tag = [string]$rel.tag_name }
+    return @{ Url = $match.browser_download_url; FileName = $match.name; Tag = $tag; SizeBytes = $size }
+}
+
+function Get-AutoInstallPlan {
+    <#
+    .SYNOPSIS
+        From gap records + the catalog, returns one install item per missing
+        emulator: @{ EmulatorId; Def; FolderPath; Systems[] }.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]] $Gaps,
+        [Parameter(Mandatory = $true)][object]   $Catalog,
+        [Parameter(Mandatory = $true)][hashtable] $SystemMap,
+        [Parameter(Mandatory = $true)][string]   $InstallRoot,
+        [string[]] $InstalledIds = @()
+    )
+    $byId = @{}
+    foreach ($def in @($Catalog.emulators)) { $byId[[string]$def.id] = $def }
+    $installed = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($i in $InstalledIds) { [void]$installed.Add($i) }
+
+    $plan = [ordered]@{}
+    foreach ($g in ($Gaps | Where-Object { $_.Missing })) {
+        # Preference order: the system's emulator list (best first).
+        $options = @()
+        if ($SystemMap.ContainsKey($g.System)) { $options = @($SystemMap[$g.System]) }
+        if ($options.Count -eq 0 -and $g.Recommended) { $options = @($g.Recommended) }
+        $chosen = $null
+        foreach ($opt in $options) {
+            $id = [string]$opt
+            if ($installed.Contains($id)) { $chosen = $null; break }   # already covered
+            if ($byId.ContainsKey($id) -and $byId[$id].PSObject.Properties.Name -contains 'download' -and $byId[$id].download -and $byId[$id].download.type -ne 'none') {
+                $chosen = $id; break
+            }
+        }
+        if (-not $chosen) { continue }
+        if ($plan.Contains($chosen)) { $plan[$chosen].Systems += $g.System; continue }
+        $def = $byId[$chosen]
+        $plan[$chosen] = @{
+            EmulatorId = $chosen
+            Def        = $def
+            FolderPath = (Join-Path $InstallRoot $def.folder)
+            Systems    = @($g.System)
+        }
+    }
+    return @($plan.Values)
+}
+
+function Register-EmulatorFindRule {
+    <#
+    .SYNOPSIS
+        Adds/updates a staticpath entry in the USER's custom es_find_rules.xml so
+        ES-DE finds the freshly-installed emulator. The bundled resources file is
+        never modified. Returns $true when written.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.Specialized.OrderedDictionary] $Layout,
+        [Parameter(Mandatory = $true)][string] $EmulatorId,
+        [Parameter(Mandatory = $true)][string] $ExePath,
+        [Parameter(Mandatory = $true)][scriptblock] $Logger,
+        [switch] $DryRun
+    )
+    if (-not $script:EsdeFindNames.ContainsKey($EmulatorId)) { return $false }
+    $name = $script:EsdeFindNames[$EmulatorId]
+    $custom = Join-Path $Layout.CustomSystems 'es_find_rules.xml'
+    if ($DryRun) { & $Logger "[DRY-RUN] Would register $name in custom es_find_rules.xml." 'INFO'; return $false }
+
+    $dir = Split-Path $custom -Parent
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
+
+    $doc = New-Object System.Xml.XmlDocument
+    if (Test-Path -LiteralPath $custom) {
+        try { $doc.Load($custom) } catch { $doc = New-Object System.Xml.XmlDocument }
+    }
+    $root = $doc.DocumentElement
+    if (-not $root -or $root.Name -ne 'ruleList') {
+        $doc.RemoveAll()
+        [void]$doc.AppendChild($doc.CreateXmlDeclaration('1.0', $null, $null))
+        $root = $doc.CreateElement('ruleList'); [void]$doc.AppendChild($root)
+    }
+    # Replace any existing emulator node of this name.
+    foreach ($n in @($root.SelectNodes("emulator[@name='$name']"))) { [void]$root.RemoveChild($n) }
+
+    $emu = $doc.CreateElement('emulator'); $emu.SetAttribute('name', $name)
+    $rule = $doc.CreateElement('rule'); $rule.SetAttribute('type', 'staticpath')
+    $entry = $doc.CreateElement('entry'); $entry.InnerText = $ExePath
+    [void]$rule.AppendChild($entry); [void]$emu.AppendChild($rule); [void]$root.AppendChild($emu)
+    $doc.Save($custom)
+    & $Logger "Registered $name in custom es_find_rules.xml so ES-DE can locate it." 'SUCCESS'
+    return $true
+}
+
+function Install-EsdeEmulator {
+    <#
+    .SYNOPSIS
+        Installs one emulator from its catalog definition with disk preflight,
+        size sanity, atomic+rollback, verification, version manifest and a
+        portable marker. Returns @{ Success; ExePath; Tag; SizeMB; Message }.
+    .PARAMETER LocalArchiveOverride
+        Test hook: when supplied, the archive is taken from this local path instead
+        of being downloaded (the resolve/download network steps are skipped).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object] $Item,
+        [Parameter(Mandatory = $true)][string] $BackupRoot,
+        [Parameter(Mandatory = $true)][scriptblock] $Logger,
+        [string] $SevenZip,
+        [int] $MinFreeMB = 600,
+        [switch] $AllowPrerelease,
+        [switch] $DryRun,
+        [string] $LocalArchiveOverride
+    )
+    $def = $Item.Def
+    $target = $Item.FolderPath
+    $name = $def.displayName
+
+    # (6) Disk-space preflight.
+    $free = Get-FreeSpaceMB -Path $target
+    if ($free -lt $MinFreeMB) {
+        & $Logger "Skipping $name - only $free MB free (need >= $MinFreeMB MB)." 'WARN'
+        return @{ Success = $false; ExePath = $null; Tag = ''; SizeMB = 0; Message = 'Insufficient disk space.' }
+    }
+
+    if ($DryRun -and -not $LocalArchiveOverride) {
+        try {
+            $r = Resolve-EmulatorAsset -Download $def.download -AllowPrerelease:$AllowPrerelease
+            $sz = if ($r -and $r.SizeBytes) { [math]::Round($r.SizeBytes/1MB,1) } else { 0 }
+            & $Logger "[DRY-RUN] Would install $name for [$($Item.Systems -join ', ')] (~$sz MB) -> $target." 'INFO'
+            return @{ Success = $false; ExePath = $null; Tag = $(if($r){$r.Tag}else{''}); SizeMB = $sz; Message = 'Dry-run.' }
+        } catch {
+            & $Logger "[DRY-RUN] Could not resolve a download for ${name}: $($_.Exception.Message)" 'WARN'
+            return @{ Success = $false; ExePath = $null; Tag = ''; SizeMB = 0; Message = $_.Exception.Message }
+        }
+    }
+
+    $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ("ESDEInstall_{0}_{1}" -f $Item.EmulatorId, [Guid]::NewGuid().ToString('N'))
+    $staging  = Join-Path $tempBase 'extracted'
+    New-Item -Path $tempBase -ItemType Directory -Force | Out-Null
+    $rollbackDir = $null
+    try {
+        $archType = if ($def.download.PSObject.Properties.Name -contains 'archive') { [string]$def.download.archive } else { 'zip' }
+        if ($LocalArchiveOverride) {
+            $dlPath = $LocalArchiveOverride
+            $tag = 'test-local'
+        } else {
+            # (7/8) Resolve, (9) size sanity, (10) retry download.
+            $resolved = Resolve-EmulatorAsset -Download $def.download -AllowPrerelease:$AllowPrerelease
+            if (-not $resolved) { throw 'No Windows x64 download asset could be resolved.' }
+            $tag = $resolved.Tag
+            $dlPath = Join-Path $tempBase $resolved.FileName
+            & $Logger "Downloading $name $tag ($($resolved.FileName))..." 'INFO'
+            [void](Invoke-FileDownload -Url $resolved.Url -Destination $dlPath)
+            $actual = (Get-Item -LiteralPath $dlPath).Length
+            if ($resolved.SizeBytes -gt 0 -and [math]::Abs($actual - $resolved.SizeBytes) -gt [math]::Max(4096, $resolved.SizeBytes * 0.02)) {
+                throw "Downloaded size $actual B does not match expected $($resolved.SizeBytes) B (corrupt/incomplete)."
+            }
+            & $Logger "Downloaded $([math]::Round($actual/1MB,1)) MB." 'SUCCESS'
+        }
+
+        # (11) Extract.
+        Expand-DownloadedArchive -ArchivePath $dlPath -Destination $staging -ArchiveType $archType -SevenZip $SevenZip
+
+        # (12) Verify the staging actually contains the expected exe BEFORE swapping.
+        $strip = $false
+        if ($def.download.PSObject.Properties.Name -contains 'stripRootFolder') { $strip = [bool]$def.download.stripRootFolder }
+        $probeDir = $staging
+        if ($strip) {
+            $entries = @(Get-ChildItem -LiteralPath $staging -Force)
+            $dirs = @($entries | Where-Object { $_.PSIsContainer }); $files = @($entries | Where-Object { -not $_.PSIsContainer })
+            if ($dirs.Count -eq 1 -and $files.Count -eq 0) { $probeDir = $dirs[0].FullName }
+        }
+        $stagedExe = Find-EmulatorExecutable -Folder $probeDir -Executables @($def.executables)
+        if (-not $stagedExe) { throw 'Extracted archive did not contain the expected executable.' }
+
+        # (12) Atomic swap with rollback: move any prior install aside first.
+        if (Test-Path -LiteralPath $target) {
+            $rollbackDir = Join-Path $BackupRoot ('emu_replaced\' + $def.folder + '_' + (Get-Date -Format 'yyyyMMddHHmmss'))
+            New-Item -Path (Split-Path $rollbackDir -Parent) -ItemType Directory -Force | Out-Null
+            Move-Item -LiteralPath $target -Destination $rollbackDir -Force
+        }
+        Move-ExtractedPayload -StagingDir $staging -TargetDir $target -StripRootFolder $strip
+
+        # (13) Re-detect in the real target.
+        $exe = Find-EmulatorExecutable -Folder $target -Executables @($def.executables)
+        if (-not $exe) { throw 'Executable not found after install.' }
+
+        # (14) Version manifest.
+        $manifest = @{ id = $Item.EmulatorId; tag = $tag; installed = (Get-Date -Format o); systems = @($Item.Systems); exe = $exe }
+        ($manifest | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath (Join-Path $target '.esde-autoinstall.json') -Encoding UTF8
+
+        # (15) Portable marker.
+        if ($script:PortableEmulators -contains $Item.EmulatorId) {
+            $pt = Join-Path $target 'portable.txt'
+            if (-not (Test-Path -LiteralPath $pt)) { Set-Content -LiteralPath $pt -Value '' -Encoding UTF8 }
+        }
+
+        $sizeMB = [math]::Round((Get-Item -LiteralPath $exe).Length/1MB, 1)
+        & $Logger "Installed $name $tag for [$($Item.Systems -join ', ')] -> $exe" 'SUCCESS'
+        if ($rollbackDir) { & $Logger "Previous $name kept at $rollbackDir (delete once the new build is confirmed good)." 'INFO' }
+        return @{ Success = $true; ExePath = $exe; Tag = $tag; SizeMB = $sizeMB; Message = 'Installed.' }
+    } catch {
+        & $Logger "Install of $name failed: $($_.Exception.Message)" 'ERROR'
+        # Roll back to the previous install if we moved it aside.
+        if ($rollbackDir -and (Test-Path -LiteralPath $rollbackDir) -and -not (Test-Path -LiteralPath $target)) {
+            try { Move-Item -LiteralPath $rollbackDir -Destination $target -Force; & $Logger "Rolled back to previous $name." 'INFO' } catch { }
+        }
+        return @{ Success = $false; ExePath = $null; Tag = ''; SizeMB = 0; Message = $_.Exception.Message }
+    } finally {
+        if (Test-Path -LiteralPath $tempBase) { Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 # ----- module: ControllerManagement -----
 <#
 .SYNOPSIS
@@ -8220,6 +8859,7 @@ function Invoke-EsdeSetup {
             ControllerBundle = 0; DiskForecastMB = 0; NetworkPaths = @(); ChdConverted = 0; ChdSavedMB = 0.0
             XboxEmulators = @(); XboxEepromRelocated = 0; XboxEepromValidated = 0; XboxEepromQuarantined = 0
             XboxEepromAutoGen = 0; XboxBiosRelocated = 0; XboxBiosMissing = @(); XboxConfigured = 0; XboxReadiness = @()
+            EmulatorsInstalled = @(); EmulatorsInstallFailed = @(); EmulatorsInstallPlanned = 0; EmulatorsRemainingGaps = @()
         }
     }
 
@@ -8642,6 +9282,71 @@ function Invoke-EsdeSetup {
         $gapCount = @($gaps | Where-Object { $_.Missing }).Count
         & $LOpt "Missing-emulator analysis: $gapCount system(s) need an emulator." $(if ($gapCount -gt 0) { 'WARN' } else { 'SUCCESS' })
     } catch { & $LOpt "Phase 11b error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'EmulatorGap' 'Error' $_.Exception.Message }
+
+    # ---- Phase 11g: auto-install the best missing emulators (opt-in: /install) ----
+    try {
+        Write-EsdeSection -Title 'Phase 11g - Auto-Install Emulators' -Category 'Optimization'
+        if (-not $InstallEmulators) {
+            & $LOpt "Emulator auto-install skipped (pass /install to download & install the best missing emulators)." 'INFO'
+        } else {
+            $installRoot = Get-EmulatorInstallRoot -Layout $Layout -ExistingRoots @(Get-EmuRoots)
+            $plan = @(Get-AutoInstallPlan -Gaps @($report.EmulatorGaps) -Catalog $emuDefs -SystemMap $sysEmuMap -InstallRoot $installRoot -InstalledIds $installedEmuIds)
+            $report.Audit.EmulatorsInstallPlanned = $plan.Count
+            if ($plan.Count -eq 0) {
+                & $LOpt "Nothing to install - every system with ROMs already has a working (or non-downloadable) emulator." 'SUCCESS'
+            } elseif (-not (Test-Online)) {
+                & $LOpt "Auto-install requested but no internet connection detected; skipping $($plan.Count) install(s)." 'WARN'
+                Add-HealthFinding 'EmulatorInstall' 'Warning' 'Offline - emulator installs skipped'
+            } else {
+                if (-not $DryRun -and -not (Test-Path -LiteralPath $installRoot)) { New-Item -Path $installRoot -ItemType Directory -Force | Out-Null }
+                & $LOpt "Install plan: $(@($plan | ForEach-Object { $_.EmulatorId }) -join ', ') -> $installRoot" 'INFO'
+                $sevenZip = Get-SevenZipPath -RetroBatRoot $RetroBatRoot
+                $installedNow = @()
+                foreach ($item in $plan) {
+                    $res = Install-EsdeEmulator -Item $item -BackupRoot $BackupDir -Logger $LOpt -SevenZip $sevenZip -AllowPrerelease:$AllowPrerelease -DryRun:$DryRun
+                    if ($res.Success) {
+                        $report.Audit.EmulatorsInstalled += @{ Id=$item.EmulatorId; Tag=$res.Tag; Systems=@($item.Systems); Exe=$res.ExePath }
+                        $installedNow += $item.EmulatorId
+                        # (16) Register in ES-DE so it is actually found.
+                        Register-EmulatorFindRule -Layout $Layout -EmulatorId $item.EmulatorId -ExePath $res.ExePath -Logger $LOpt -DryRun:$DryRun | Out-Null
+                        # (17) Configuration handoff for Xbox emulators we just installed.
+                        try {
+                            $edir = Split-Path $res.ExePath -Parent
+                            if ($item.EmulatorId -eq 'xemu' -and (Get-Command Set-XemuConfig -ErrorAction SilentlyContinue)) {
+                                $desc = [pscustomobject]@{ Id='xemu'; Kind='xbox'; Dir=$edir; Exe=$res.ExePath; ConfigPath=(Join-Path $edir 'xemu.toml') }
+                                Set-XemuConfig -Emu $desc -Tier $tier -BackupRoot $BackupDir -Logger $LOpt -DryRun:$DryRun | Out-Null
+                            } elseif ($item.EmulatorId -eq 'xenia' -and (Get-Command Initialize-XeniaDirs -ErrorAction SilentlyContinue)) {
+                                $cfg = if (Test-Path -LiteralPath (Join-Path $edir 'xenia-canary.config.toml')) { 'xenia-canary.config.toml' } else { 'xenia.config.toml' }
+                                $desc = [pscustomobject]@{ Id='xenia'; Kind='xbox360'; Dir=$edir; Exe=$res.ExePath; ConfigPath=(Join-Path $edir $cfg) }
+                                Initialize-XeniaDirs -Emu $desc -Logger $LOpt -DryRun:$DryRun | Out-Null
+                                Set-XeniaConfig -Emu $desc -Tier $tier -GpuVendor $hw.GpuVendor -BackupRoot $BackupDir -Logger $LOpt -DryRun:$DryRun | Out-Null
+                            }
+                        } catch { & $LOpt "Post-install config for $($item.EmulatorId): $($_.Exception.Message)" 'WARN' }
+                    } elseif (-not $DryRun) {
+                        $report.Audit.EmulatorsInstallFailed += @{ Id=$item.EmulatorId; Reason=$res.Message }
+                        Add-HealthFinding 'EmulatorInstall' 'Warning' "$($item.EmulatorId): $($res.Message)"
+                    }
+                }
+                # (17) Apply graphics optimization to the freshly-installed emulators.
+                if (-not $DryRun -and $installedNow.Count -gt 0) {
+                    try {
+                        $fresh = @(Get-EsdeEmulators -Roots @(Get-EmuRoots) -Definitions $emuDefs) | Where-Object { $_.Installed -and ($installedNow -contains $_.Id) -and $_.Known -and $_.Supports4K }
+                        foreach ($e in $fresh) {
+                            $r = Invoke-EmulatorOptimization -Emulator $e -Tier $tier -TargetWidth $profile.TargetWidth -TargetHeight $profile.TargetHeight -BackupRoot $BackupDir -Logger $LOpt -GpuVendor $hw.GpuVendor
+                            $report.Optimization += @{ Emulator=$e.DisplayName; Result=$(if($r.Success){'optimized (new install)'}else{$r.Message}) }
+                        }
+                    } catch { & $LOpt "Optimizing new installs: $($_.Exception.Message)" 'WARN' }
+                }
+                $okN = @($report.Audit.EmulatorsInstalled).Count
+                & $LOpt "Auto-install complete: $okN installed, $(@($report.Audit.EmulatorsInstallFailed).Count) failed." $(if ($okN -gt 0) { 'SUCCESS' } else { 'INFO' })
+            }
+            # (20) Remaining gaps (systems still without a usable / downloadable emulator).
+            $installedAfter = @($installedEmuIds + @($report.Audit.EmulatorsInstalled | ForEach-Object { $_.Id }))
+            $remaining = @(Get-EmulatorGaps -Systems $systems -InstalledIds $installedAfter -SystemMap $sysEmuMap | Where-Object { $_.Missing } | ForEach-Object { $_.System })
+            $report.Audit.EmulatorsRemainingGaps = $remaining
+            if ($remaining.Count -gt 0) { & $LOpt "Still needing a manual emulator (no auto-downloadable option, or proprietary keys required): $($remaining -join ', ')." 'WARN' }
+        }
+    } catch { & $LOpt "Phase 11g error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'EmulatorInstall' 'Error' $_.Exception.Message }
 
     # ---- Phase 12: controllers (ES-DE input + RetroArch + SDL gamecontrollerdb) ----
     try {

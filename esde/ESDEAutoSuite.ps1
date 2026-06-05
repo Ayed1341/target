@@ -31,6 +31,8 @@ param(
     [switch] $Shortcut,
     [switch] $AutoFav,
     [switch] $Compress,
+    [switch] $InstallEmulators,
+    [switch] $AllowPrerelease,
     [int]    $WatchIntervalSeconds = 5
 )
 
@@ -56,7 +58,7 @@ if (Test-Path -LiteralPath $ModulesDir) {
                      'HealthSelfHeal','BackupEngine','MediaClassification','MediaReorganization','RetroBatMigration',
                      'MetadataRepair','GamelistEnrich','GamelistQuality','DuplicateDetection','MissingMedia','MediaRecovery','MediaAudit','MediaIntegrity','MediaHygiene','MediaDownload','Cleanup',
                      'EmulatorDetection','EsdeEmulators','EmulatorGap','EmulatorTuning','AdvancedTuning','SystemTuning','RomLibrary','RomVerify','RomCompress','RaPlaylists','LibraryAnalytics','LibraryAnalytics2','LibraryInsights','SaveManager','CollectionsManager','CollectionsPlus','ThemeManager',
-                     'BiosAdvanced','EsdeEnvironmentAudit','EsdeUx','SystemOps','PortabilityOps','GraphicsOptimization','XboxEmulators',
+                     'BiosAdvanced','EsdeEnvironmentAudit','EsdeUx','SystemOps','PortabilityOps','GraphicsOptimization','XboxEmulators','EmulatorInstall','EmulatorAutoInstall',
                      'ControllerManagement','Reporting','ReportingPlus','GitIntegration')) {
         Import-Module (Join-Path $ModulesDir "$m.psm1") -Force -DisableNameChecking
     }
@@ -243,6 +245,7 @@ function Invoke-EsdeSetup {
             ControllerBundle = 0; DiskForecastMB = 0; NetworkPaths = @(); ChdConverted = 0; ChdSavedMB = 0.0
             XboxEmulators = @(); XboxEepromRelocated = 0; XboxEepromValidated = 0; XboxEepromQuarantined = 0
             XboxEepromAutoGen = 0; XboxBiosRelocated = 0; XboxBiosMissing = @(); XboxConfigured = 0; XboxReadiness = @()
+            EmulatorsInstalled = @(); EmulatorsInstallFailed = @(); EmulatorsInstallPlanned = 0; EmulatorsRemainingGaps = @()
         }
     }
 
@@ -665,6 +668,71 @@ function Invoke-EsdeSetup {
         $gapCount = @($gaps | Where-Object { $_.Missing }).Count
         & $LOpt "Missing-emulator analysis: $gapCount system(s) need an emulator." $(if ($gapCount -gt 0) { 'WARN' } else { 'SUCCESS' })
     } catch { & $LOpt "Phase 11b error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'EmulatorGap' 'Error' $_.Exception.Message }
+
+    # ---- Phase 11g: auto-install the best missing emulators (opt-in: /install) ----
+    try {
+        Write-EsdeSection -Title 'Phase 11g - Auto-Install Emulators' -Category 'Optimization'
+        if (-not $InstallEmulators) {
+            & $LOpt "Emulator auto-install skipped (pass /install to download & install the best missing emulators)." 'INFO'
+        } else {
+            $installRoot = Get-EmulatorInstallRoot -Layout $Layout -ExistingRoots @(Get-EmuRoots)
+            $plan = @(Get-AutoInstallPlan -Gaps @($report.EmulatorGaps) -Catalog $emuDefs -SystemMap $sysEmuMap -InstallRoot $installRoot -InstalledIds $installedEmuIds)
+            $report.Audit.EmulatorsInstallPlanned = $plan.Count
+            if ($plan.Count -eq 0) {
+                & $LOpt "Nothing to install - every system with ROMs already has a working (or non-downloadable) emulator." 'SUCCESS'
+            } elseif (-not (Test-Online)) {
+                & $LOpt "Auto-install requested but no internet connection detected; skipping $($plan.Count) install(s)." 'WARN'
+                Add-HealthFinding 'EmulatorInstall' 'Warning' 'Offline - emulator installs skipped'
+            } else {
+                if (-not $DryRun -and -not (Test-Path -LiteralPath $installRoot)) { New-Item -Path $installRoot -ItemType Directory -Force | Out-Null }
+                & $LOpt "Install plan: $(@($plan | ForEach-Object { $_.EmulatorId }) -join ', ') -> $installRoot" 'INFO'
+                $sevenZip = Get-SevenZipPath -RetroBatRoot $RetroBatRoot
+                $installedNow = @()
+                foreach ($item in $plan) {
+                    $res = Install-EsdeEmulator -Item $item -BackupRoot $BackupDir -Logger $LOpt -SevenZip $sevenZip -AllowPrerelease:$AllowPrerelease -DryRun:$DryRun
+                    if ($res.Success) {
+                        $report.Audit.EmulatorsInstalled += @{ Id=$item.EmulatorId; Tag=$res.Tag; Systems=@($item.Systems); Exe=$res.ExePath }
+                        $installedNow += $item.EmulatorId
+                        # (16) Register in ES-DE so it is actually found.
+                        Register-EmulatorFindRule -Layout $Layout -EmulatorId $item.EmulatorId -ExePath $res.ExePath -Logger $LOpt -DryRun:$DryRun | Out-Null
+                        # (17) Configuration handoff for Xbox emulators we just installed.
+                        try {
+                            $edir = Split-Path $res.ExePath -Parent
+                            if ($item.EmulatorId -eq 'xemu' -and (Get-Command Set-XemuConfig -ErrorAction SilentlyContinue)) {
+                                $desc = [pscustomobject]@{ Id='xemu'; Kind='xbox'; Dir=$edir; Exe=$res.ExePath; ConfigPath=(Join-Path $edir 'xemu.toml') }
+                                Set-XemuConfig -Emu $desc -Tier $tier -BackupRoot $BackupDir -Logger $LOpt -DryRun:$DryRun | Out-Null
+                            } elseif ($item.EmulatorId -eq 'xenia' -and (Get-Command Initialize-XeniaDirs -ErrorAction SilentlyContinue)) {
+                                $cfg = if (Test-Path -LiteralPath (Join-Path $edir 'xenia-canary.config.toml')) { 'xenia-canary.config.toml' } else { 'xenia.config.toml' }
+                                $desc = [pscustomobject]@{ Id='xenia'; Kind='xbox360'; Dir=$edir; Exe=$res.ExePath; ConfigPath=(Join-Path $edir $cfg) }
+                                Initialize-XeniaDirs -Emu $desc -Logger $LOpt -DryRun:$DryRun | Out-Null
+                                Set-XeniaConfig -Emu $desc -Tier $tier -GpuVendor $hw.GpuVendor -BackupRoot $BackupDir -Logger $LOpt -DryRun:$DryRun | Out-Null
+                            }
+                        } catch { & $LOpt "Post-install config for $($item.EmulatorId): $($_.Exception.Message)" 'WARN' }
+                    } elseif (-not $DryRun) {
+                        $report.Audit.EmulatorsInstallFailed += @{ Id=$item.EmulatorId; Reason=$res.Message }
+                        Add-HealthFinding 'EmulatorInstall' 'Warning' "$($item.EmulatorId): $($res.Message)"
+                    }
+                }
+                # (17) Apply graphics optimization to the freshly-installed emulators.
+                if (-not $DryRun -and $installedNow.Count -gt 0) {
+                    try {
+                        $fresh = @(Get-EsdeEmulators -Roots @(Get-EmuRoots) -Definitions $emuDefs) | Where-Object { $_.Installed -and ($installedNow -contains $_.Id) -and $_.Known -and $_.Supports4K }
+                        foreach ($e in $fresh) {
+                            $r = Invoke-EmulatorOptimization -Emulator $e -Tier $tier -TargetWidth $profile.TargetWidth -TargetHeight $profile.TargetHeight -BackupRoot $BackupDir -Logger $LOpt -GpuVendor $hw.GpuVendor
+                            $report.Optimization += @{ Emulator=$e.DisplayName; Result=$(if($r.Success){'optimized (new install)'}else{$r.Message}) }
+                        }
+                    } catch { & $LOpt "Optimizing new installs: $($_.Exception.Message)" 'WARN' }
+                }
+                $okN = @($report.Audit.EmulatorsInstalled).Count
+                & $LOpt "Auto-install complete: $okN installed, $(@($report.Audit.EmulatorsInstallFailed).Count) failed." $(if ($okN -gt 0) { 'SUCCESS' } else { 'INFO' })
+            }
+            # (20) Remaining gaps (systems still without a usable / downloadable emulator).
+            $installedAfter = @($installedEmuIds + @($report.Audit.EmulatorsInstalled | ForEach-Object { $_.Id }))
+            $remaining = @(Get-EmulatorGaps -Systems $systems -InstalledIds $installedAfter -SystemMap $sysEmuMap | Where-Object { $_.Missing } | ForEach-Object { $_.System })
+            $report.Audit.EmulatorsRemainingGaps = $remaining
+            if ($remaining.Count -gt 0) { & $LOpt "Still needing a manual emulator (no auto-downloadable option, or proprietary keys required): $($remaining -join ', ')." 'WARN' }
+        }
+    } catch { & $LOpt "Phase 11g error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'EmulatorInstall' 'Error' $_.Exception.Message }
 
     # ---- Phase 12: controllers (ES-DE input + RetroArch + SDL gamecontrollerdb) ----
     try {
