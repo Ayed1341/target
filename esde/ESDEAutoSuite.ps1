@@ -246,6 +246,7 @@ function Invoke-EsdeSetup {
             XboxEmulators = @(); XboxEepromRelocated = 0; XboxEepromValidated = 0; XboxEepromQuarantined = 0
             XboxEepromAutoGen = 0; XboxBiosRelocated = 0; XboxBiosMissing = @(); XboxConfigured = 0; XboxReadiness = @()
             EmulatorsInstalled = @(); EmulatorsInstallFailed = @(); EmulatorsInstallPlanned = 0; EmulatorsRemainingGaps = @()
+            ScraperQuota = @{}; MediaDownloaded = 0
         }
     }
 
@@ -558,15 +559,37 @@ function Invoke-EsdeSetup {
     try {
         Write-EsdeSection -Title 'Phase 9 - Media Download (missing only)' -Category 'Downloads'
         if (-not $SkipDownload) {
+            # Load credentials from a local git-ignored file if env vars are not set.
+            $credDirs = @((Split-Path $LauncherSelfPath -Parent), $EsdeRoot, $Layout.DataDir, (Split-Path $Layout.DataDir -Parent)) | Where-Object { $_ }
+            [void](Import-ScraperCredentials -SearchDirs $credDirs -Logger $LDown)
+            Reset-ScraperState
             if (Test-ScraperCredentials) {
+                $totDl = 0; $closed = $false
                 foreach ($sys in $systems) {
                     $mm = $missingPerSystem | Where-Object { $_.System -eq $sys.Name } | Select-Object -First 1
                     if (-not $mm -or @($mm.Records).Count -eq 0) { continue }
                     $d = Invoke-MediaDownloadForSystem -SystemRomDir $sys.RomPath -SystemMediaDir $sys.MediaDir -MissingResult $mm -Logger $LDown -DryRun:$DryRun
+                    $totDl += [int]$d.Downloaded
                     & $LDown "$($sys.Name): attempted=$($d.Attempted) downloaded=$($d.Downloaded) skipped=$($d.Skipped)." 'INFO'
+                    if ($d.Closed) { $closed = $true; break }
+                }
+                $q = Get-ScraperQuotaSummary
+                $report.Audit.ScraperQuota = $q
+                $report.Audit.MediaDownloaded = $totDl
+                # Persist a small resume marker for the user.
+                try {
+                    $state = @{ lastRun = (Get-Date -Format o); downloadedThisRun = $totDl; quota = $q }
+                    ($state | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath (Join-Path $ReportsDir 'scrape_state.json') -Encoding UTF8
+                } catch { }
+                if ($closed) {
+                    & $LDown "Daily ScreenScraper quota reached ($($q.RequestsToday)/$($q.MaxRequestsDay)). $totDl file(s) downloaded this run. Re-run later - it resumes automatically and only fetches what is still missing." 'WARN'
+                    Add-HealthFinding 'Downloads' 'Warning' 'ScreenScraper daily quota reached - re-run later to continue (auto-resume).'
+                } else {
+                    & $LDown "Media download finished: $totDl file(s) this run (quota used $($q.RequestsToday)/$($q.MaxRequestsDay) today)." 'SUCCESS'
                 }
             } else {
-                & $LDown "ScreenScraper credentials not set; downloads skipped (set SS_DEVID/SS_DEVPASSWORD/SS_USER/SS_PASSWORD). Scrape lists exported to Reports." 'WARN'
+                $miss = Get-MissingScraperCredentials
+                & $LDown "ScreenScraper credentials incomplete (missing: $($miss -join ', ')). Set them as environment variables or in a local 'screenscraper.txt' next to the launcher. Scrape lists exported to Reports." 'WARN'
             }
         } else { & $LDown "Media download skipped by request." 'INFO' }
     } catch { & $LDown "Phase 9 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Downloads' 'Error' $_.Exception.Message }

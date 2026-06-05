@@ -4,6 +4,14 @@ Logs/
 Backups/
 system/profiles/
 
+# ScreenScraper / scraper credentials - NEVER commit these (they contain your password).
+screenscraper.txt
+screenscraper.cfg
+.screenscraper
+**/screenscraper.txt
+**/screenscraper.cfg
+**/.screenscraper
+
 # Editor / OS noise
 *.swp
 *~

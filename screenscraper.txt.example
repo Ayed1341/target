@@ -1,0 +1,17 @@
+# ScreenScraper credentials for ESDEAutoSuite.
+#
+# Copy this file to "screenscraper.txt" (next to ESDEAutoSuite.bat) and fill in
+# your details. screenscraper.txt is git-ignored so it is NEVER committed.
+# Alternatively, set the same values as environment variables
+# (SS_USER / SS_PASSWORD / SS_DEVID / SS_DEVPASSWORD).
+#
+# Lines starting with # are comments. Do not wrap values in quotes.
+
+# Your ScreenScraper member account (https://www.screenscraper.fr).
+user=
+password=
+
+# Developer API id/password. ScreenScraper requires these for API access; request
+# them from ScreenScraper (forum / dev access). They are NOT your member login.
+devid=
+devpassword=
