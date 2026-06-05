@@ -24,6 +24,7 @@ param(
     [switch] $HashRoms,
     [switch] $GenerateMedia,
     [switch] $TuneEsde,
+    [switch] $EnrichMeta,
     [int]    $WatchIntervalSeconds = 5
 )
 
@@ -47,9 +48,9 @@ $ConfigDir  = Join-Path $ScriptDir 'config'
 if (Test-Path -LiteralPath $ModulesDir) {
     foreach ($m in @('EsdeLogging','ConfigParser','Hardware','ProfileGeneration','EsdeDiscovery',
                      'HealthSelfHeal','BackupEngine','MediaClassification','MediaReorganization','RetroBatMigration',
-                     'MetadataRepair','DuplicateDetection','MissingMedia','MediaRecovery','MediaAudit','MediaDownload','Cleanup',
-                     'EmulatorDetection','EsdeEmulators','EmulatorGap','BiosAdvanced','EsdeEnvironmentAudit','GraphicsOptimization',
-                     'ControllerManagement','Reporting','GitIntegration')) {
+                     'MetadataRepair','GamelistEnrich','DuplicateDetection','MissingMedia','MediaRecovery','MediaAudit','MediaIntegrity','MediaDownload','Cleanup',
+                     'EmulatorDetection','EsdeEmulators','EmulatorGap','EmulatorTuning','RomLibrary','BiosAdvanced','EsdeEnvironmentAudit','EsdeUx','GraphicsOptimization',
+                     'ControllerManagement','Reporting','ReportingPlus','GitIntegration')) {
         Import-Module (Join-Path $ModulesDir "$m.psm1") -Force -DisableNameChecking
     }
 }
@@ -210,6 +211,10 @@ function Invoke-EsdeSetup {
             ExtensionsFixed = 0; ScreenshotsGenerated = 0; RomsHashed = 0
             MediaCoverage = @(); DiskUsage = @(); OversizedMedia = 0; NonFriendlyVideos = 0
             PlayStats = @(); RegionDuplicates = @(); Consistency = @()
+            Enriched = 0; IntegrityQuarantined = 0; IntegrityFixed = 0
+            RomStats = @(); ScrapeRatio = @(); MultiDiscPlaylists = 0; CompressionAdvisory = @()
+            MediaTypeTotals = @{}; TopLargest = @(); ConfigsArchived = 0
+            RetroArchExtras = $false; UxApplied = 0; UxTuned = $false
         }
     }
 
@@ -332,6 +337,17 @@ function Invoke-EsdeSetup {
         }
     } catch { & $LMedia "Phase 5c error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'MediaFormat' 'Error' $_.Exception.Message }
 
+    # ---- Phase 5d: media integrity (quarantine corrupt, fix extension-less) ----
+    try {
+        Write-EsdeSection -Title 'Phase 5d - Media Integrity' -Category 'Media'
+        foreach ($sys in $systems) {
+            $mi = Test-MediaIntegrity -SystemMediaDir $sys.MediaDir -BackupRoot $BackupDir -Logger $LMedia -DryRun:$DryRun
+            $report.Audit.IntegrityQuarantined += $mi.Quarantined
+            $report.Audit.IntegrityFixed += $mi.Fixed
+        }
+        & $LMedia "Integrity: $($report.Audit.IntegrityQuarantined) corrupt quarantined, $($report.Audit.IntegrityFixed) extension-less fixed." 'INFO'
+    } catch { & $LMedia "Phase 5d error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'MediaIntegrity' 'Error' $_.Exception.Message }
+
     # ---- Phase 6: metadata repair (self-heals malformed gamelists) ----
     try {
         Write-EsdeSection -Title 'Phase 6 - Metadata Repair' -Category 'Metadata'
@@ -344,6 +360,22 @@ function Invoke-EsdeSetup {
             $report.Metadata.PerSystem += @{ System=$sys.Name; Games=$st.Games; Duplicates=$st.Duplicates; Repaired=$st.Repaired; Removed=$st.Removed; Invalid=$st.Invalid }
         }
     } catch { & $LMeta "Phase 6 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Metadata' 'Error' $_.Exception.Message }
+
+    # ---- Phase 6b: gamelist metadata enrichment (opt-in: -EnrichMeta) ----
+    try {
+        Write-EsdeSection -Title 'Phase 6b - Metadata Enrichment' -Category 'Metadata'
+        if ($EnrichMeta) {
+            foreach ($sys in $systems) {
+                $en = Optimize-GamelistMetadata -GamelistPath $sys.Gamelist -SystemRomDir $sys.RomPath -BackupRoot $BackupDir -Logger $LMeta -DryRun:$DryRun
+                $report.Audit.Enriched += ($en.Filled + $en.SortNames + $en.Relativized + $en.Hidden)
+            }
+            & $LMeta "Metadata enrichment applied: $($report.Audit.Enriched) field change(s)." 'SUCCESS'
+        } else { & $LMeta "Metadata enrichment skipped (pass /enrich to enable)." 'INFO' }
+        foreach ($sys in $systems) {
+            $sr = Get-ScrapeRatio -SystemName $sys.Name -GamelistPath $sys.Gamelist
+            if ($sr.Total -gt 0) { $report.Audit.ScrapeRatio += @{ System=$sr.System; Total=$sr.Total; Scraped=$sr.Scraped; Percent=$sr.Percent; DuplicateNames=$sr.DuplicateNames } }
+        }
+    } catch { & $LMeta "Phase 6b error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Enrich' 'Error' $_.Exception.Message }
 
     # ---- Phase 7: duplicate detection ----
     try {
@@ -394,6 +426,22 @@ function Invoke-EsdeSetup {
         & $LMedia "Media audit: $([math]::Round($totalMB,1)) MB total, $($report.Audit.OversizedMedia) oversized, $($report.Audit.NonFriendlyVideos) non-mp4 video(s)." 'SUCCESS'
     } catch { & $LMedia "Phase 8b error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'MediaAudit' 'Error' $_.Exception.Message }
 
+    # ---- Phase 8c: ROM library analysis + multi-disc playlists ----
+    try {
+        Write-EsdeSection -Title 'Phase 8c - ROM Library' -Category 'Media'
+        foreach ($sys in $systems) {
+            $rl = Get-RomLibraryStats -SystemName $sys.Name -SystemRomDir $sys.RomPath
+            if ($rl.Count -gt 0) { $report.Audit.RomStats += @{ System=$rl.System; Count=$rl.Count; MB=[math]::Round($rl.TotalBytes/1MB,1); Compressed=$rl.Compressed; ZeroByte=@($rl.ZeroByte).Count } }
+            $report.Audit.MultiDiscPlaylists += (New-MultiDiscPlaylists -SystemRomDir $sys.RomPath -Logger $LMedia -DryRun:$DryRun)
+            $ca = Get-CompressionAdvisory -SystemRomDir $sys.RomPath
+            if ($ca.Count -gt 0) { $report.Audit.CompressionAdvisory += @{ System=$sys.Name; Files=$ca.Count; MB=[math]::Round($ca.ApproxBytes/1MB,1) } }
+        }
+        $report.Audit.MediaTypeTotals = (Get-MediaTypeTotals -MediaDir $Layout.MediaDir)
+        $report.Audit.TopLargest = @(Get-TopLargestMedia -MediaDir $Layout.MediaDir -Top 25)
+        $totalRoms = 0; foreach ($r in $report.Audit.RomStats) { $totalRoms += [int]$r.Count }
+        & $LMedia "ROM library: $totalRoms ROM(s) across $(@($report.Audit.RomStats).Count) system(s); $($report.Audit.MultiDiscPlaylists) multi-disc playlist(s) created." 'SUCCESS'
+    } catch { & $LMedia "Phase 8c error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'RomLibrary' 'Error' $_.Exception.Message }
+
     # ---- Phase 9: media download (missing only) ----
     try {
         Write-EsdeSection -Title 'Phase 9 - Media Download (missing only)' -Category 'Downloads'
@@ -440,6 +488,17 @@ function Invoke-EsdeSetup {
             } else { & $LOpt "No ES-DE emulator folder found; skipping graphics optimization." 'WARN' }
         } else { & $LOpt "Optimization skipped by request." 'INFO' }
     } catch { & $LOpt "Phase 11 error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Optimization' 'Error' $_.Exception.Message }
+
+    # ---- Phase 11c: extra emulator tuning + config archive ----
+    try {
+        Write-EsdeSection -Title 'Phase 11c - Emulator Tuning & Config Archive' -Category 'Optimization'
+        $emuRootsT = @(Get-EmuRoots)
+        $report.Audit.ConfigsArchived = (Backup-AllEmulatorConfigs -EmulatorRoots $emuRootsT -BackupRoot $BackupDir -Logger $LOpt -DryRun:$DryRun)
+        if ($TuneEsde) {
+            $raExeT = Find-RetroArchExe
+            if ($raExeT) { $report.Audit.RetroArchExtras = (Set-RetroArchExtras -RetroArchDir (Split-Path $raExeT -Parent) -BackupRoot $BackupDir -Logger $LOpt -DryRun:$DryRun) }
+        } else { & $LOpt "RetroArch extra tuning skipped (pass /tune to enable)." 'INFO' }
+    } catch { & $LOpt "Phase 11c error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'EmulatorTuning' 'Error' $_.Exception.Message }
 
     # ---- Phase 11b: missing-emulator gap analysis ----
     try {
@@ -525,6 +584,8 @@ function Invoke-EsdeSetup {
         $report.Audit.EmptySystems = @(Get-EmptySystemsAdvisory -Systems $systems)
         if (($TuneEsde) -and (Test-Path -LiteralPath $Layout.SettingsFile)) {
             $report.Audit.SettingsTuned = (Optimize-EsdeSettings -SettingsFile $Layout.SettingsFile -Hardware $hw -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun)
+            $report.Audit.UxApplied = (Optimize-EsdeUxSettings -SettingsFile $Layout.SettingsFile -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun)
+            $report.Audit.UxTuned = ($report.Audit.UxApplied -gt 0)
         }
         $report.Audit.ControllerVerify = Test-ControllerConfigApplied -Layout $Layout
         if ($HashRoms) {
@@ -545,6 +606,15 @@ function Invoke-EsdeSetup {
         $report.Warnings = @($report.Health | Where-Object { $_.Status -eq 'Warning' }).Count
         $report.Errors   = @($report.Health | Where-Object { $_.Status -eq 'Error' }).Count
         Write-EsdeReports -ReportsDir $ReportsDir -Data $report -Logger $LMain
+        Export-CsvReports -ReportsDir $ReportsDir -Data $report | Out-Null
+        Export-MarkdownSummary -ReportsDir $ReportsDir -Data $report | Out-Null
+        Update-RunHistory -WorkRoot $WorkRoot -Summary @{
+            Time=$report.GeneratedAt; Tier=$report.Tier; Systems=@($report.Systems).Count
+            Migrated=$report.Migration.TotalCopied; Reorganized=$report.Media.TotalMoved
+            Duplicates=$report.Duplicates.DuplicateFiles; Enriched=$report.Audit.Enriched
+            Playlists=$report.Audit.MultiDiscPlaylists; Errors=$report.Errors; Warnings=$report.Warnings
+        } | Out-Null
+        & $LMain "Reports: HTML + JSON + CSV (Systems_Summary, Missing_Media) + Summary.md + run history." 'SUCCESS'
     } catch { & $LMain "Phase 14 error: $($_.Exception.Message)" 'ERROR' }
 
     # ---- Phase 15: git ----
