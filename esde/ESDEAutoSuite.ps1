@@ -26,6 +26,9 @@ param(
     [switch] $TuneEsde,
     [switch] $EnrichMeta,
     [switch] $OneGameOneRegion,
+    [switch] $Themes,
+    [switch] $Schedule,
+    [switch] $Shortcut,
     [int]    $WatchIntervalSeconds = 5
 )
 
@@ -50,8 +53,8 @@ if (Test-Path -LiteralPath $ModulesDir) {
     foreach ($m in @('EsdeLogging','ConfigParser','Hardware','ProfileGeneration','EsdeDiscovery',
                      'HealthSelfHeal','BackupEngine','MediaClassification','MediaReorganization','RetroBatMigration',
                      'MetadataRepair','GamelistEnrich','DuplicateDetection','MissingMedia','MediaRecovery','MediaAudit','MediaIntegrity','MediaDownload','Cleanup',
-                     'EmulatorDetection','EsdeEmulators','EmulatorGap','EmulatorTuning','AdvancedTuning','RomLibrary','LibraryAnalytics','SaveManager','CollectionsManager',
-                     'BiosAdvanced','EsdeEnvironmentAudit','EsdeUx','GraphicsOptimization',
+                     'EmulatorDetection','EsdeEmulators','EmulatorGap','EmulatorTuning','AdvancedTuning','SystemTuning','RomLibrary','RomVerify','RaPlaylists','LibraryAnalytics','LibraryAnalytics2','SaveManager','CollectionsManager','ThemeManager',
+                     'BiosAdvanced','EsdeEnvironmentAudit','EsdeUx','SystemOps','GraphicsOptimization',
                      'ControllerManagement','Reporting','ReportingPlus','GitIntegration')) {
         Import-Module (Join-Path $ModulesDir "$m.psm1") -Force -DisableNameChecking
     }
@@ -78,6 +81,12 @@ $ReportsDir = Join-Path $WorkRoot 'Reports'
 foreach ($d in @($WorkRoot,$LogsDir,$BackupDir,$ReportsDir)) { if (-not (Test-Path -LiteralPath $d)) { New-Item -Path $d -ItemType Directory -Force | Out-Null } }
 
 Initialize-EsdeLogging -LogRoot $LogsDir
+
+# Path to the launcher (the all-in-one .bat sets ESDE_LAUNCHER=%~f0). Used by the
+# optional scheduled-task and desktop-shortcut features.
+$LauncherSelfPath = if ($env:ESDE_LAUNCHER -and (Test-Path -LiteralPath $env:ESDE_LAUNCHER)) { $env:ESDE_LAUNCHER }
+                    elseif ($MyInvocation.MyCommand.Path) { $MyInvocation.MyCommand.Path }
+                    else { Join-Path $EsdeRoot 'ESDEAutoSuite.bat' }
 
 # Category loggers (plain scriptblocks bound to script scope; resolve Write-EsdeLog).
 $LMain  = { param($m,$l='INFO') Write-EsdeLog -Message $m -Level $l -Category 'Main' }
@@ -221,6 +230,11 @@ function Invoke-EsdeSetup {
             Statistics = @{}; DuplicateRoms = 0; BadExtensions = @(); CheatFiles = 0
             CustomSystemSuggestions = @(); ManifestSystems = 0
             ShaderApplied = ''; LatencyTuned = $false
+            Playlists = 0; DatVerify = @(); RaFeatures = $false; StandaloneHotkeys = 0
+            ThemesInstalled = 0; ActiveTheme = ''; ScheduledTask = $false; ShortcutCreated = $false
+            StorageHealth = @(); Telemetry = @{}; LogsRotated = 0; ConfigDrift = 0; Update = @{}
+            CrossSystemDuplicates = 0; RegionDistribution = @{}; Completion = @{}; BadArchives = 0
+            HealthScore = 100; PlaytimeTop = @(); NewestAdditions = @()
         }
     }
 
@@ -475,6 +489,26 @@ function Invoke-EsdeSetup {
         & $LMedia "Analytics: $($st.TotalGames) games, $($st.TotalPlaytimeHours)h played, $dupRomTotal dup ROM set(s), $orphanSaveTotal orphan save(s), $($report.Audit.CheatFiles) cheat file(s)." 'SUCCESS'
     } catch { & $LMedia "Phase 8d error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Analytics' 'Error' $_.Exception.Message }
 
+    # ---- Phase 8e: extended analytics + DAT verification ----
+    try {
+        Write-EsdeSection -Title 'Phase 8e - Extended Analytics' -Category 'Media'
+        $report.Audit.CrossSystemDuplicates = @(Find-CrossSystemDuplicates -Systems $systems).Count
+        $report.Audit.RegionDistribution = (Get-RegionDistribution -Systems $systems)
+        $report.Audit.Completion = (Get-CompletionStats -Systems $systems)
+        $report.Audit.BadArchives = (Test-RomArchives -Systems $systems)
+        $report.Audit.PlaytimeTop = @(Get-PlaytimeLeaderboard -Systems $systems -Top 10)
+        $report.Audit.NewestAdditions = @(Get-NewestAdditions -Systems $systems -Top 15)
+        # DAT-based verification only runs when the user supplies .dat files.
+        $datDir = Find-DatDirectory -RomDir $Layout.RomDir -WorkRoot $WorkRoot
+        if ($datDir) {
+            $datSet = Get-DatCrcSet -DatDir $datDir
+            & $LMedia "DAT verification: $($datSet.Games) known entries from $datDir." 'INFO'
+            $report.Audit.DatVerify = @(Test-RomsAgainstDat -Systems $systems -KnownCrcs $datSet.Crcs -Logger $LMedia)
+        } else { & $LMedia "No DAT files found (put No-Intro/Redump .dat in a 'dats' folder to enable ROM verification)." 'INFO' }
+        $comp = $report.Audit.Completion
+        & $LMedia "Extended: $($report.Audit.CrossSystemDuplicates) cross-system dup(s), $($comp.PlayedPercent)% played, $($report.Audit.BadArchives) bad archive(s)." 'SUCCESS'
+    } catch { & $LMedia "Phase 8e error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'ExtAnalytics' 'Error' $_.Exception.Message }
+
     # ---- Phase 9: media download (missing only) ----
     try {
         Write-EsdeSection -Title 'Phase 9 - Media Download (missing only)' -Category 'Downloads'
@@ -545,6 +579,21 @@ function Invoke-EsdeSetup {
             } else { & $LOpt "RetroArch not found; advanced tuning skipped." 'INFO' }
         } else { & $LOpt "Advanced tuning skipped (pass /tune to enable)." 'INFO' }
     } catch { & $LOpt "Phase 11d error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'AdvancedTuning' 'Error' $_.Exception.Message }
+
+    # ---- Phase 11e: RA features/hotkeys + RetroArch playlists ----
+    try {
+        Write-EsdeSection -Title 'Phase 11e - RA Features & Playlists' -Category 'Optimization'
+        $raExeE = Find-RetroArchExe
+        if ($raExeE) {
+            $raDirE = Split-Path $raExeE -Parent
+            $report.Audit.Playlists = (New-RetroArchPlaylists -Systems $systems -RetroArchDir $raDirE -Logger $LOpt -DryRun:$DryRun)
+            if ($TuneEsde) {
+                $report.Audit.RaFeatures = (Set-RetroArchFeatures -RetroArchDir $raDirE -BackupRoot $BackupDir -Logger $LOpt -DryRun:$DryRun)
+                $emuAll = @(Get-EsdeEmulators -Roots @(Get-EmuRoots) -Definitions $emuDefs)
+                $report.Audit.StandaloneHotkeys = (Set-StandaloneHotkeys -Emulators $emuAll -BackupRoot $BackupDir -Logger $LOpt -DryRun:$DryRun)
+            }
+        } else { & $LOpt "RetroArch not found; playlists/features skipped." 'INFO' }
+    } catch { & $LOpt "Phase 11e error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'RaFeatures' 'Error' $_.Exception.Message }
 
     # ---- Phase 11b: missing-emulator gap analysis ----
     try {
@@ -657,6 +706,25 @@ function Invoke-EsdeSetup {
         } else { & $LMain "1G1R region hiding skipped (pass /onegame to enable)." 'INFO' }
     } catch { & $LMain "Phase 13c error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Collections' 'Error' $_.Exception.Message }
 
+    # ---- Phase 13d: themes + system ops (storage, drift, scheduling, shortcut) ----
+    try {
+        Write-EsdeSection -Title 'Phase 13d - Themes & System Ops' -Category 'Main'
+        if ($Themes) {
+            $report.Audit.ThemesInstalled = (Install-EsdeThemes -ThemesDir $Layout.Themes -Logger $LMain -DryRun:$DryRun)
+        }
+        $report.Audit.ActiveTheme = (Set-ActiveTheme -SettingsFile $Layout.SettingsFile -ThemesDir $Layout.Themes -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun)
+        $report.Audit.StorageHealth = @(Get-StorageHealth)
+        foreach ($d in $report.Audit.StorageHealth) { if ($d.Health -and $d.Health -notmatch '(?i)healthy|ok') { Add-HealthFinding 'Storage' 'Warning' "Disk '$($d.Name)' health: $($d.Health)" } }
+        $report.Audit.Telemetry = (Get-SystemTelemetry)
+        $report.Audit.ConfigDrift = (Test-ConfigDrift -EmulatorRoots @(Get-EmuRoots) -BackupRoot $BackupDir)
+        $report.Audit.LogsRotated = (Invoke-LogRotation -LogsDir $LogsDir -Days 7 -DryRun:$DryRun)
+        $report.Audit.Update = (Test-SuiteUpdate -LocalVersion (Get-SuiteVersion).Version)
+        if ($report.Audit.Update.UpdateAvailable) { & $LMain "A newer ES-DE Auto Suite version ($($report.Audit.Update.Remote)) is available." 'WARN' }
+        if ($Schedule) { $report.Audit.ScheduledTask = (Register-EsdeScheduledTask -LauncherPath $LauncherSelfPath -Logger $LMain -DryRun:$DryRun) }
+        if ($Shortcut) { $report.Audit.ShortcutCreated = (New-EsdeShortcut -Target $LauncherSelfPath -ShortcutName 'ES-DE Auto Suite' -Logger $LMain -DryRun:$DryRun) }
+        & $LMain "System ops: storage $(@($report.Audit.StorageHealth).Count) disk(s), config drift $($report.Audit.ConfigDrift) file(s), logs rotated $($report.Audit.LogsRotated)." 'SUCCESS'
+    } catch { & $LMain "Phase 13d error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'SystemOps' 'Error' $_.Exception.Message }
+
     # ---- Phase 14: reports (incl. health) ----
     try {
         Write-EsdeSection -Title 'Phase 14 - Reports' -Category 'Main'
@@ -664,6 +732,8 @@ function Invoke-EsdeSetup {
         $report.PhaseResults = @(Get-PhaseResults)
         $report.Warnings = @($report.Health | Where-Object { $_.Status -eq 'Warning' }).Count
         $report.Errors   = @($report.Health | Where-Object { $_.Status -eq 'Error' }).Count
+        $report.Audit.HealthScore = (Get-LibraryHealthScore -Report $report)
+        & $LMain "Library health score: $($report.Audit.HealthScore)/100." 'SUCCESS'
         Write-EsdeReports -ReportsDir $ReportsDir -Data $report -Logger $LMain
         Export-CsvReports -ReportsDir $ReportsDir -Data $report | Out-Null
         Export-MarkdownSummary -ReportsDir $ReportsDir -Data $report | Out-Null

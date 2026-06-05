@@ -61,6 +61,9 @@ if /i "%~1"=="/genmedia"   set "EXTRA=!EXTRA! -GenerateMedia"
 if /i "%~1"=="/tune"       set "EXTRA=!EXTRA! -TuneEsde"
 if /i "%~1"=="/enrich"     set "EXTRA=!EXTRA! -EnrichMeta"
 if /i "%~1"=="/onegame"    set "EXTRA=!EXTRA! -OneGameOneRegion"
+if /i "%~1"=="/themes"     set "EXTRA=!EXTRA! -Themes"
+if /i "%~1"=="/schedule"   set "EXTRA=!EXTRA! -Schedule"
+if /i "%~1"=="/shortcut"   set "EXTRA=!EXTRA! -Shortcut"
 if /i "%~1"=="/nomigrate"  set "EXTRA=!EXTRA! -SkipMigration"
 if /i "%~1"=="-nomigrate"  set "EXTRA=!EXTRA! -SkipMigration"
 if /i "%~1"=="/nodownload" set "EXTRA=!EXTRA! -SkipDownload"
@@ -73,6 +76,7 @@ shift
 goto parse
 
 :run
+set "ESDE_LAUNCHER=%~f0"
 echo [INFO] Running. Mode: !MODE!
 echo.
 "%PWSH%" -NoProfile -ExecutionPolicy Bypass -Command "$self=[IO.File]::ReadAllText('%~f0'); $m='#PSPAYLOAD_BEGIN'; $i=$self.LastIndexOf($m); if($i -lt 0){ Write-Host 'payload marker missing' -ForegroundColor Red; exit 9 }; $code=$self.Substring($i+$m.Length); $tmp=Join-Path $env:TEMP ('ESDE_'+[Guid]::NewGuid().ToString('N')+'.ps1'); [IO.File]::WriteAllText($tmp,$code,(New-Object Text.UTF8Encoding($false))); try { & $tmp -EsdeRoot '%ROOT%' -Mode %MODE%%EXTRA% } finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }"
@@ -99,6 +103,9 @@ param(
     [switch] $TuneEsde,
     [switch] $EnrichMeta,
     [switch] $OneGameOneRegion,
+    [switch] $Shortcut,
+    [switch] $Schedule,
+    [switch] $Themes,
     [int] $WatchIntervalSeconds = 5
 )
 Set-StrictMode -Version Latest
@@ -4231,6 +4238,86 @@ function Set-RetroArchLatency {
     return $true
 }
 
+# ----- module: SystemTuning -----
+<#
+.SYNOPSIS
+    Extra RetroArch feature configuration (achievements, netplay, input) and
+    standardized hotkeys for standalone emulators.
+.DESCRIPTION
+    All settings are safe defaults; retroarch.cfg is backed up first. Credentials
+    are never written (RetroAchievements/netplay are enabled but left unauthenticated
+    for the user to log in).
+#>
+
+Set-StrictMode -Version Latest
+
+function Set-RetroArchFeatures {
+    <#
+    .SYNOPSIS
+        Enables RetroAchievements (non-hardcore), netplay defaults and tunes input
+        (deadzone, analog-to-dpad, rumble). Returns $true if applied.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $RetroArchDir,
+        [Parameter(Mandatory = $true)][string] $BackupRoot,
+        [Parameter(Mandatory = $true)][scriptblock] $Logger,
+        [switch] $DryRun
+    )
+    $cfg = Join-Path $RetroArchDir 'retroarch.cfg'
+    if (-not (Test-Path -LiteralPath $cfg)) { return $false }
+    if ($DryRun) { & $Logger "[DRY-RUN] Would set RetroArch features (achievements/netplay/input)." 'INFO'; return $false }
+    Backup-File -Path $cfg -BackupRoot $BackupRoot | Out-Null
+    $opts = [ordered]@{
+        'cheevos_enable'                 = 'true'
+        'cheevos_hardcore_mode_enable'   = 'false'
+        'cheevos_richpresence_enable'    = 'true'
+        'cheevos_badges_enable'          = 'true'
+        'netplay_public_announce'        = 'false'
+        'netplay_nat_traversal'          = 'true'
+        'input_axis_threshold'           = '0.500000'
+        'input_analog_deadzone'          = '0.150000'
+        'input_player1_analog_dpad_mode' = '1'
+        'input_rumble_gain'              = '100'
+        'input_auto_game_focus'          = '2'
+    }
+    foreach ($k in $opts.Keys) { Set-FlatConfigValue -Path $cfg -Key $k -Value $opts[$k] -Quote }
+    & $Logger "Applied RetroArch features: achievements (casual), netplay defaults, input deadzone/rumble." 'SUCCESS'
+    return $true
+}
+
+function Set-StandaloneHotkeys {
+    <#
+    .SYNOPSIS
+        Writes standardized hotkeys to standalone emulator configs where the format
+        is well-defined and safe (DuckStation). Returns count of emulators tuned.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]] $Emulators,
+        [Parameter(Mandatory = $true)][string]   $BackupRoot,
+        [Parameter(Mandatory = $true)][scriptblock] $Logger,
+        [switch] $DryRun
+    )
+    $tuned = 0
+    foreach ($e in ($Emulators | Where-Object { $_.Installed -and $_.Id -eq 'duckstation' })) {
+        $cfg = Join-Path $e.FolderPath 'settings.ini'
+        if (-not (Test-Path -LiteralPath $cfg)) { continue }
+        if ($DryRun) { $tuned++; continue }
+        $ini = Read-IniFile -Path $cfg
+        Set-IniValue -Data $ini -Section 'Hotkeys' -Key 'FastForward' -Value 'Keyboard/Tab'
+        Set-IniValue -Data $ini -Section 'Hotkeys' -Key 'TogglePause'  -Value 'Keyboard/Space'
+        Set-IniValue -Data $ini -Section 'Hotkeys' -Key 'Screenshot'   -Value 'Keyboard/F10'
+        Set-IniValue -Data $ini -Section 'Hotkeys' -Key 'SaveSelectedSaveState' -Value 'Keyboard/F1'
+        Set-IniValue -Data $ini -Section 'Hotkeys' -Key 'LoadSelectedSaveState' -Value 'Keyboard/F3'
+        Backup-File -Path $cfg -BackupRoot $BackupRoot | Out-Null
+        Write-IniFile -Path $cfg -Data $ini
+        $tuned++
+    }
+    if ($tuned -gt 0 -and -not $DryRun) { & $Logger "Applied standardized hotkeys to $tuned standalone emulator(s)." 'SUCCESS' }
+    return $tuned
+}
+
 # ----- module: RomLibrary -----
 <#
 .SYNOPSIS
@@ -4325,6 +4412,148 @@ function Get-CompressionAdvisory {
         }
     }
     return @{ Count=$candidates.Count; ApproxBytes=$bytes }
+}
+
+# ----- module: RomVerify -----
+<#
+.SYNOPSIS
+    DAT-based ROM verification (No-Intro / Redump / MAME / clrmamepro XML DATs).
+.DESCRIPTION
+    If the user provides .dat files, ROMs are CRC32-checked against them and
+    classified verified / unknown. Reports only - never deletes or renames.
+    Looks for DATs in a 'dats' folder next to the ROM dir or under the work dir.
+#>
+
+Set-StrictMode -Version Latest
+
+$script:VfNonRom = @('.txt','.xml','.dat','.jpg','.png','.srm','.state','.cfg','.sav','.cht','.m3u')
+
+function Find-DatDirectory {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $RomDir,
+        [Parameter(Mandatory = $true)][string] $WorkRoot
+    )
+    foreach ($c in @(
+        (Join-Path (Split-Path $RomDir -Parent) 'dats'),
+        (Join-Path $RomDir 'dats'),
+        (Join-Path $WorkRoot 'dats')
+    )) {
+        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
+    }
+    return $null
+}
+
+function Get-DatCrcSet {
+    <#
+    .SYNOPSIS
+        Parses all .dat files in a directory and returns a set of known CRC32 values
+        (uppercased) plus the number of game entries found.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $DatDir)
+    $crcs = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    $games = 0
+    if (-not (Test-Path -LiteralPath $DatDir)) { return @{ Crcs=$crcs; Games=0 } }
+    Get-ChildItem -LiteralPath $DatDir -File -Filter '*.dat' -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            $doc = New-Object System.Xml.XmlDocument
+            $doc.Load($_.FullName)
+            foreach ($rom in $doc.SelectNodes('//rom')) {
+                $crc = $rom.GetAttribute('crc')
+                if ($crc) { [void]$crcs.Add($crc.ToUpper().PadLeft(8,'0')); $games++ }
+            }
+        } catch { }
+    }
+    return @{ Crcs=$crcs; Games=$games }
+}
+
+function Test-RomsAgainstDat {
+    <#
+    .SYNOPSIS
+        Verifies each system's ROMs against the DAT CRC set. Returns per-system
+        @{ System; Verified; Unknown }.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]] $Systems,
+        [Parameter(Mandatory = $true)][System.Collections.Generic.HashSet[string]] $KnownCrcs,
+        [Parameter(Mandatory = $true)][scriptblock] $Logger,
+        [int] $MaxSizeMB = 256
+    )
+    $records = New-Object System.Collections.Generic.List[object]
+    if ($KnownCrcs.Count -eq 0) { return @() }
+    $limit = $MaxSizeMB * 1MB
+    foreach ($sys in $Systems) {
+        if (-not (Test-Path -LiteralPath $sys.RomPath)) { continue }
+        $ok = 0; $unk = 0
+        Get-ChildItem -LiteralPath $sys.RomPath -File -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($script:VfNonRom -contains $_.Extension.ToLower()) { return }
+            if ($_.Length -gt $limit -or $_.Length -eq 0) { return }
+            $crc = Get-FileCrc32 -Path $_.FullName
+            if ($crc -and $KnownCrcs.Contains($crc)) { $ok++ } else { $unk++ }
+        }
+        if (($ok + $unk) -gt 0) { $records.Add(@{ System=$sys.Name; Verified=$ok; Unknown=$unk }) }
+    }
+    return $records.ToArray()
+}
+
+# ----- module: RaPlaylists -----
+<#
+.SYNOPSIS
+    RetroArch playlist (.lpl) generation from a system's ROMs.
+.DESCRIPTION
+    Writes a RetroArch-format playlist per system into RetroArch\playlists so
+    RetroArch can browse the library directly (core auto-detected at launch).
+#>
+
+Set-StrictMode -Version Latest
+
+$script:LplNonRom = @('.txt','.xml','.dat','.jpg','.png','.bin','.srm','.state','.cfg','.sav','.cht','.m3u')
+
+function New-RetroArchPlaylists {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]] $Systems,
+        [Parameter(Mandatory = $true)][string]   $RetroArchDir,
+        [Parameter(Mandatory = $true)][scriptblock] $Logger,
+        [switch] $DryRun
+    )
+    $plDir = Join-Path $RetroArchDir 'playlists'
+    $created = 0
+    foreach ($sys in $Systems) {
+        if (-not (Test-Path -LiteralPath $sys.RomPath)) { continue }
+        $items = New-Object System.Collections.Generic.List[object]
+        Get-ChildItem -LiteralPath $sys.RomPath -File -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($script:LplNonRom -contains $_.Extension.ToLower()) { return }
+            if ($_.Extension.ToLower() -eq '.bin' -and (Test-Path -LiteralPath ([System.IO.Path]::ChangeExtension($_.FullName,'cue')))) { return }
+            $items.Add([ordered]@{
+                path       = $_.FullName
+                label      = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
+                core_path  = 'DETECT'
+                core_name  = 'DETECT'
+                crc32      = '00000000|crc'
+                db_name    = "$($sys.Name).lpl"
+            })
+        }
+        if ($items.Count -eq 0) { continue }
+        if ($DryRun) { & $Logger "[DRY-RUN] Would write $($sys.Name).lpl ($($items.Count) items)." 'INFO'; $created++; continue }
+        if (-not (Test-Path -LiteralPath $plDir)) { New-Item -Path $plDir -ItemType Directory -Force | Out-Null }
+        $playlist = [ordered]@{
+            version            = '1.5'
+            default_core_path  = ''
+            default_core_name  = ''
+            label_display_mode = 0
+            right_thumbnail_mode = 0
+            left_thumbnail_mode  = 0
+            sort_mode          = 0
+            items              = $items.ToArray()
+        }
+        ($playlist | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath (Join-Path $plDir "$($sys.Name).lpl") -Encoding UTF8
+        $created++
+    }
+    if ($created -gt 0 -and -not $DryRun) { & $Logger "Generated $created RetroArch playlist(s) in $plDir." 'SUCCESS' }
+    return $created
 }
 
 # ----- module: LibraryAnalytics -----
@@ -4489,6 +4718,160 @@ function Export-LibraryManifest {
     if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
     @{ generated=(Get-Date -Format o); systems=$entries.ToArray() } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $OutFile -Encoding UTF8
     return $entries.Count
+}
+
+# ----- module: LibraryAnalytics2 -----
+<#
+.SYNOPSIS
+    Extended library analytics: cross-system duplicates, region distribution,
+    completion stats, archive integrity, a health score, playtime leaderboard and
+    newest additions.
+#>
+
+Set-StrictMode -Version Latest
+
+$script:A2NonRom = @('.txt','.xml','.dat','.jpg','.png','.bin','.m3u','.srm','.state','.cfg','.sav','.cht')
+
+function Find-CrossSystemDuplicates {
+    <#
+    .SYNOPSIS
+        Returns ROM filenames that appear under more than one system's ROM folder.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][object[]] $Systems)
+    $seen = @{}
+    foreach ($sys in $Systems) {
+        if (-not (Test-Path -LiteralPath $sys.RomPath)) { continue }
+        Get-ChildItem -LiteralPath $sys.RomPath -File -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($script:A2NonRom -contains $_.Extension.ToLower()) { return }
+            $k = $_.Name.ToLower()
+            if (-not $seen.ContainsKey($k)) { $seen[$k] = New-Object System.Collections.Generic.List[string] }
+            $seen[$k].Add($sys.Name)
+        }
+    }
+    $dups = New-Object System.Collections.Generic.List[object]
+    foreach ($k in $seen.Keys) { if ($seen[$k].Count -gt 1) { $dups.Add(@{ File=$k; Systems=@($seen[$k]) }) } }
+    return $dups.ToArray()
+}
+
+function Get-RegionDistribution {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][object[]] $Systems)
+    $r = [ordered]@{ USA=0; Europe=0; Japan=0; World=0; Other=0 }
+    foreach ($sys in $Systems) {
+        if (-not (Test-Path -LiteralPath $sys.RomPath)) { continue }
+        Get-ChildItem -LiteralPath $sys.RomPath -File -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($script:A2NonRom -contains $_.Extension.ToLower()) { return }
+            $n = $_.Name
+            if     ($n -match '(?i)\(USA') { $r.USA++ }
+            elseif ($n -match '(?i)\(Europe|\(EUR') { $r.Europe++ }
+            elseif ($n -match '(?i)\(Japan|\(JPN|\(JP\)') { $r.Japan++ }
+            elseif ($n -match '(?i)\(World') { $r.World++ }
+            else { $r.Other++ }
+        }
+    }
+    return $r
+}
+
+function Get-CompletionStats {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][object[]] $Systems)
+    $total=0; $played=0; $fav=0
+    foreach ($sys in $Systems) {
+        if (-not (Test-Path -LiteralPath $sys.Gamelist)) { continue }
+        $g = Read-Gamelist -Path $sys.Gamelist
+        if (-not $g.Ok) { continue }
+        foreach ($game in @($g.Games)) {
+            $total++
+            $f = $game.SelectSingleNode('favorite'); if ($f -and $f.InnerText -eq 'true') { $fav++ }
+            $pc = $game.SelectSingleNode('playcount'); if ($pc) { $v=0; if ([int]::TryParse($pc.InnerText,[ref]$v) -and $v -gt 0) { $played++ } }
+        }
+    }
+    $pct = if ($total -gt 0) { [math]::Round(($played*100.0)/$total,1) } else { 0 }
+    return @{ Total=$total; Played=$played; Favorites=$fav; PlayedPercent=$pct }
+}
+
+function Test-RomArchives {
+    <#
+    .SYNOPSIS
+        Tests .zip ROM archives for corruption (via .NET ZipArchive). Returns count
+        of bad archives.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][object[]] $Systems)
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+    $bad = 0
+    foreach ($sys in $Systems) {
+        if (-not (Test-Path -LiteralPath $sys.RomPath)) { continue }
+        Get-ChildItem -LiteralPath $sys.RomPath -File -Filter '*.zip' -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                $z = [System.IO.Compression.ZipFile]::OpenRead($_.FullName)
+                try { $null = $z.Entries.Count } finally { $z.Dispose() }
+            } catch { $bad++ }
+        }
+    }
+    return $bad
+}
+
+function Get-LibraryHealthScore {
+    <#
+    .SYNOPSIS
+        Computes a 0-100 library health score from media coverage, scrape ratio,
+        BIOS completeness and emulator gaps.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][hashtable] $Report)
+    $score = 100.0
+    # Media coverage (average covers %).
+    $cov = @($Report.Audit.MediaCoverage)
+    if ($cov.Count -gt 0) {
+        $avg = 0.0; foreach ($c in $cov) { $avg += [double]$c.Covers }
+        $avg = $avg / $cov.Count
+        $score -= ((100 - $avg) * 0.25)
+    }
+    # Missing BIOS penalty.
+    $missingBios = @($Report.Bios).Count
+    $score -= [math]::Min(20, $missingBios * 1.5)
+    # Emulator gaps penalty.
+    $gaps = @($Report.EmulatorGaps | Where-Object { $_.Missing }).Count
+    $score -= [math]::Min(20, $gaps * 5)
+    # Health errors/warnings.
+    $score -= [math]::Min(15, $Report.Errors * 5)
+    $score -= [math]::Min(10, $Report.Warnings * 1)
+    if ($score -lt 0) { $score = 0 }
+    return [math]::Round($score)
+}
+
+function Get-PlaytimeLeaderboard {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][object[]] $Systems, [int] $Top = 10)
+    $games = New-Object System.Collections.Generic.List[object]
+    foreach ($sys in $Systems) {
+        if (-not (Test-Path -LiteralPath $sys.Gamelist)) { continue }
+        $g = Read-Gamelist -Path $sys.Gamelist
+        if (-not $g.Ok) { continue }
+        foreach ($game in @($g.Games)) {
+            $pt = $game.SelectSingleNode('playtime'); if (-not $pt) { continue }
+            $v = 0; if (-not [int]::TryParse($pt.InnerText,[ref]$v) -or $v -le 0) { continue }
+            $nm = $game.SelectSingleNode('name')
+            $games.Add(@{ Name=$(if($nm){$nm.InnerText}else{''}); System=$sys.Name; Minutes=[math]::Round($v/60) })
+        }
+    }
+    return @($games | Sort-Object { $_.Minutes } -Descending | Select-Object -First $Top)
+}
+
+function Get-NewestAdditions {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][object[]] $Systems, [int] $Top = 15)
+    $files = New-Object System.Collections.Generic.List[object]
+    foreach ($sys in $Systems) {
+        if (-not (Test-Path -LiteralPath $sys.RomPath)) { continue }
+        Get-ChildItem -LiteralPath $sys.RomPath -File -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($script:A2NonRom -contains $_.Extension.ToLower()) { return }
+            $files.Add(@{ Name=$_.Name; System=$sys.Name; Added=$_.CreationTime.ToString('yyyy-MM-dd') ; Ticks=$_.CreationTime.Ticks })
+        }
+    }
+    return @($files | Sort-Object { $_.Ticks } -Descending | Select-Object -First $Top | ForEach-Object { @{ Name=$_.Name; System=$_.System; Added=$_.Added } })
 }
 
 # ----- module: SaveManager -----
@@ -4698,6 +5081,84 @@ function Invoke-RegionHide {
         & $Logger "1G1R: hid $hidden non-preferred-region duplicate(s) in $(Split-Path (Split-Path $GamelistPath -Parent) -Leaf)." 'SUCCESS'
     }
     return $hidden
+}
+
+# ----- module: ThemeManager -----
+<#
+.SYNOPSIS
+    ES-DE theme installation (open-source themes) and active-theme selection.
+.DESCRIPTION
+    ES-DE themes are open-source (MIT/CC) and freely redistributable, so they CAN
+    be installed automatically. Uses git clone when git is available, else a zip
+    download. Also sets the active theme in es_settings.xml.
+#>
+
+Set-StrictMode -Version Latest
+
+# A small curated list of well-known, open-source ES-DE themes.
+$script:KnownThemes = @(
+    @{ Name='slate-es-de';        Git='https://gitlab.com/es-de/themes/slate-es-de.git' },
+    @{ Name='modern-es-de';       Git='https://gitlab.com/es-de/themes/modern-es-de.git' },
+    @{ Name='art-book-next-es-de';Git='https://github.com/anthonycaccese/art-book-next-es-de.git' }
+)
+
+function Install-EsdeThemes {
+    <#
+    .SYNOPSIS
+        Installs any missing curated themes into the themes directory. Returns count.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $ThemesDir,
+        [Parameter(Mandatory = $true)][scriptblock] $Logger,
+        [switch] $DryRun
+    )
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    $installed = 0
+    if (-not (Test-Path -LiteralPath $ThemesDir)) {
+        if (-not $DryRun) { New-Item -Path $ThemesDir -ItemType Directory -Force | Out-Null }
+    }
+    foreach ($t in $script:KnownThemes) {
+        $dest = Join-Path $ThemesDir $t.Name
+        if (Test-Path -LiteralPath $dest) { continue }
+        if ($DryRun) { & $Logger "[DRY-RUN] Would install theme $($t.Name)." 'INFO'; $installed++; continue }
+        try {
+            if ($git) {
+                $p = Start-Process -FilePath $git.Source -ArgumentList @('clone','--depth','1',$t.Git,$dest) -NoNewWindow -Wait -PassThru
+                if ($p.ExitCode -eq 0 -and (Test-Path -LiteralPath $dest)) { & $Logger "Installed theme $($t.Name) (git)." 'SUCCESS'; $installed++ }
+            } else {
+                & $Logger "git not found; cannot auto-install theme $($t.Name). Install git or add themes manually." 'WARN'
+            }
+        } catch { & $Logger "Theme install failed ($($t.Name)): $($_.Exception.Message)" 'WARN' }
+    }
+    return $installed
+}
+
+function Set-ActiveTheme {
+    <#
+    .SYNOPSIS
+        Sets es_settings ThemeSet to an installed theme if the current one is missing.
+        Returns the theme name applied, or ''.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $SettingsFile,
+        [Parameter(Mandatory = $true)][string] $ThemesDir,
+        [Parameter(Mandatory = $true)][string] $BackupRoot,
+        [Parameter(Mandatory = $true)][scriptblock] $Logger,
+        [switch] $DryRun
+    )
+    $installed = @()
+    if (Test-Path -LiteralPath $ThemesDir) { $installed = @(Get-ChildItem -LiteralPath $ThemesDir -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) }
+    if ($installed.Count -eq 0) { return '' }
+    $current = Get-EsdeSetting -SettingsFile $SettingsFile -Name 'ThemeSet'
+    if ($current -and ($installed -contains $current)) { return $current }   # already valid
+    $pick = $installed | Select-Object -First 1
+    if ($DryRun) { & $Logger "[DRY-RUN] Would set active theme to $pick." 'INFO'; return $pick }
+    Backup-File -Path $SettingsFile -BackupRoot $BackupRoot | Out-Null
+    Set-EsdeSettingValue -SettingsFile $SettingsFile -Type 'string' -Name 'ThemeSet' -Value $pick
+    & $Logger "Set active ES-DE theme to '$pick'." 'SUCCESS'
+    return $pick
 }
 
 # ----- module: BiosAdvanced -----
@@ -5141,6 +5602,194 @@ function Update-RunHistory {
     if ($history.Count -gt 50) { $history = $history[($history.Count-50)..($history.Count-1)] }
     ($history | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $path -Encoding UTF8
     return $path
+}
+
+# ----- module: SystemOps -----
+<#
+.SYNOPSIS
+    System operations: storage health, telemetry, scheduled task, desktop shortcut,
+    log rotation, emulator config-drift detection and a suite update check.
+#>
+
+Set-StrictMode -Version Latest
+
+function Get-StorageHealth {
+    <#
+    .SYNOPSIS
+        Returns SMART/health status for physical disks (best-effort via CIM).
+    #>
+    [CmdletBinding()] param()
+    $disks = New-Object System.Collections.Generic.List[object]
+    try {
+        if (Get-Command Get-PhysicalDisk -ErrorAction SilentlyContinue) {
+            Get-PhysicalDisk -ErrorAction Stop | ForEach-Object {
+                $disks.Add(@{ Name=$_.FriendlyName; Health=[string]$_.HealthStatus; Media=[string]$_.MediaType; SizeGB=[math]::Round($_.Size/1GB,0) })
+            }
+        } else {
+            Get-CimInstance -ClassName Win32_DiskDrive -ErrorAction Stop | ForEach-Object {
+                $disks.Add(@{ Name=$_.Model; Health=[string]$_.Status; Media='Unknown'; SizeGB=[math]::Round([int64]$_.Size/1GB,0) })
+            }
+        }
+    } catch { }
+    return $disks.ToArray()
+}
+
+function Get-SystemTelemetry {
+    <#
+    .SYNOPSIS
+        Returns a snapshot of uptime, memory usage and OS info (best-effort).
+    #>
+    [CmdletBinding()] param()
+    $t = @{ UptimeHours=0; MemoryUsedPct=0; OS='' }
+    try {
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+        if ($os) {
+            $t.OS = $os.Caption
+            $last = $os.LastBootUpTime
+            if ($last) { $t.UptimeHours = [math]::Round(((Get-Date) - $last).TotalHours,1) }
+            if ($os.TotalVisibleMemorySize -gt 0) {
+                $used = $os.TotalVisibleMemorySize - $os.FreePhysicalMemory
+                $t.MemoryUsedPct = [math]::Round(($used * 100.0) / $os.TotalVisibleMemorySize,1)
+            }
+        }
+    } catch { }
+    return $t
+}
+
+function Register-EsdeScheduledTask {
+    <#
+    .SYNOPSIS
+        Creates/updates a weekly scheduled task to run the suite. Returns $true.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $LauncherPath,
+        [Parameter(Mandatory = $true)][scriptblock] $Logger,
+        [switch] $DryRun
+    )
+    if (-not (Test-Path -LiteralPath $LauncherPath)) { return $false }
+    if ($DryRun) { & $Logger "[DRY-RUN] Would register weekly scheduled task." 'INFO'; return $false }
+    try {
+        $name = 'ES-DE Auto Suite Weekly'
+        $cmd  = "schtasks /Create /F /SC WEEKLY /D SUN /TN `"$name`" /TR `"'$LauncherPath' /nogit`" /ST 03:00"
+        $p = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', $cmd) -NoNewWindow -Wait -PassThru
+        if ($p.ExitCode -eq 0) { & $Logger "Registered weekly scheduled task '$name' (Sun 03:00)." 'SUCCESS'; return $true }
+        & $Logger "Could not register scheduled task (exit $($p.ExitCode))." 'WARN'
+    } catch { & $Logger "Scheduled task error: $($_.Exception.Message)" 'WARN' }
+    return $false
+}
+
+function New-EsdeShortcut {
+    <#
+    .SYNOPSIS
+        Creates a desktop shortcut to a target. Returns $true if created.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $Target,
+        [Parameter(Mandatory = $true)][string] $ShortcutName,
+        [Parameter(Mandatory = $true)][scriptblock] $Logger,
+        [switch] $DryRun
+    )
+    if (-not (Test-Path -LiteralPath $Target)) { return $false }
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    if (-not $desktop) { return $false }
+    $lnk = Join-Path $desktop ($ShortcutName + '.lnk')
+    if ($DryRun) { & $Logger "[DRY-RUN] Would create desktop shortcut $ShortcutName." 'INFO'; return $false }
+    try {
+        $sh = New-Object -ComObject WScript.Shell
+        $sc = $sh.CreateShortcut($lnk)
+        $sc.TargetPath = $Target
+        $sc.WorkingDirectory = (Split-Path $Target -Parent)
+        $sc.Save()
+        & $Logger "Created desktop shortcut: $lnk" 'SUCCESS'
+        return $true
+    } catch { & $Logger "Shortcut error: $($_.Exception.Message)" 'WARN'; return $false }
+}
+
+function Invoke-LogRotation {
+    <#
+    .SYNOPSIS
+        Compresses log files older than $Days into a dated zip and removes the
+        originals. Returns count compressed.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $LogsDir,
+        [int] $Days = 7,
+        [switch] $DryRun
+    )
+    if (-not (Test-Path -LiteralPath $LogsDir)) { return 0 }
+    $cutoff = (Get-Date).AddDays(-$Days)
+    $old = @(Get-ChildItem -LiteralPath $LogsDir -File -Filter '*.log' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt $cutoff })
+    if ($old.Count -eq 0) { return 0 }
+    if ($DryRun) { return $old.Count }
+    $zip = Join-Path $LogsDir ("logs_archive_{0}.zip" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+        $archive = [System.IO.Compression.ZipFile]::Open($zip, [System.IO.Compression.ZipArchiveMode]::Create)
+        try {
+            foreach ($f in $old) { [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $f.FullName, $f.Name) | Out-Null }
+        } finally { $archive.Dispose() }
+        foreach ($f in $old) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue }
+        return $old.Count
+    } catch { return 0 }
+}
+
+function Test-ConfigDrift {
+    <#
+    .SYNOPSIS
+        Compares current emulator config files against the newest emulator_configs_*
+        archive and returns the count of changed files.
+    #>
+    [CmdletBinding()]
+    param(
+        [string[]] $EmulatorRoots = @(),
+        [Parameter(Mandatory = $true)][string]   $BackupRoot
+    )
+    if (-not $EmulatorRoots -or $EmulatorRoots.Count -eq 0) { return -1 }
+    if (-not (Test-Path -LiteralPath $BackupRoot)) { return -1 }
+    $latest = Get-ChildItem -LiteralPath $BackupRoot -Directory -Filter 'emulator_configs_*' -ErrorAction SilentlyContinue |
+              Sort-Object Name -Descending | Select-Object -First 1
+    if (-not $latest) { return -1 }   # no baseline yet
+    $changed = 0
+    foreach ($root in $EmulatorRoots) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        $leaf = Split-Path $root -Leaf
+        $base = Join-Path $latest.FullName $leaf
+        if (-not (Test-Path -LiteralPath $base)) { continue }
+        Get-ChildItem -LiteralPath $root -Recurse -File -Include *.cfg,*.ini,*.xml,*.yml,*.toml,*.json -ErrorAction SilentlyContinue | ForEach-Object {
+            $rel = $_.FullName.Substring($root.Length).TrimStart('\','/')
+            $old = Join-Path $base $rel
+            if (Test-Path -LiteralPath $old) {
+                $h1 = (Get-FileSha256 -Path $_.FullName); $h2 = (Get-FileSha256 -Path $old)
+                if ($h1 -and $h2 -and $h1 -ne $h2) { $changed++ }
+            }
+        }
+    }
+    return $changed
+}
+
+function Test-SuiteUpdate {
+    <#
+    .SYNOPSIS
+        Best-effort check of a remote VERSION marker against the local suite version.
+        Returns @{ Local; Remote; UpdateAvailable }.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $LocalVersion)
+    $result = @{ Local=$LocalVersion; Remote=''; UpdateAvailable=$false }
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $url = 'https://raw.githubusercontent.com/Ayed1341/target/claude/retrobat-windows-automation-d2ilQ/esde/VERSION'
+        $r = Invoke-WebRequest -Uri $url -TimeoutSec 8 -UseBasicParsing -ErrorAction Stop
+        $remote = ($r.Content).Trim()
+        if ($remote) {
+            $result.Remote = $remote
+            try { $result.UpdateAvailable = ([version]$remote -gt [version]$LocalVersion) } catch { $result.UpdateAvailable = ($remote -ne $LocalVersion) }
+        }
+    } catch { }
+    return $result
 }
 
 # ----- module: GraphicsOptimization -----
@@ -6493,6 +7142,12 @@ foreach ($d in @($WorkRoot,$LogsDir,$BackupDir,$ReportsDir)) { if (-not (Test-Pa
 
 Initialize-EsdeLogging -LogRoot $LogsDir
 
+# Path to the launcher (the all-in-one .bat sets ESDE_LAUNCHER=%~f0). Used by the
+# optional scheduled-task and desktop-shortcut features.
+$LauncherSelfPath = if ($env:ESDE_LAUNCHER -and (Test-Path -LiteralPath $env:ESDE_LAUNCHER)) { $env:ESDE_LAUNCHER }
+                    elseif ($MyInvocation.MyCommand.Path) { $MyInvocation.MyCommand.Path }
+                    else { Join-Path $EsdeRoot 'ESDEAutoSuite.bat' }
+
 # Category loggers (plain scriptblocks bound to script scope; resolve Write-EsdeLog).
 $LMain  = { param($m,$l='INFO') Write-EsdeLog -Message $m -Level $l -Category 'Main' }
 $LMig   = { param($m,$l='INFO') Write-EsdeLog -Message $m -Level $l -Category 'Migration' }
@@ -6635,6 +7290,11 @@ function Invoke-EsdeSetup {
             Statistics = @{}; DuplicateRoms = 0; BadExtensions = @(); CheatFiles = 0
             CustomSystemSuggestions = @(); ManifestSystems = 0
             ShaderApplied = ''; LatencyTuned = $false
+            Playlists = 0; DatVerify = @(); RaFeatures = $false; StandaloneHotkeys = 0
+            ThemesInstalled = 0; ActiveTheme = ''; ScheduledTask = $false; ShortcutCreated = $false
+            StorageHealth = @(); Telemetry = @{}; LogsRotated = 0; ConfigDrift = 0; Update = @{}
+            CrossSystemDuplicates = 0; RegionDistribution = @{}; Completion = @{}; BadArchives = 0
+            HealthScore = 100; PlaytimeTop = @(); NewestAdditions = @()
         }
     }
 
@@ -6889,6 +7549,26 @@ function Invoke-EsdeSetup {
         & $LMedia "Analytics: $($st.TotalGames) games, $($st.TotalPlaytimeHours)h played, $dupRomTotal dup ROM set(s), $orphanSaveTotal orphan save(s), $($report.Audit.CheatFiles) cheat file(s)." 'SUCCESS'
     } catch { & $LMedia "Phase 8d error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Analytics' 'Error' $_.Exception.Message }
 
+    # ---- Phase 8e: extended analytics + DAT verification ----
+    try {
+        Write-EsdeSection -Title 'Phase 8e - Extended Analytics' -Category 'Media'
+        $report.Audit.CrossSystemDuplicates = @(Find-CrossSystemDuplicates -Systems $systems).Count
+        $report.Audit.RegionDistribution = (Get-RegionDistribution -Systems $systems)
+        $report.Audit.Completion = (Get-CompletionStats -Systems $systems)
+        $report.Audit.BadArchives = (Test-RomArchives -Systems $systems)
+        $report.Audit.PlaytimeTop = @(Get-PlaytimeLeaderboard -Systems $systems -Top 10)
+        $report.Audit.NewestAdditions = @(Get-NewestAdditions -Systems $systems -Top 15)
+        # DAT-based verification only runs when the user supplies .dat files.
+        $datDir = Find-DatDirectory -RomDir $Layout.RomDir -WorkRoot $WorkRoot
+        if ($datDir) {
+            $datSet = Get-DatCrcSet -DatDir $datDir
+            & $LMedia "DAT verification: $($datSet.Games) known entries from $datDir." 'INFO'
+            $report.Audit.DatVerify = @(Test-RomsAgainstDat -Systems $systems -KnownCrcs $datSet.Crcs -Logger $LMedia)
+        } else { & $LMedia "No DAT files found (put No-Intro/Redump .dat in a 'dats' folder to enable ROM verification)." 'INFO' }
+        $comp = $report.Audit.Completion
+        & $LMedia "Extended: $($report.Audit.CrossSystemDuplicates) cross-system dup(s), $($comp.PlayedPercent)% played, $($report.Audit.BadArchives) bad archive(s)." 'SUCCESS'
+    } catch { & $LMedia "Phase 8e error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'ExtAnalytics' 'Error' $_.Exception.Message }
+
     # ---- Phase 9: media download (missing only) ----
     try {
         Write-EsdeSection -Title 'Phase 9 - Media Download (missing only)' -Category 'Downloads'
@@ -6959,6 +7639,21 @@ function Invoke-EsdeSetup {
             } else { & $LOpt "RetroArch not found; advanced tuning skipped." 'INFO' }
         } else { & $LOpt "Advanced tuning skipped (pass /tune to enable)." 'INFO' }
     } catch { & $LOpt "Phase 11d error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'AdvancedTuning' 'Error' $_.Exception.Message }
+
+    # ---- Phase 11e: RA features/hotkeys + RetroArch playlists ----
+    try {
+        Write-EsdeSection -Title 'Phase 11e - RA Features & Playlists' -Category 'Optimization'
+        $raExeE = Find-RetroArchExe
+        if ($raExeE) {
+            $raDirE = Split-Path $raExeE -Parent
+            $report.Audit.Playlists = (New-RetroArchPlaylists -Systems $systems -RetroArchDir $raDirE -Logger $LOpt -DryRun:$DryRun)
+            if ($TuneEsde) {
+                $report.Audit.RaFeatures = (Set-RetroArchFeatures -RetroArchDir $raDirE -BackupRoot $BackupDir -Logger $LOpt -DryRun:$DryRun)
+                $emuAll = @(Get-EsdeEmulators -Roots @(Get-EmuRoots) -Definitions $emuDefs)
+                $report.Audit.StandaloneHotkeys = (Set-StandaloneHotkeys -Emulators $emuAll -BackupRoot $BackupDir -Logger $LOpt -DryRun:$DryRun)
+            }
+        } else { & $LOpt "RetroArch not found; playlists/features skipped." 'INFO' }
+    } catch { & $LOpt "Phase 11e error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'RaFeatures' 'Error' $_.Exception.Message }
 
     # ---- Phase 11b: missing-emulator gap analysis ----
     try {
@@ -7071,6 +7766,25 @@ function Invoke-EsdeSetup {
         } else { & $LMain "1G1R region hiding skipped (pass /onegame to enable)." 'INFO' }
     } catch { & $LMain "Phase 13c error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'Collections' 'Error' $_.Exception.Message }
 
+    # ---- Phase 13d: themes + system ops (storage, drift, scheduling, shortcut) ----
+    try {
+        Write-EsdeSection -Title 'Phase 13d - Themes & System Ops' -Category 'Main'
+        if ($Themes) {
+            $report.Audit.ThemesInstalled = (Install-EsdeThemes -ThemesDir $Layout.Themes -Logger $LMain -DryRun:$DryRun)
+        }
+        $report.Audit.ActiveTheme = (Set-ActiveTheme -SettingsFile $Layout.SettingsFile -ThemesDir $Layout.Themes -BackupRoot $BackupDir -Logger $LMain -DryRun:$DryRun)
+        $report.Audit.StorageHealth = @(Get-StorageHealth)
+        foreach ($d in $report.Audit.StorageHealth) { if ($d.Health -and $d.Health -notmatch '(?i)healthy|ok') { Add-HealthFinding 'Storage' 'Warning' "Disk '$($d.Name)' health: $($d.Health)" } }
+        $report.Audit.Telemetry = (Get-SystemTelemetry)
+        $report.Audit.ConfigDrift = (Test-ConfigDrift -EmulatorRoots @(Get-EmuRoots) -BackupRoot $BackupDir)
+        $report.Audit.LogsRotated = (Invoke-LogRotation -LogsDir $LogsDir -Days 7 -DryRun:$DryRun)
+        $report.Audit.Update = (Test-SuiteUpdate -LocalVersion (Get-SuiteVersion).Version)
+        if ($report.Audit.Update.UpdateAvailable) { & $LMain "A newer ES-DE Auto Suite version ($($report.Audit.Update.Remote)) is available." 'WARN' }
+        if ($Schedule) { $report.Audit.ScheduledTask = (Register-EsdeScheduledTask -LauncherPath $LauncherSelfPath -Logger $LMain -DryRun:$DryRun) }
+        if ($Shortcut) { $report.Audit.ShortcutCreated = (New-EsdeShortcut -Target $LauncherSelfPath -ShortcutName 'ES-DE Auto Suite' -Logger $LMain -DryRun:$DryRun) }
+        & $LMain "System ops: storage $(@($report.Audit.StorageHealth).Count) disk(s), config drift $($report.Audit.ConfigDrift) file(s), logs rotated $($report.Audit.LogsRotated)." 'SUCCESS'
+    } catch { & $LMain "Phase 13d error: $($_.Exception.Message)" 'ERROR'; Add-HealthFinding 'SystemOps' 'Error' $_.Exception.Message }
+
     # ---- Phase 14: reports (incl. health) ----
     try {
         Write-EsdeSection -Title 'Phase 14 - Reports' -Category 'Main'
@@ -7078,6 +7792,8 @@ function Invoke-EsdeSetup {
         $report.PhaseResults = @(Get-PhaseResults)
         $report.Warnings = @($report.Health | Where-Object { $_.Status -eq 'Warning' }).Count
         $report.Errors   = @($report.Health | Where-Object { $_.Status -eq 'Error' }).Count
+        $report.Audit.HealthScore = (Get-LibraryHealthScore -Report $report)
+        & $LMain "Library health score: $($report.Audit.HealthScore)/100." 'SUCCESS'
         Write-EsdeReports -ReportsDir $ReportsDir -Data $report -Logger $LMain
         Export-CsvReports -ReportsDir $ReportsDir -Data $report | Out-Null
         Export-MarkdownSummary -ReportsDir $ReportsDir -Data $report | Out-Null
