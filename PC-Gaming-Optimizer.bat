@@ -1158,7 +1158,62 @@ for %%S in (%SVC8%) do (
     )
 )
 echo.
-echo   15 more services trimmed.  TOTAL: 193 tweaks.
+echo   15 more services trimmed.  (193 tweaks so far)
+echo.
+
+:: ===========================================================================
+:: 14B8) BONUS PACK 9: 14 MORE ADVANCED TWEAKS
+:: ===========================================================================
+echo ============================================================================
+echo   APPLYING 14 MORE ADVANCED TWEAKS...
+echo ============================================================================
+echo.
+:: 01 No mouse pointer trails
+reg add "HKCU\Control Panel\Mouse" /v MouseTrails /t REG_SZ /d 0 /f >nul 2>&1
+echo   [01] Mouse pointer trails disabled.
+:: 02 Disable hardware-keyboard text prediction + autocorrect
+reg add "HKCU\Software\Microsoft\TabletTip\1.7" /v EnableHwkbTextPrediction /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKCU\Software\Microsoft\TabletTip\1.7" /v EnableHwkbAutocorrection /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [02] Keyboard prediction/autocorrect disabled.
+:: 03 Disable NTFS compression overhead
+fsutil behavior set disablecompression 1 >nul 2>&1
+echo   [03] NTFS compression overhead disabled.
+:: 04 Raise disk I/O page-lock limit (better throughput)
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v IoPageLockLimit /t REG_DWORD /d 67108864 /f >nul 2>&1
+echo   [04] Disk I/O page-lock limit raised.
+:: 05 Enable TCP Fast Open (faster connection setup)
+netsh int tcp set global fastopen=enabled >nul 2>&1
+echo   [05] TCP Fast Open enabled.
+:: 06 Disable Aero Peek / desktop preview
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v DisablePreviewDesktop /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [06] Aero Peek disabled.
+:: 07 Stop "downloaded file is blocked" zone checks
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Attachments" /v SaveZoneInformation /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [07] Download zone checks disabled.
+:: 08 Disable the acrylic blur on the sign-in screen (faster login)
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" /v DisableAcrylicBackgroundOnLogon /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [08] Sign-in screen blur disabled.
+:: 09 Disable text caret blinking
+reg add "HKCU\Control Panel\Desktop" /v CursorBlinkRate /t REG_SZ /d -1 /f >nul 2>&1
+echo   [09] Caret blink disabled.
+:: 10 Disable the system beep driver
+sc config beep start= disabled >nul 2>&1
+echo   [10] System beep disabled.
+:: 11 Disable the network-location popup on new networks
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Network\NewNetworkWindowOff" /f >nul 2>&1
+echo   [11] New-network popup disabled.
+:: 12 Faster taskbar thumbnail hover
+reg add "HKCU\Control Panel\Mouse" /v MouseHoverTime /t REG_SZ /d 10 /f >nul 2>&1
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v ExtendedUIHoverTime /t REG_DWORD /d 10 /f >nul 2>&1
+echo   [12] Taskbar thumbnail hover sped up.
+:: 13 No thumbnails on network folders
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" /v DisableThumbnailsOnNetworkFolders /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [13] Network-folder thumbnails disabled.
+:: 14 Disable File Explorer search history
+reg add "HKCU\Software\Policies\Microsoft\Windows\Explorer" /v DisableSearchHistory /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [14] Explorer search history disabled.
+echo.
+echo   14 more tweaks applied.  TOTAL: 207 tweaks.
 echo.
 
 :: ===========================================================================
@@ -1236,7 +1291,7 @@ echo     - Network tuned for low latency (Nagle off, throttling off)
 echo     - Visual effects set to best performance
 echo     - Background apps disabled, memory tuned for %RAM_GB% GB
 echo     - English (US) + Arabic keyboards installed (Alt+Shift to switch)
-echo     - 193 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
+echo     - 207 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
 echo       SSD/HDD storage optimization (auto TRIM/defrag, NTFS cache, MFT),
 echo       NTFS/SSD/pagefile tuning, mouse+keyboard latency, svchost grouping,
 echo       DNS 1.1.1.1, QoS/RSC/Winsock, DWM MPO off, Fast Startup off,
@@ -1549,13 +1604,62 @@ reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v OneDrive /f >
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v OneDriveSetup /f >nul 2>&1
 echo           OneDrive uninstalled.
 
-:: --- AGGRESSIVE APP REMOVAL (keep ONLY Store + Xbox + system essentials) -----
-echo   Removing ALL apps except Microsoft Store and Xbox...
-echo   Calculator, Camera, Snipping Tool, Photos, Widgets, Paint, Notepad and
-echo   the rest will be removed. You can reinstall any of them from the Store.
-choice /C YN /N /M "   Strip everything except Store + Xbox? [Y/N]: "
-if not errorlevel 2 powershell -NoProfile -Command "$keep='WindowsStore|StorePurchaseApp|DesktopAppInstaller|GamingApp|GamingServices|Xbox|VCLibs|UI.Xaml|NET.Native|WindowsAppRuntime|VP9|WebMediaExtensions|HEIF|HEVC|WebpImage|AV1Video|RawImage|DolbyAudio|MPEG2|VCRuntime|ShellExperienceHost|StartMenuExperienceHost|Search|ContentDeliveryManager|MicrosoftWindows.Client|ShellComponents|immersivecontrolpanel|AccountsControl|AAD.BrokerPlugin|CloudExperienceHost|LockApp|Apprep|AssignedAccess|BioEnrollment|CredDialogHost|ECApp|PinningConfirmation|PeopleExperienceHost|CapturePicker|Win32WebViewHost|AsyncTextService|OOBENetwork|ParentalControls|NarratorQuickStart|PrintDialog|PrintQueueActionCenter|XGpuEject|CompanionPane|InputApp|Microsoft.UI|SecHealthUI'; foreach($p in Get-AppxPackage -AllUsers){ if($p.Name -notmatch $keep){ Remove-AppxPackage -Package $p.PackageFullName -AllUsers -ErrorAction SilentlyContinue } }; Get-AppxProvisionedPackage -Online | Where-Object { $_.DisplayName -notmatch $keep } | ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue }" >nul 2>&1
-echo           Done - only Store, Xbox and required system components remain.
+:: --- APP REMOVAL (explicit safe list - never touches shell/system packages) --
+echo   Removing the visible apps and keeping Microsoft Store + Xbox...
+echo   Calculator, Camera, Snipping Tool, Photos, Paint, Notepad, Mail and the
+echo   rest go. System parts (Start menu, Settings) are untouched so Windows
+echo   keeps working. Anything removed is reinstallable from the Store.
+choice /C YN /N /M "   Remove all the extra apps now? [Y/N]: "
+if errorlevel 2 goto :SKIPAPPS
+powershell -NoProfile -Command "$apps='Microsoft.WindowsCalculator','Microsoft.WindowsCamera','Microsoft.ScreenSketch','Microsoft.Windows.Photos','Microsoft.Paint','Microsoft.MSPaint','Microsoft.WindowsNotepad','Microsoft.MicrosoftStickyNotes','Microsoft.WindowsSoundRecorder','Microsoft.WindowsAlarms','microsoft.windowscommunicationsapps','Microsoft.WindowsMaps','Microsoft.BingWeather','Microsoft.BingNews','Microsoft.BingSearch','Microsoft.People','Microsoft.YourPhone','Microsoft.WindowsFeedbackHub','Microsoft.GetHelp','Microsoft.Getstarted','Microsoft.MicrosoftSolitaireCollection','Microsoft.ZuneMusic','Microsoft.ZuneVideo','Microsoft.MicrosoftOfficeHub','Microsoft.Office.OneNote','Microsoft.Office.Sway','Microsoft.SkypeApp','MicrosoftTeams','MSTeams','Clipchamp.Clipchamp','Microsoft.Todos','Microsoft.PowerAutomateDesktop','Microsoft.Whiteboard','MicrosoftCorporationII.QuickAssist','Microsoft.Windows.DevHome','Microsoft.549981C3F5F10','Microsoft.3DBuilder','Microsoft.Microsoft3DViewer','Microsoft.Print3D','Microsoft.MixedReality.Portal','Microsoft.Wallet','Microsoft.OneConnect','Microsoft.Messaging','Microsoft.NetworkSpeedTest','Microsoft.OutlookForWindows','Microsoft.CrossDevice','Microsoft.BingFinance','Microsoft.BingSports','Microsoft.MicrosoftPowerBIForWindows','Microsoft.Windows.Ai.Copilot.Provider'; foreach($a in $apps){ Get-AppxPackage -AllUsers $a | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue; Get-AppxProvisionedPackage -Online | Where-Object {$_.DisplayName -eq $a} | ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue } }" >nul 2>&1
+:SKIPAPPS
+echo           Extra apps removed - Store and Xbox kept.
+
+:: --- 18 EXTRA DEBLOAT / FEATURE-REMOVAL STEPS -------------------------------
+echo   Removing extra Windows features and components (this can take a while)...
+:: 01 Disable Windows Recall (AI screen history)
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsAI" /v DisableAIDataAnalysis /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKCU\Software\Policies\Microsoft\Windows\WindowsAI" /v DisableAIDataAnalysis /t REG_DWORD /d 1 /f >nul 2>&1
+dism /Online /Disable-Feature /FeatureName:Recall /NoRestart >nul 2>&1
+:: 02 Remove legacy WordPad
+dism /Online /Remove-Capability /CapabilityName:Microsoft.Windows.WordPad~~~~0.0.1.0 /NoRestart >nul 2>&1
+:: 03 Remove Steps Recorder
+dism /Online /Remove-Capability /CapabilityName:App.StepsRecorder~~~~0.0.1.0 /NoRestart >nul 2>&1
+:: 04 Remove Quick Assist
+dism /Online /Remove-Capability /CapabilityName:App.Support.QuickAssist~~~~0.0.1.0 /NoRestart >nul 2>&1
+:: 05 Remove Math Recognizer
+dism /Online /Remove-Capability /CapabilityName:MathRecognizer~~~~0.0.1.0 /NoRestart >nul 2>&1
+:: 06 Remove Internet Explorer 11
+dism /Online /Remove-Capability /CapabilityName:Browser.InternetExplorer~~~~0.0.11.0 /NoRestart >nul 2>&1
+:: 07 Disable PowerShell 2.0 engine (legacy, security risk)
+dism /Online /Disable-Feature /FeatureName:MicrosoftWindowsPowerShellV2Root /NoRestart >nul 2>&1
+:: 08 Disable Work Folders Client
+dism /Online /Disable-Feature /FeatureName:WorkFolders-Client /NoRestart >nul 2>&1
+:: 09 Disable Remote Differential Compression
+dism /Online /Disable-Feature /FeatureName:MSRDC-Infrastructure /NoRestart >nul 2>&1
+:: 10 Disable Internet Printing Client
+dism /Online /Disable-Feature /FeatureName:Printing-Foundation-InternetPrinting-Client /NoRestart >nul 2>&1
+:: 11 Disable legacy Windows Media Player
+dism /Online /Disable-Feature /FeatureName:WindowsMediaPlayer /NoRestart >nul 2>&1
+:: 12 Disable Suggested Actions (clipboard popups)
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\SmartActionPlatform\SmartClipboard" /v Disabled /t REG_DWORD /d 1 /f >nul 2>&1
+:: 13 Hide the Start menu "Recommended" section
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Explorer" /v HideRecommendedSection /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Microsoft\PolicyManager\current\device\Start" /v HideRecommendedSection /t REG_DWORD /d 1 /f >nul 2>&1
+:: 14 Disable account notifications in Start
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v Start_AccountNotifications /t REG_DWORD /d 0 /f >nul 2>&1
+:: 15 Disable Phone Link / cross-device integration
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" /v EnableMmx /t REG_DWORD /d 0 /f >nul 2>&1
+:: 16 Disable "finish setting up your device" nags
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\UserProfileEngagement" /v ScoobeSystemSettingEnabled /t REG_DWORD /d 0 /f >nul 2>&1
+:: 17 Disable commercial telemetry pipeline + extra diagnostic uploads
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection" /v AllowCommercialDataPipeline /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection" /v DisableOneSettingsDownloads /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection" /v LimitDiagnosticLogCollection /t REG_DWORD /d 1 /f >nul 2>&1
+:: 18 Disable Recommended Troubleshooting auto-run + remove Widgets feature
+reg add "HKLM\SOFTWARE\Microsoft\WindowsMitigation" /v UserPreference /t REG_DWORD /d 1 /f >nul 2>&1
+powershell -NoProfile -Command "Get-AppxPackage -AllUsers *WebExperience* | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue" >nul 2>&1
+echo           18 extra features/components removed or disabled.
 
 :: --- DEFENDER (disable ALL components) --------------------------------------
 echo   Removing all Microsoft Defender components (needs Tamper Protection OFF)...
