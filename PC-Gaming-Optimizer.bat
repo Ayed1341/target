@@ -33,10 +33,17 @@ if %errorlevel% NEQ 0 (
 :: 2) DETECT WINDOWS VERSION
 :: ---------------------------------------------------------------------------
 set "WINVER=Unknown"
-for /f "tokens=4-7 delims=[]. " %%a in ('ver') do set "OSBUILD=%%b"
-for /f "tokens=2 delims==" %%i in ('wmic os get Caption /value 2^>nul ^| find "="') do set "OSNAME=%%i"
+set "OSNAME=Unknown"
+set "OSBUILD=0"
+for /f "tokens=2,*" %%a in ('reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v CurrentBuildNumber 2^>nul ^| find "CurrentBuildNumber"') do set "OSBUILD=%%b"
+:: Primary: PowerShell (works on all Windows 10/11). Fallback: registry, then wmic.
+for /f "delims=" %%i in ('powershell -NoProfile -Command "(Get-CimInstance Win32_OperatingSystem).Caption" 2^>nul') do set "OSNAME=%%i"
+if "%OSNAME%"=="Unknown" for /f "tokens=2,*" %%a in ('reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v ProductName 2^>nul ^| find "ProductName"') do set "OSNAME=%%b"
+if "%OSNAME%"=="Unknown" for /f "tokens=2 delims==" %%i in ('wmic os get Caption /value 2^>nul ^| find "="') do set "OSNAME=%%i"
+:: Windows 11 reports build 22000+ but still names itself "Windows 10" in the registry, so use the build too.
 echo %OSNAME% | find /i "Windows 11" >nul && set "WINVER=11"
 echo %OSNAME% | find /i "Windows 10" >nul && set "WINVER=10"
+if defined OSBUILD if %OSBUILD% GEQ 22000 set "WINVER=11"
 
 cls
 echo ============================================================================
@@ -52,32 +59,55 @@ echo.
 echo   Scanning hardware, please wait...
 echo.
 
-:: --- CPU ---
+:: --- CPU ---  (registry is the most reliable source; needs no PowerShell/WMIC)
 set "CPU_NAME=Unknown"
-set "CPU_CORES=0"
-set "CPU_THREADS=0"
 set "CPU_VENDOR=Unknown"
-for /f "tokens=2 delims==" %%i in ('wmic cpu get Name /value 2^>nul ^| find "="') do set "CPU_NAME=%%i"
-for /f "tokens=2 delims==" %%i in ('wmic cpu get NumberOfCores /value 2^>nul ^| find "="') do set "CPU_CORES=%%i"
-for /f "tokens=2 delims==" %%i in ('wmic cpu get NumberOfLogicalProcessors /value 2^>nul ^| find "="') do set "CPU_THREADS=%%i"
-echo %CPU_NAME% | find /i "Intel" >nul && set "CPU_VENDOR=Intel"
-echo %CPU_NAME% | find /i "AMD"   >nul && set "CPU_VENDOR=AMD"
+set "CPU_VID="
+set "CPU_THREADS=%NUMBER_OF_PROCESSORS%"
+set "CPU_CORES=%NUMBER_OF_PROCESSORS%"
+for /f "tokens=2,*" %%a in ('reg query "HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v ProcessorNameString 2^>nul ^| find /i "ProcessorNameString"') do set "CPU_NAME=%%b"
+for /f "tokens=2,*" %%a in ('reg query "HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0" /v VendorIdentifier 2^>nul ^| find /i "VendorIdentifier"') do set "CPU_VID=%%b"
+echo %CPU_VID% %CPU_NAME% | find /i "Intel" >nul && set "CPU_VENDOR=Intel"
+echo %CPU_VID% %CPU_NAME% | find /i "AMD"   >nul && set "CPU_VENDOR=AMD"
+:: Physical core count via PowerShell (captured to a temp file - the reliable way)
+powershell -NoProfile -Command "(Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfCores -Sum).Sum" > "%TEMP%\_pco_cores.txt" 2>nul
+set /p CPU_CORES=<"%TEMP%\_pco_cores.txt"
+del "%TEMP%\_pco_cores.txt" >nul 2>&1
+if not defined CPU_CORES set "CPU_CORES=%NUMBER_OF_PROCESSORS%"
 
-:: --- GPU ---
+:: --- GPU ---  (PowerShell picks the card with the most VRAM = the discrete GPU)
 set "GPU_NAME=Unknown"
 set "GPU_VENDOR=Unknown"
-for /f "tokens=2 delims==" %%i in ('wmic path win32_VideoController get Name /value 2^>nul ^| find "="') do set "GPU_NAME=%%i"
-echo %GPU_NAME% | find /i "NVIDIA" >nul && set "GPU_VENDOR=NVIDIA"
-echo %GPU_NAME% | find /i "AMD"    >nul && set "GPU_VENDOR=AMD"
-echo %GPU_NAME% | find /i "Radeon" >nul && set "GPU_VENDOR=AMD"
-echo %GPU_NAME% | find /i "Intel"  >nul && set "GPU_VENDOR=Intel"
+powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Where-Object { $_.Name -and $_.AdapterRAM } | Sort-Object AdapterRAM -Descending | Select-Object -First 1 -ExpandProperty Name" > "%TEMP%\_pco_gpu.txt" 2>nul
+set /p GPU_NAME=<"%TEMP%\_pco_gpu.txt"
+del "%TEMP%\_pco_gpu.txt" >nul 2>&1
+if not defined GPU_NAME set "GPU_NAME=Unknown"
+:: Fallback 1: registry display class (primary adapter)
+if "%GPU_NAME%"=="Unknown" for /f "tokens=2,*" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000" /v DriverDesc 2^>nul ^| find /i "DriverDesc"') do set "GPU_NAME=%%b"
+:: Fallback 2: any video controller via PowerShell
+if "%GPU_NAME%"=="Unknown" (
+    powershell -NoProfile -Command "@(Get-CimInstance Win32_VideoController)[0].Name" > "%TEMP%\_pco_gpu.txt" 2>nul
+    set /p GPU_NAME=<"%TEMP%\_pco_gpu.txt"
+    del "%TEMP%\_pco_gpu.txt" >nul 2>&1
+)
+if not defined GPU_NAME set "GPU_NAME=Unknown"
+echo %GPU_NAME% | find /i "NVIDIA"  >nul && set "GPU_VENDOR=NVIDIA"
+echo %GPU_NAME% | find /i "GeForce" >nul && set "GPU_VENDOR=NVIDIA"
+echo %GPU_NAME% | find /i "RTX"     >nul && set "GPU_VENDOR=NVIDIA"
+echo %GPU_NAME% | find /i "GTX"     >nul && set "GPU_VENDOR=NVIDIA"
+echo %GPU_NAME% | find /i "Radeon"  >nul && set "GPU_VENDOR=AMD"
+echo %GPU_NAME% | find /i "AMD"     >nul && set "GPU_VENDOR=AMD"
+echo %GPU_NAME% | find /i "Intel"   >nul && set "GPU_VENDOR=Intel"
+echo %GPU_NAME% | find /i "Arc"     >nul && set "GPU_VENDOR=Intel"
+if "%GPU_NAME%"=="Unknown" set "GPU_NAME=Not detected - generic display driver"
 
 :: --- RAM (total physical, rounded to GB) ---
 set "RAM_GB=0"
-for /f "tokens=2 delims==" %%i in ('wmic ComputerSystem get TotalPhysicalMemory /value 2^>nul ^| find "="') do set "RAM_BYTES=%%i"
-if defined RAM_BYTES (
-    for /f %%g in ('powershell -NoProfile -Command "[math]::Round(%RAM_BYTES%/1GB)"') do set "RAM_GB=%%g"
-)
+powershell -NoProfile -Command "[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB)" > "%TEMP%\_pco_ram.txt" 2>nul
+set /p RAM_GB=<"%TEMP%\_pco_ram.txt"
+del "%TEMP%\_pco_ram.txt" >nul 2>&1
+if not defined RAM_GB set "RAM_GB=0"
+if "%RAM_GB%"=="" set "RAM_GB=0"
 
 echo ----------------------------------------------------------------------------
 echo   CPU : %CPU_NAME%
@@ -106,7 +136,7 @@ echo     [2]  Restore Last Restore Point     (roll Windows back if anything brea
 echo     [3]  Create Fresh Restore Point     (save current state on demand)
 echo     [4]  Live Monitor                   (CPU / GPU / RAM usage + temperature)
 echo     [5]  PC Health Check + Repair        (14 tools to detect and fix problems)
-echo     [6]  Remove Defender + Edge + Copilot (PERMANENT debloat - advanced)
+echo     [6]  Remove Defender/Edge/Copilot + Disable Win Update (PERMANENT)
 echo     [7]  Exit
 echo.
 echo ----------------------------------------------------------------------------
@@ -470,14 +500,10 @@ echo   [01] QoS bandwidth reservation removed.
 netsh int tcp set global rsc=disabled >nul 2>&1
 echo   [02] RSC disabled.
 
-:: --- 03) Group services into fewer svchost.exe (LOWERS process count) -------
-if %RAM_GB% GTR 0 (
-    set /a "RAMKB=%RAM_GB%*1024*1024"
-    reg add "HKLM\SYSTEM\CurrentControlSet\Control" /v SvcHostSplitThresholdInKB /t REG_DWORD /d !RAMKB! /f >nul 2>&1
-    echo   [03] Services grouped to fewer processes ^(threshold !RAMKB! KB^).
-) else (
-    echo   [03] Skipped service grouping ^(RAM not detected^).
-)
+:: --- 03) Force ALL services into shared svchost.exe (BIGGEST process drop) --
+:: Max DWORD threshold forces every eligible service to share a host process.
+reg add "HKLM\SYSTEM\CurrentControlSet\Control" /v SvcHostSplitThresholdInKB /t REG_DWORD /d 4294967295 /f >nul 2>&1
+echo   [03] Services forced into shared svchost (big process-count drop after reboot).
 
 :: --- 04) Disable NIC interrupt moderation (snappier networking) -------------
 powershell -NoProfile -Command "Get-NetAdapter -Physical | ForEach-Object { Set-NetAdapterAdvancedProperty -Name $_.Name -DisplayName 'Interrupt Moderation' -DisplayValue 'Disabled' -ErrorAction SilentlyContinue }" >nul 2>&1
@@ -527,8 +553,8 @@ echo   [13] Kernel paging disabled (kept in RAM).
 :: --- 14) Set a fixed pagefile sized to RAM (no resize stutter) --------------
 if %RAM_GB% GTR 0 (
     set /a "PFSIZE=%RAM_GB%*1024"
-    wmic computersystem set AutomaticManagedPagefile=False >nul 2>&1
-    wmic pagefileset where "name='C:\\pagefile.sys'" set InitialSize=!PFSIZE!,MaximumSize=!PFSIZE! >nul 2>&1
+    powershell -NoProfile -Command "$cs=Get-CimInstance Win32_ComputerSystem; if($cs.AutomaticManagedPagefile){$cs.AutomaticManagedPagefile=$false; Set-CimInstance -InputObject $cs}" >nul 2>&1
+    powershell -NoProfile -Command "$s=!PFSIZE!; $p=Get-CimInstance Win32_PageFileSetting; if($p){$p.InitialSize=$s; $p.MaximumSize=$s; Set-CimInstance -InputObject $p}" >nul 2>&1
     echo   [14] Fixed pagefile set to !PFSIZE! MB.
 ) else (
     echo   [14] Skipped pagefile sizing ^(RAM not detected^).
@@ -986,11 +1012,18 @@ echo.
 echo   Detected drives and their type:
 powershell -NoProfile -Command "Get-PhysicalDisk | Select-Object DeviceId,FriendlyName,MediaType,@{N='SizeGB';E={[math]::Round($_.Size/1GB)}} | Format-Table -AutoSize" 2>nul
 echo.
-:: 01 Auto-optimize each drive the correct way: TRIM for SSD, defrag for HDD
-echo   [01] Optimizing all drives (TRIM on SSD, defrag on HDD - may take a while)...
-defrag /C /O /H >nul 2>&1
-defrag %SystemDrive% /L >nul 2>&1
-echo        Done - Windows applied the right method per drive.
+:: 01 Auto-optimize each drive (TRIM for SSD, defrag for HDD) - OPTIONAL, can be slow
+echo   [01] Drive optimization (TRIM on SSD, defrag on HDD).
+echo        On a mechanical HDD this can take several minutes. SSD-only is fast.
+choice /C YN /N /M "        Run drive optimization now? [Y/N]: "
+if errorlevel 2 (
+    echo        Skipped drive optimization - other storage tweaks still applied.
+) else (
+    echo        Optimizing, please wait...
+    defrag /C /O /H >nul 2>&1
+    defrag %SystemDrive% /L >nul 2>&1
+    echo        Done - Windows applied the right method per drive.
+)
 :: 02 Bigger NTFS in-memory metadata cache (faster file/directory access)
 fsutil behavior set memoryusage 2 >nul 2>&1
 echo   [02] NTFS metadata RAM cache increased.
@@ -1004,7 +1037,69 @@ echo   [04] Write-cache buffer flushing disabled - best with a UPS or laptop bat
 reg add "HKLM\SOFTWARE\Microsoft\Dfrg\BootOptimizeFunction" /v Enable /t REG_SZ /d N /f >nul 2>&1
 echo   [05] Legacy boot defrag/layout disabled.
 echo.
-echo   5 storage tweaks applied.  TOTAL: 155 tweaks.
+echo   5 storage tweaks applied.  (155 tweaks so far)
+echo.
+
+:: ===========================================================================
+:: 14B5) BONUS PACK 6: 15 MORE TWEAKS + AGGRESSIVE PROCESS REDUCTION
+:: ===========================================================================
+echo ============================================================================
+echo   APPLYING 15 MORE TWEAKS + CUTTING BACKGROUND PROCESSES...
+echo ============================================================================
+echo.
+:: 01 Disable Hyper-V hypervisor at boot (frees overhead for games)
+bcdedit /set hypervisorlaunchtype off >nul 2>&1
+echo   [01] Hyper-V hypervisor disabled at boot (breaks WSL2/Sandbox if used).
+:: 02 Disable memory page combining (less CPU overhead)
+powershell -NoProfile -Command "Disable-MMAgent -PageCombining" >nul 2>&1
+echo   [02] Memory page combining disabled.
+:: 03 Print Spooler to manual (no background print process if unused)
+sc query Spooler >nul 2>&1 && sc config Spooler start= demand >nul 2>&1
+echo   [03] Print Spooler set to manual.
+:: 04 Remote Desktop host services to manual
+for %%S in (TermService UmRdpService SessionEnv) do (sc query "%%S" >nul 2>&1 && sc config "%%S" start= demand >nul 2>&1)
+echo   [04] Remote Desktop host services set to manual.
+:: 05 Windows Image Acquisition (scanners/cameras) to manual
+sc query stisvc >nul 2>&1 && sc config stisvc start= demand >nul 2>&1
+echo   [05] Windows Image Acquisition set to manual.
+:: 06 Secondary Logon to manual
+sc query seclogon >nul 2>&1 && sc config seclogon start= demand >nul 2>&1
+echo   [06] Secondary Logon set to manual.
+:: 07 Certificate Propagation to manual
+sc query CertPropSvc >nul 2>&1 && sc config CertPropSvc start= demand >nul 2>&1
+echo   [07] Certificate Propagation set to manual.
+:: 08 QWAVE (audio/video QoS) to manual
+sc query QWAVE >nul 2>&1 && sc config QWAVE start= demand >nul 2>&1
+echo   [08] QWAVE set to manual.
+:: 09 Diagnostic Execution Service to manual
+sc query diagsvc >nul 2>&1 && sc config diagsvc start= demand >nul 2>&1
+echo   [09] Diagnostic Execution Service set to manual.
+:: 10 Disable Connected Devices Platform per-user service (kills a background process)
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\CDPUserSvc" /v Start /t REG_DWORD /d 4 /f >nul 2>&1
+echo   [10] Connected Devices Platform user service disabled.
+:: 11 Disable legacy TCP Chimney/Task offload
+netsh int tcp set global chimney=disabled >nul 2>&1
+echo   [11] TCP Chimney offload disabled.
+:: 12 Disable Insider/preview-build telemetry
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\WUfB" /v AllowBuildPreview /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [12] Insider preview telemetry disabled.
+:: 13 Disable Automatic Restart Sign-On (no background re-login)
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v DisableAutomaticRestartSignOn /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [13] Automatic Restart Sign-On disabled.
+:: 14 Disable "Sync your settings" background sync
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\SettingSync" /v DisableSettingSync /t REG_DWORD /d 2 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\SettingSync" /v DisableSettingSyncUserOverride /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [14] Settings sync disabled.
+:: 15 Remove the Widgets / Web Experience pack (removes its background process)
+powershell -NoProfile -Command "Get-AppxPackage -AllUsers *WebExperience* | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue" >nul 2>&1
+echo   [15] Widgets / Web Experience removed.
+echo.
+:: --- Terminate well-known background bloat NOW (frees processes immediately) -
+echo   Closing background bloat processes...
+for %%P in (OneDrive.exe msedge.exe Widgets.exe WidgetService.exe GameBarPresenceWriter.exe GameBar.exe YourPhone.exe PhoneExperienceHost.exe Cortana.exe SearchApp.exe Teams.exe Skype.exe spotify.exe) do taskkill /f /im "%%P" >nul 2>&1
+echo   Background bloat processes closed.
+echo.
+echo   15 more tweaks applied.  TOTAL: 170 tweaks.
 echo.
 
 :: ===========================================================================
@@ -1082,7 +1177,7 @@ echo     - Network tuned for low latency (Nagle off, throttling off)
 echo     - Visual effects set to best performance
 echo     - Background apps disabled, memory tuned for %RAM_GB% GB
 echo     - English (US) + Arabic keyboards installed (Alt+Shift to switch)
-echo     - 155 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
+echo     - 170 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
 echo       SSD/HDD storage optimization (auto TRIM/defrag, NTFS cache, MFT),
 echo       NTFS/SSD/pagefile tuning, mouse+keyboard latency, svchost grouping,
 echo       DNS 1.1.1.1, QoS/RSC/Winsock, DWM MPO off, Fast Startup off,
@@ -1296,21 +1391,21 @@ goto :MENU
 :DEBLOAT_MS
 cls
 echo ============================================================================
-echo   REMOVE MICROSOFT DEFENDER + EDGE + COPILOT   (PERMANENT / ADVANCED)
+echo   REMOVE DEFENDER + EDGE + COPILOT  ^&  DISABLE WINDOWS UPDATE  (ADVANCED)
 echo ============================================================================
 echo.
 echo   WARNING - READ THIS FIRST:
 echo     * Removing Microsoft Defender leaves your PC with NO built-in antivirus.
 echo       Only do this if you will install another antivirus, or you fully
 echo       accept the security risk on your own machine.
-echo     * On Windows 10/11 you MUST first turn OFF "Tamper Protection":
-echo       Settings ^> Privacy ^& Security ^> Windows Security ^> Virus ^& threat
-echo       protection ^> Manage settings ^> Tamper Protection = OFF.
-echo       Otherwise Windows will block the Defender changes.
-echo     * This is reversible only via System Restore (option 2-A) or by
-echo       reinstalling the components / resetting Windows.
+echo     * Disabling Windows Update means you will NOT get security patches.
+echo     * For Defender to actually turn off you MUST first disable Tamper
+echo       Protection: Settings ^> Privacy ^& Security ^> Windows Security ^>
+echo       Virus ^& threat protection ^> Manage settings ^> Tamper Protection OFF.
+echo       Microsoft blocks all script-based Defender changes while it is on.
+echo     * Reversible via System Restore (option 2) or by resetting Windows.
 echo.
-choice /C YN /M "  I understand the risks - proceed"
+choice /C YN /N /M "  I understand the risks - proceed? [Y/N]: "
 if errorlevel 2 goto :MENU
 echo.
 
@@ -1319,42 +1414,62 @@ echo   Removing Windows Copilot...
 reg add "HKCU\Software\Policies\Microsoft\Windows\WindowsCopilot" /v TurnOffWindowsCopilot /t REG_DWORD /d 1 /f >nul 2>&1
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" /v TurnOffWindowsCopilot /t REG_DWORD /d 1 /f >nul 2>&1
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v ShowCopilotButton /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Explorer" /v DisableSearchBoxSuggestions /t REG_DWORD /d 1 /f >nul 2>&1
 powershell -NoProfile -Command "Get-AppxPackage -AllUsers *Copilot* | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue" >nul 2>&1
+powershell -NoProfile -Command "Get-AppxProvisionedPackage -Online | Where-Object {$_.DisplayName -like '*Copilot*'} | ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue }" >nul 2>&1
 echo           Copilot disabled and removed.
 
 :: --- EDGE -------------------------------------------------------------------
 echo   Removing Microsoft Edge...
 reg add "HKLM\SOFTWARE\Microsoft\EdgeUpdate" /v DoNotUpdateToEdgeWithChromium /t REG_DWORD /d 1 /f >nul 2>&1
-:: Run Edge's own uninstaller (all installed versions)
-for /f "delims=" %%E in ('dir /b /s "%ProgramFiles(x86)%\Microsoft\Edge\Application\*\Installer\setup.exe" 2^>nul') do (
-    "%%E" --uninstall --system-level --force-uninstall >nul 2>&1
-)
-:: Remove the UWP Edge package as well
+reg add "HKLM\SOFTWARE\Microsoft\EdgeUpdate" /v InstallDefault /t REG_DWORD /d 0 /f >nul 2>&1
+:: Allow uninstall (Edge's own block flag) then run its uninstaller, system + user installs
+reg add "HKLM\SOFTWARE\Microsoft\EdgeUpdateDev" /v AllowUninstall /t REG_SZ /d "" /f >nul 2>&1
+for /f "delims=" %%E in ('dir /b /s "%ProgramFiles(x86)%\Microsoft\Edge\Application\*\Installer\setup.exe" 2^>nul') do "%%E" --uninstall --system-level --force-uninstall >nul 2>&1
+for /f "delims=" %%E in ('dir /b /s "%LocalAppData%\Microsoft\Edge\Application\*\Installer\setup.exe" 2^>nul') do "%%E" --uninstall --force-uninstall >nul 2>&1
 powershell -NoProfile -Command "Get-AppxPackage -AllUsers *MicrosoftEdge* | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue" >nul 2>&1
 echo           Edge uninstalled (reinstall blocked).
 
 :: --- DEFENDER ---------------------------------------------------------------
-echo   Disabling Microsoft Defender (requires Tamper Protection OFF)...
+echo   Disabling Microsoft Defender (needs Tamper Protection OFF first)...
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender" /v DisableAntiSpyware /t REG_DWORD /d 1 /f >nul 2>&1
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender" /v DisableAntiVirus /t REG_DWORD /d 1 /f >nul 2>&1
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection" /v DisableRealtimeMonitoring /t REG_DWORD /d 1 /f >nul 2>&1
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection" /v DisableBehaviorMonitoring /t REG_DWORD /d 1 /f >nul 2>&1
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection" /v DisableScanOnRealtimeEnable /t REG_DWORD /d 1 /f >nul 2>&1
-:: Stop Defender from auto-starting (blocked while Tamper Protection is on)
-for %%V in (WinDefend WdNisSvc Sense WdFilter WdNisDrv) do (
-    sc config "%%V" start= disabled >nul 2>&1
-)
-:: Disable Defender scheduled tasks
+:: Try the live toggle too (only works when Tamper Protection is already off)
+powershell -NoProfile -Command "Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue" >nul 2>&1
+for %%V in (WinDefend WdNisSvc Sense WdFilter WdNisDrv SecurityHealthService) do sc config "%%V" start= disabled >nul 2>&1
+sc query wscsvc >nul 2>&1 && sc config wscsvc start= demand >nul 2>&1
 for %%T in (
   "\Microsoft\Windows\Windows Defender\Windows Defender Cache Maintenance"
   "\Microsoft\Windows\Windows Defender\Windows Defender Cleanup"
   "\Microsoft\Windows\Windows Defender\Windows Defender Scheduled Scan"
   "\Microsoft\Windows\Windows Defender\Windows Defender Verification"
 ) do schtasks /Change /TN %%T /Disable >nul 2>&1
-:: Remove the Security Center tray icon
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Security Center\Notifications" /v DisableNotifications /t REG_DWORD /d 1 /f >nul 2>&1
-echo           Defender policies set. If anything was blocked, turn OFF Tamper
-echo           Protection (see warning above) and run this option again.
+:: Stop the Windows Security tray icon from auto-starting
+reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" /v SecurityHealth /f >nul 2>&1
+echo           Defender policies set. If it is still on, Tamper Protection was
+echo           ON - turn it OFF (see warning) and run this option again.
+
+:: --- WINDOWS UPDATE ---------------------------------------------------------
+echo   Disabling Windows Update...
+for %%V in (wuauserv UsoSvc WaaSMedicSvc bits DoSvc) do (
+    sc stop "%%V" >nul 2>&1
+    sc config "%%V" start= disabled >nul 2>&1
+)
+:: WaaSMedicSvc/UsoSvc are protected - force-disable via the registry Start value
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\WaaSMedicSvc" /v Start /t REG_DWORD /d 4 /f >nul 2>&1
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\UsoSvc" /v Start /t REG_DWORD /d 4 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoUpdate /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v DisableWindowsUpdateAccess /t REG_DWORD /d 1 /f >nul 2>&1
+for %%T in (
+  "\Microsoft\Windows\WindowsUpdate\Scheduled Start"
+  "\Microsoft\Windows\UpdateOrchestrator\Schedule Scan"
+  "\Microsoft\Windows\UpdateOrchestrator\Schedule Scan Static Task"
+) do schtasks /Change /TN %%T /Disable >nul 2>&1
+echo           Windows Update disabled (re-enable from option 2 or by resetting).
 echo.
 echo ============================================================================
 echo   DONE. A RESTART is required to finish removing these components.
@@ -1381,8 +1496,11 @@ choice /C YN /M "  Create a restore point now"
 if errorlevel 2 goto :MENU
 echo.
 echo   Creating restore point, please wait...
-for /f "tokens=2 delims==" %%t in ('wmic os get LocalDateTime /value 2^>nul ^| find "="') do set "STAMP=%%t"
-set "RPNAME=Manual_%STAMP:~0,8%_%STAMP:~8,6%"
+set "RPNAME=Manual_RestorePoint"
+powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss" > "%TEMP%\_pco_ts.txt" 2>nul
+set /p STAMP=<"%TEMP%\_pco_ts.txt"
+del "%TEMP%\_pco_ts.txt" >nul 2>&1
+if defined STAMP set "RPNAME=Manual_%STAMP%"
 call :MAKE_RP "%RPNAME%"
 echo.
 echo   Restore point created: %RPNAME%
@@ -1406,8 +1524,8 @@ echo ---------------------------------------------------------------------------
 echo   Note: CPU temp needs motherboard WMI support; GPU temp needs an NVIDIA
 echo   card with nvidia-smi. "N/A" means your hardware does not expose it here.
 echo.
-echo   Auto-refreshes every 3 seconds.  Press Q to return to the menu.
-choice /C QR /N /T 3 /D R >nul
+echo   Auto-refreshes every 10 seconds.  Press R to refresh now, or Q to quit.
+choice /C QR /N /T 10 /D R >nul
 if errorlevel 2 goto :MONITOR
 goto :MENU
 
