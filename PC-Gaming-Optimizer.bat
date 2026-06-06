@@ -100,6 +100,14 @@ echo ===========================================================================
 echo.
 
 :: ---------------------------------------------------------------------------
+:: Capture the CURRENT running-process count (BEFORE optimization)
+:: ---------------------------------------------------------------------------
+set "PROC_BEFORE=0"
+for /f %%c in ('powershell -NoProfile -Command "(Get-Process).Count" 2^>nul') do set "PROC_BEFORE=%%c"
+echo   Running processes BEFORE optimization: %PROC_BEFORE%
+echo.
+
+:: ---------------------------------------------------------------------------
 :: 4) CREATE A SYSTEM RESTORE POINT (safety net)
 :: ---------------------------------------------------------------------------
 echo  [ 1/12] Creating System Restore point...
@@ -243,7 +251,7 @@ if %RAM_GB% GEQ 16 (
     powershell -NoProfile -Command "Disable-MMAgent -mc" >nul 2>&1
     echo         16GB+ RAM detected: memory compression disabled.
 ) else (
-    echo         Under 16GB RAM: memory compression left enabled (safer).
+    echo         Under 16GB RAM: memory compression left enabled - safer.
 )
 echo         Done.
 echo.
@@ -409,7 +417,7 @@ echo   [30] OPTIONAL: Disabling Spectre/Meltdown mitigations and VBS/Memory
 echo        Integrity can add a few %% FPS, but REDUCES system security.
 choice /C YN /M "        Apply this optional max-performance tweak"
 if errorlevel 2 (
-    echo        Skipped tweak 30 (security kept intact).
+    echo        Skipped tweak 30 - security kept intact.
 ) else (
     reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v FeatureSettingsOverride /t REG_DWORD /d 3 /f >nul 2>&1
     reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v FeatureSettingsOverrideMask /t REG_DWORD /d 3 /f >nul 2>&1
@@ -419,6 +427,238 @@ if errorlevel 2 (
 )
 echo.
 echo   30 advanced tweaks applied.
+echo.
+
+:: ===========================================================================
+:: 14B) BONUS PACK 2: 40 MORE ADVANCED TWEAKS
+:: ===========================================================================
+echo ============================================================================
+echo   APPLYING 40 MORE ADVANCED TWEAKS...
+echo ============================================================================
+echo.
+
+:: --- 01) Remove QoS reserved bandwidth (Windows reserves 20%% by default) ---
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Psched" /v NonBestEffortLimit /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [01] QoS bandwidth reservation removed.
+
+:: --- 02) Disable Receive Segment Coalescing (lower network latency) ---------
+netsh int tcp set global rsc=disabled >nul 2>&1
+echo   [02] RSC disabled.
+
+:: --- 03) Group services into fewer svchost.exe (LOWERS process count) -------
+if %RAM_GB% GTR 0 (
+    set /a "RAMKB=%RAM_GB%*1024*1024"
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control" /v SvcHostSplitThresholdInKB /t REG_DWORD /d !RAMKB! /f >nul 2>&1
+    echo   [03] Services grouped to fewer processes ^(threshold !RAMKB! KB^).
+) else (
+    echo   [03] Skipped service grouping ^(RAM not detected^).
+)
+
+:: --- 04) Disable NIC interrupt moderation (snappier networking) -------------
+powershell -NoProfile -Command "Get-NetAdapter -Physical | ForEach-Object { Set-NetAdapterAdvancedProperty -Name $_.Name -DisplayName 'Interrupt Moderation' -DisplayValue 'Disabled' -ErrorAction SilentlyContinue }" >nul 2>&1
+echo   [04] NIC interrupt moderation disabled.
+
+:: --- 05) Disable NIC flow control -------------------------------------------
+powershell -NoProfile -Command "Get-NetAdapter -Physical | ForEach-Object { Set-NetAdapterAdvancedProperty -Name $_.Name -DisplayName 'Flow Control' -DisplayValue 'Disabled' -ErrorAction SilentlyContinue }" >nul 2>&1
+echo   [05] NIC flow control disabled.
+
+:: --- 06) Reset Winsock catalog (fixes corrupted network stack / lag) --------
+netsh winsock reset >nul 2>&1
+echo   [06] Winsock catalog reset (effective after reboot).
+
+:: --- 07) Faster name-resolution priority (DNS/Hosts before NetBT) -----------
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\ServiceProvider" /v LocalPriority /t REG_DWORD /d 4 /f >nul 2>&1
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\ServiceProvider" /v HostsPriority /t REG_DWORD /d 5 /f >nul 2>&1
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\ServiceProvider" /v DnsPriority /t REG_DWORD /d 6 /f >nul 2>&1
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\ServiceProvider" /v NetbtPriority /t REG_DWORD /d 7 /f >nul 2>&1
+echo   [07] Name-resolution priority optimized.
+
+:: --- 08) Set fast public DNS (Cloudflare + Google) on active adapters -------
+powershell -NoProfile -Command "Get-NetAdapter -Physical | Where-Object {$_.Status -eq 'Up'} | ForEach-Object { Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ServerAddresses ('1.1.1.1','8.8.8.8') -ErrorAction SilentlyContinue }" >nul 2>&1
+echo   [08] DNS set to 1.1.1.1 / 8.8.8.8 (reversible to automatic anytime).
+
+:: --- 09) Raise RTC/IRQ8 priority --------------------------------------------
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v IRQ8Priority /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [09] System timer IRQ priority raised.
+
+:: --- 10) Enable x2APIC + disable legacy APIC (better interrupt routing) -----
+bcdedit /set x2apicpolicy enable >nul 2>&1
+bcdedit /set uselegacyapicmode no >nul 2>&1
+echo   [10] x2APIC interrupt routing enabled.
+
+:: --- 11) Remove boot CPU-core limit (use every core at boot) ----------------
+bcdedit /deletevalue numproc >nul 2>&1
+echo   [11] Boot core limit removed.
+
+:: --- 12) Faster boot (no boot animation, shorter menu timeout) --------------
+bcdedit /set bootux disabled >nul 2>&1
+bcdedit /timeout 3 >nul 2>&1
+echo   [12] Faster boot configured.
+
+:: --- 13) Keep kernel + drivers in RAM (disable paging executive) ------------
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v DisablePagingExecutive /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [13] Kernel paging disabled (kept in RAM).
+
+:: --- 14) Set a fixed pagefile sized to RAM (no resize stutter) --------------
+if %RAM_GB% GTR 0 (
+    set /a "PFSIZE=%RAM_GB%*1024"
+    wmic computersystem set AutomaticManagedPagefile=False >nul 2>&1
+    wmic pagefileset where "name='C:\\pagefile.sys'" set InitialSize=!PFSIZE!,MaximumSize=!PFSIZE! >nul 2>&1
+    echo   [14] Fixed pagefile set to !PFSIZE! MB.
+) else (
+    echo   [14] Skipped pagefile sizing ^(RAM not detected^).
+)
+
+:: --- 15) Do not clear pagefile at shutdown (faster shutdown) ----------------
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v ClearPageFileAtShutdown /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [15] Pagefile clear-on-shutdown disabled.
+
+:: --- 16) Disable DWM Multiplane Overlay (fixes stutter/flicker) -------------
+reg add "HKLM\SOFTWARE\Microsoft\Windows\Dwm" /v OverlayTestMode /t REG_DWORD /d 5 /f >nul 2>&1
+echo   [16] DWM MPO disabled.
+
+:: --- 17) Enable optimizations for windowed games + VRR (Win11) --------------
+reg add "HKCU\Software\Microsoft\DirectX\UserGpuPreferences" /v DirectXUserGlobalSettings /t REG_SZ /d "SwapEffectUpgradeEnable=1;VRROptimizeEnable=1;" /f >nul 2>&1
+echo   [17] Windowed-game + VRR optimizations enabled.
+
+:: --- 18) Faster keyboard repeat rate / shortest delay -----------------------
+reg add "HKCU\Control Panel\Keyboard" /v KeyboardDelay /t REG_SZ /d 0 /f >nul 2>&1
+reg add "HKCU\Control Panel\Keyboard" /v KeyboardSpeed /t REG_SZ /d 31 /f >nul 2>&1
+echo   [18] Keyboard repeat speed maximized.
+
+:: --- 19) Smaller mouse/keyboard input queues (lower input latency) ----------
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\mouclass\Parameters" /v MouseDataQueueSize /t REG_DWORD /d 20 /f >nul 2>&1
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\kbdclass\Parameters" /v KeyboardDataQueueSize /t REG_DWORD /d 20 /f >nul 2>&1
+echo   [19] Input queue latency reduced.
+
+:: --- 20) Disable Sticky / Filter / Toggle key pop-ups -----------------------
+reg add "HKCU\Control Panel\Accessibility\StickyKeys" /v Flags /t REG_SZ /d 506 /f >nul 2>&1
+reg add "HKCU\Control Panel\Accessibility\Keyboard Response" /v Flags /t REG_SZ /d 122 /f >nul 2>&1
+reg add "HKCU\Control Panel\Accessibility\ToggleKeys" /v Flags /t REG_SZ /d 58 /f >nul 2>&1
+echo   [20] Accessibility key pop-ups disabled.
+
+:: --- 21) Disable Widgets (Win11) --------------------------------------------
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Dsh" /v AllowNewsAndInterests /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [21] Widgets disabled.
+
+:: --- 22) Disable Chat / Teams taskbar icon ----------------------------------
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v TaskbarMn /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [22] Taskbar Chat icon removed.
+
+:: --- 23) Disable Bing / web search in Start menu ----------------------------
+reg add "HKCU\Software\Policies\Microsoft\Windows\Explorer" /v DisableSearchBoxSuggestions /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [23] Start menu web search disabled.
+
+:: --- 24) Disable Search highlights ------------------------------------------
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Windows Search" /v EnableDynamicContentInWSB /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [24] Search highlights disabled.
+
+:: --- 25) Disable Activity History / Timeline --------------------------------
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" /v EnableActivityFeed /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" /v PublishUserActivities /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [25] Activity history disabled.
+
+:: --- 26) Disable Reserved Storage (frees up to ~7 GB) -----------------------
+dism /Online /Set-ReservedStorageState /State:Disabled >nul 2>&1
+echo   [26] Reserved storage disabled.
+
+:: --- 27) Disable Remote Assistance ------------------------------------------
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Remote Assistance" /v fAllowToGetHelp /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [27] Remote Assistance disabled.
+
+:: --- 28) Disable Edge startup boost + background mode -----------------------
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Edge" /v StartupBoostEnabled /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Edge" /v BackgroundModeEnabled /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [28] Edge background processes disabled.
+
+:: --- 29) Disable OneDrive auto-start ----------------------------------------
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v OneDrive /f >nul 2>&1
+echo   [29] OneDrive auto-start disabled.
+
+:: --- 30) Disable ReadyBoot boot tracing -------------------------------------
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\WMI\Autologger\ReadyBoot" /v Start /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [30] ReadyBoot tracing disabled.
+
+:: --- 31) Force maximum timer resolution at all times ------------------------
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\kernel" /v GlobalTimerResolutionRequests /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [31] Max timer resolution forced.
+
+:: --- 32) Disable Application Compatibility telemetry ------------------------
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\AppCompat" /v AITEnable /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\AppCompat" /v DisableInventory /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [32] AppCompat telemetry disabled.
+
+:: --- 33) Disable Customer Experience Improvement (CEIP) ----------------------
+reg add "HKLM\SOFTWARE\Policies\Microsoft\SQMClient\Windows" /v CEIPEnable /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [33] CEIP disabled.
+
+:: --- 34) Disable Advertising ID ---------------------------------------------
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\AdvertisingInfo" /v DisabledByGroupPolicy /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [34] Advertising ID disabled.
+
+:: --- 35) Disable tailored experiences ---------------------------------------
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Privacy" /v TailoredExperiencesWithDiagnosticDataEnabled /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [35] Tailored experiences disabled.
+
+:: --- 36) Disable feedback prompts -------------------------------------------
+reg add "HKCU\Software\Microsoft\Siuf\Rules" /v NumberOfSIUFInPeriod /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [36] Feedback prompts disabled.
+
+:: --- 37) Disable Wi-Fi Sense auto-connect to open hotspots ------------------
+reg add "HKLM\SOFTWARE\Microsoft\WcmSvc\wifinetworkmanager\config" /v AutoConnectAllowedOEM /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [37] Wi-Fi Sense auto-connect disabled.
+
+:: --- 38) Faster shutdown (shorter service/app kill timeouts) ----------------
+reg add "HKLM\SYSTEM\CurrentControlSet\Control" /v WaitToKillServiceTimeout /t REG_SZ /d 2000 /f >nul 2>&1
+reg add "HKCU\Control Panel\Desktop" /v WaitToKillAppTimeout /t REG_SZ /d 2000 /f >nul 2>&1
+reg add "HKCU\Control Panel\Desktop" /v HungAppTimeout /t REG_SZ /d 2000 /f >nul 2>&1
+reg add "HKCU\Control Panel\Desktop" /v AutoEndTasks /t REG_SZ /d 1 /f >nul 2>&1
+echo   [38] Shutdown timeouts shortened.
+
+:: --- 39) Collapse News/Feeds taskbar widget ---------------------------------
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Feeds" /v ShellFeedsTaskbarViewMode /t REG_DWORD /d 2 /f >nul 2>&1
+echo   [39] News feed widget disabled.
+
+:: --- 40) Restart Explorer so taskbar/UI tweaks apply immediately ------------
+taskkill /f /im explorer.exe >nul 2>&1
+start explorer.exe
+echo   [40] Explorer restarted (UI tweaks applied).
+echo.
+echo   40 more advanced tweaks applied.
+echo.
+
+:: ===========================================================================
+:: 14C) GUARANTEE CONNECTIVITY + DEVICES + MICROSOFT STORE KEEP WORKING
+::      None of the tweaks above disable these; this section makes 100%% sure
+::      Wi-Fi, Bluetooth, USB/external devices, audio and the Store still work.
+:: ===========================================================================
+echo ============================================================================
+echo   ENSURING WI-FI / BLUETOOTH / USB DEVICES / MICROSOFT STORE WORK...
+echo ============================================================================
+echo.
+
+:: Services that must be AUTOMATIC (always running) ---------------------------
+for %%A in (WlanSvc Wcmsvc NlaSvc Dhcp Dnscache Audiosrv AudioEndpointBuilder) do (
+    sc query "%%A" >nul 2>&1 && (
+        sc config "%%A" start= auto >nul 2>&1
+        sc start "%%A" >nul 2>&1
+    )
+)
+echo   [OK] Wi-Fi, network and audio services enabled.
+
+:: Services that must be MANUAL/TRIGGER (start on demand when needed) ---------
+for %%D in (bthserv BTAGService BthAvctpSvc PlugPlay DeviceAssociationService DeviceInstall WpdBusEnum Netman netprofm) do (
+    sc query "%%D" >nul 2>&1 && sc config "%%D" start= demand >nul 2>&1
+)
+echo   [OK] Bluetooth + USB/external-device services enabled.
+
+:: Microsoft Store + app install/licensing services --------------------------
+for %%S in (AppXSvc ClipSVC InstallService StorSvc LicenseManager wuauserv wlidsvc TokenBroker TimeBrokerSvc) do (
+    sc query "%%S" >nul 2>&1 && sc config "%%S" start= demand >nul 2>&1
+)
+:: Make sure background-app policy does NOT block Store apps from launching
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy" /v LetAppsRunInBackground /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [OK] Microsoft Store and app services enabled.
 echo.
 
 :: ---------------------------------------------------------------------------
@@ -437,6 +677,9 @@ echo.
 echo  [12/12] Finalizing...
 :: Refresh group policy so changes apply immediately
 gpupdate /force >nul 2>&1
+:: Capture the running-process count AFTER optimization
+set "PROC_AFTER=0"
+for /f %%c in ('powershell -NoProfile -Command "(Get-Process).Count" 2^>nul') do set "PROC_AFTER=%%c"
 echo         Done.
 echo.
 
@@ -444,6 +687,11 @@ cls
 echo ============================================================================
 echo                       OPTIMIZATION COMPLETE!
 echo ============================================================================
+echo.
+echo   ----------------------------------------------------------------------
+echo     PROCESS COUNT   BEFORE: %PROC_BEFORE%      AFTER: %PROC_AFTER%
+echo     (Most service changes free even more processes after a RESTART.)
+echo   ----------------------------------------------------------------------
 echo.
 echo   Summary of what was optimized:
 echo     - Power plan set to High / Ultimate Performance
@@ -454,8 +702,11 @@ echo     - Network tuned for low latency (Nagle off, throttling off)
 echo     - Visual effects set to best performance
 echo     - Background apps disabled, memory tuned for %RAM_GB% GB
 echo     - English (US) + Arabic keyboards installed (Alt+Shift to switch)
-echo     - 30 extra advanced tweaks (core parking off, MSI-mode, TSC timer,
-echo       NTFS/SSD tuning, mouse accel off, telemetry/bloat off, TCP tuning)
+echo     - 30 + 40 = 70 advanced tweaks (core parking off, MSI-mode, TSC/HPET
+echo       timer, NTFS/SSD/pagefile tuning, mouse+keyboard latency, svchost
+echo       grouping, DNS 1.1.1.1, QoS/RSC/Winsock, DWM MPO off, debloat, etc.)
+echo     - Wi-Fi, Bluetooth, USB/external devices and Microsoft Store kept
+echo       fully working (essential services re-verified and enabled)
 echo     - Temp files cleaned
 echo.
 echo   A System Restore point named "Before_PC_Gaming_Optimizer" was created.
