@@ -1213,7 +1213,49 @@ echo   [13] Network-folder thumbnails disabled.
 reg add "HKCU\Software\Policies\Microsoft\Windows\Explorer" /v DisableSearchHistory /t REG_DWORD /d 1 /f >nul 2>&1
 echo   [14] Explorer search history disabled.
 echo.
-echo   14 more tweaks applied.  TOTAL: 207 tweaks.
+echo   14 more tweaks applied.  (207 tweaks so far)
+echo.
+
+:: ===========================================================================
+:: 14B9) BONUS PACK 10: 10 MORE TELEMETRY / PRIVACY TWEAKS
+:: ===========================================================================
+echo ============================================================================
+echo   APPLYING 10 MORE TELEMETRY / PRIVACY TWEAKS...
+echo ============================================================================
+echo.
+:: 01 Disable telemetry ETW trace loggers
+for %%L in (AutoLogger-Diagtrack-Listener SQMLogger) do reg add "HKLM\SYSTEM\CurrentControlSet\Control\WMI\Autologger\%%L" /v Start /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [01] Telemetry trace loggers disabled.
+:: 02 Do not send device name in telemetry
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection" /v AllowDeviceNameInTelemetry /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [02] Device name kept out of telemetry.
+:: 03 Disable the Diagnostic Data Viewer database
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection" /v DisableDiagnosticDataViewer /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [03] Diagnostic Data Viewer disabled.
+:: 04 Disable Microsoft Support Diagnostic Tool (MSDT) scripted diagnostics
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\ScriptedDiagnostics" /v EnableQueryRemoteServer /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\ScriptedDiagnosticsProvider\Policy" /v DisableQueryRemoteServer /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [04] MSDT remote diagnostics disabled.
+:: 05 Disable online speech-model downloads
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Speech" /v AllowSpeechModelUpdate /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [05] Speech-model downloads disabled.
+:: 06 Disable linguistic / handwriting data collection
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\TextInput" /v AllowLinguisticDataCollection /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [06] Linguistic data collection disabled.
+:: 07 Disable handwriting error reports
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\HandwritingErrorReports" /v PreventHandwritingErrorReports /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [07] Handwriting error reports disabled.
+:: 08 Disable cloud-optimized content (suggested apps/tiles from the cloud)
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\CloudContent" /v DisableCloudOptimizedContent /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [08] Cloud-optimized content disabled.
+:: 09 Disable online font provider downloads
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" /v EnableFontProviders /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [09] Online font providers disabled.
+:: 10 Disable all Windows Spotlight features
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\CloudContent" /v DisableWindowsSpotlightFeatures /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [10] Windows Spotlight features disabled.
+echo.
+echo   10 more tweaks applied.  TOTAL: 217 tweaks.
 echo.
 
 :: ===========================================================================
@@ -1291,7 +1333,7 @@ echo     - Network tuned for low latency (Nagle off, throttling off)
 echo     - Visual effects set to best performance
 echo     - Background apps disabled, memory tuned for %RAM_GB% GB
 echo     - English (US) + Arabic keyboards installed (Alt+Shift to switch)
-echo     - 207 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
+echo     - 217 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
 echo       SSD/HDD storage optimization (auto TRIM/defrag, NTFS cache, MFT),
 echo       NTFS/SSD/pagefile tuning, mouse+keyboard latency, svchost grouping,
 echo       DNS 1.1.1.1, QoS/RSC/Winsock, DWM MPO off, Fast Startup off,
@@ -1316,7 +1358,7 @@ goto :END
 :RESTORE
 cls
 echo ============================================================================
-echo   RESTORE LAST RESTORE POINT  -  roll your PC back
+echo   RESTORE  -  roll your PC back to any restore point
 echo ============================================================================
 echo.
 echo   Available restore points (newest at the bottom):
@@ -1327,14 +1369,15 @@ echo.
 echo   Pick how you want to restore:
 echo.
 echo     [A]  Restore the LAST (most recent) restore point now and REBOOT
-echo     [B]  Open System Restore to pick a point manually
-echo     [C]  Revert just this tool's tweaks to defaults (no reboot)
-echo     [D]  Back to main menu
+echo     [B]  Choose a SPECIFIC restore point by its number (see list above)
+echo     [C]  Open System Restore to pick a point manually
+echo     [D]  Revert just this tool's tweaks to defaults (no reboot)
+echo     [E]  Back to main menu
 echo.
-choice /C ABCD /N /M "  Choose [A/B/C/D]: "
-if errorlevel 4 goto :MENU
-if errorlevel 3 goto :REVERT
-if errorlevel 2 (
+choice /C ABCDE /N /M "  Choose [A/B/C/D/E]: "
+if errorlevel 5 goto :MENU
+if errorlevel 4 goto :REVERT
+if errorlevel 3 (
     echo.
     echo   Opening System Restore... pick a point and follow the wizard.
     rstrui.exe
@@ -1342,6 +1385,7 @@ if errorlevel 2 (
     pause
     goto :MENU
 )
+if errorlevel 2 goto :PICKRP
 if errorlevel 1 (
     echo.
     echo   This will roll Windows back to the most recent restore point and
@@ -1353,6 +1397,28 @@ if errorlevel 1 (
     pause
     goto :MENU
 )
+
+:: --- Pick a specific restore point by its SequenceNumber --------------------
+:PICKRP
+echo.
+echo   The list above shows each restore point's NUMBER, DATE/TIME and name.
+set "SEQ="
+set /p "SEQ=  Type the number of the point you want, then press Enter: "
+if not defined SEQ goto :MENU
+echo %SEQ%| findstr /r "^[0-9][0-9]*$" >nul || (
+    echo   That is not a valid number.
+    pause
+    goto :MENU
+)
+echo.
+echo   You chose restore point #%SEQ%. Windows will roll back to it and REBOOT.
+echo   Open programs will close.
+choice /C YN /M "   Restore point #%SEQ% now"
+if errorlevel 2 goto :MENU
+echo   Restoring to point #%SEQ%... your PC will reboot shortly.
+powershell -NoProfile -Command "$n=[int]'%SEQ%'; $rp=Get-ComputerRestorePoint | Where-Object {$_.SequenceNumber -eq $n}; if($rp){ Restore-Computer -RestorePoint $n -Confirm:$false } else { Write-Host '  No restore point has that number.'; Start-Sleep 3 }"
+pause
+goto :MENU
 
 :REVERT
 cls
@@ -1660,6 +1726,26 @@ reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection" /v LimitDiagno
 reg add "HKLM\SOFTWARE\Microsoft\WindowsMitigation" /v UserPreference /t REG_DWORD /d 1 /f >nul 2>&1
 powershell -NoProfile -Command "Get-AppxPackage -AllUsers *WebExperience* | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue" >nul 2>&1
 echo           18 extra features/components removed or disabled.
+
+:: --- 8 MORE COMPONENT REMOVALS ----------------------------------------------
+echo   Removing more optional Windows components...
+:: 01 Remove PowerShell ISE
+dism /Online /Remove-Capability /CapabilityName:Microsoft.Windows.PowerShell.ISE~~~~0.0.1.0 /NoRestart >nul 2>&1
+:: 02 Remove XPS Viewer
+dism /Online /Remove-Capability /CapabilityName:XPS.Viewer~~~~0.0.1.0 /NoRestart >nul 2>&1
+:: 03 Remove Print Management console
+dism /Online /Remove-Capability /CapabilityName:Print.Management.Console~~~~0.0.1.0 /NoRestart >nul 2>&1
+:: 04 Disable Windows Fax and Scan
+dism /Online /Disable-Feature /FeatureName:FaxServicesClientPackage /NoRestart >nul 2>&1
+:: 05 Stop the Microsoft Store from auto-updating apps in the background
+reg add "HKLM\SOFTWARE\Policies\Microsoft\WindowsStore" /v AutoDownload /t REG_DWORD /d 2 /f >nul 2>&1
+:: 06 Disable all Windows Spotlight features (lock screen + desktop)
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\CloudContent" /v DisableWindowsSpotlightFeatures /t REG_DWORD /d 1 /f >nul 2>&1
+:: 07 Remove the Teams machine-wide installer if present
+powershell -NoProfile -Command "winget uninstall --name 'Teams Machine-Wide Installer' --silent --accept-source-agreements" >nul 2>&1
+:: 08 Shrink the component store permanently (frees several GB of disk)
+dism /Online /Cleanup-Image /StartComponentCleanup /ResetBase >nul 2>&1
+echo           8 more components removed and the component store shrunk.
 
 :: --- DEFENDER (disable ALL components) --------------------------------------
 echo   Removing all Microsoft Defender components (needs Tamper Protection OFF)...
