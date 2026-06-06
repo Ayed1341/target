@@ -725,7 +725,255 @@ echo   [14] Low-disk-space popups disabled.
 sc query PushToInstall >nul 2>&1 && sc config PushToInstall start= disabled >nul 2>&1
 echo   [15] Push-To-Install service disabled.
 echo.
-echo   15 more advanced tweaks applied.  Total: 85 tweaks.
+echo   15 more advanced tweaks applied.  (85 tweaks so far)
+echo.
+
+:: ===========================================================================
+:: 14B3) BONUS PACK 4: 65 MORE ADVANCED TWEAKS  (brings total to 150)
+:: ===========================================================================
+echo ============================================================================
+echo   APPLYING 65 MORE ADVANCED TWEAKS  (this section is the biggest)...
+echo ============================================================================
+echo.
+
+:: ---- NETWORK (deep) --------------------------------------------------------
+echo   Network:
+:: 01 Disable NetBIOS over TCP/IP on all interfaces
+powershell -NoProfile -Command "Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces' | ForEach-Object { Set-ItemProperty -Path $_.PSPath -Name NetbiosOptions -Value 2 -ErrorAction SilentlyContinue }" >nul 2>&1
+echo     [01] NetBIOS over TCP/IP disabled.
+:: 02 Disable LMHOSTS lookup
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\NetBT\Parameters" /v EnableLMHOSTS /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [02] LMHOSTS lookup disabled.
+:: 03 Disable Teredo / 6to4 / ISATAP tunneling
+netsh interface teredo set state disabled >nul 2>&1
+netsh interface 6to4 set state disabled >nul 2>&1
+netsh interface isatap set state disabled >nul 2>&1
+echo     [03] IPv6 transition tunneling disabled.
+:: 04 Faster TCP failure detection
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v TcpMaxDataRetransmissions /t REG_DWORD /d 3 /f >nul 2>&1
+echo     [04] TCP retransmission count lowered.
+:: 05 Set DefaultTTL
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v DefaultTTL /t REG_DWORD /d 64 /f >nul 2>&1
+echo     [05] Default TTL set to 64.
+:: 06 More ephemeral ports + faster reuse
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v MaxUserPort /t REG_DWORD /d 65534 /f >nul 2>&1
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v TcpTimedWaitDelay /t REG_DWORD /d 30 /f >nul 2>&1
+echo     [06] Ephemeral port range widened.
+:: 07 Disable NIC power management (allow turn off device)
+powershell -NoProfile -Command "Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}' | Where-Object { $_.PSChildName -match '^\d{4}$' } | ForEach-Object { Set-ItemProperty -Path $_.PSPath -Name PnPCapabilities -Value 24 -ErrorAction SilentlyContinue }" >nul 2>&1
+echo     [07] NIC power management disabled.
+:: 08 Disable Wi-Fi adapter power saving
+powershell -NoProfile -Command "Get-NetAdapter -Physical | ForEach-Object { Set-NetAdapterAdvancedProperty -Name $_.Name -DisplayName 'Power Saving Mode' -DisplayValue 'Maximum Performance' -ErrorAction SilentlyContinue }" >nul 2>&1
+echo     [08] Wi-Fi power saving disabled.
+:: 09 Tune DNS cache TTLs
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters" /v MaxCacheTtl /t REG_DWORD /d 86400 /f >nul 2>&1
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters" /v MaxNegativeCacheTtl /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [09] DNS cache TTLs tuned.
+:: 10 Disable SMB1 protocol (legacy, slow, insecure)
+dism /Online /Disable-Feature /FeatureName:SMB1Protocol /NoRestart >nul 2>&1
+echo     [10] SMB1 protocol disabled.
+
+:: ---- SERVICES (extra, safe - set to manual) --------------------------------
+echo   Services:
+for %%S in (SCardSvr ScDeviceEnum SCPolicySvc) do (sc query "%%S" >nul 2>&1 && sc config "%%S" start= demand >nul 2>&1)
+echo     [11] Smart Card services set to manual.
+for %%S in (SensorService SensrSvc SensorDataService) do (sc query "%%S" >nul 2>&1 && sc config "%%S" start= demand >nul 2>&1)
+echo     [12] Sensor services set to manual.
+sc query TabletInputService >nul 2>&1 && sc config TabletInputService start= demand >nul 2>&1
+echo     [13] Touch Keyboard/Handwriting set to manual.
+sc query SEMgrSvc >nul 2>&1 && sc config SEMgrSvc start= demand >nul 2>&1
+echo     [14] NFC/Payments manager set to manual.
+sc query WbioSrvc >nul 2>&1 && sc config WbioSrvc start= demand >nul 2>&1
+echo     [15] Biometric service set to manual.
+for %%S in (DPS WdiServiceHost WdiSystemHost) do (sc query "%%S" >nul 2>&1 && sc config "%%S" start= demand >nul 2>&1)
+echo     [16] Diagnostic services set to manual.
+sc query AJRouter >nul 2>&1 && sc config AJRouter start= disabled >nul 2>&1
+echo     [17] AllJoyn Router disabled.
+sc query TrkWks >nul 2>&1 && sc config TrkWks start= demand >nul 2>&1
+echo     [18] Distributed Link Tracking set to manual.
+sc query CscService >nul 2>&1 && sc config CscService start= demand >nul 2>&1
+echo     [19] Offline Files set to manual.
+sc query WMPNetworkSvc >nul 2>&1 && sc config WMPNetworkSvc start= disabled >nul 2>&1
+echo     [20] WMP Network Sharing disabled.
+sc query wisvc >nul 2>&1 && sc config wisvc start= demand >nul 2>&1
+echo     [21] Windows Insider service set to manual.
+
+:: ---- PRIVACY / TELEMETRY (extra) -------------------------------------------
+echo   Privacy:
+:: 22 Inking and typing personalization off
+reg add "HKCU\Software\Microsoft\InputPersonalization" /v RestrictImplicitInkCollection /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKCU\Software\Microsoft\InputPersonalization" /v RestrictImplicitTextCollection /t REG_DWORD /d 1 /f >nul 2>&1
+echo     [22] Inking/typing personalization disabled.
+:: 23 Online speech recognition data off
+reg add "HKCU\Software\Microsoft\Speech_OneCore\Settings\OnlineSpeechPrivacy" /v HasAccepted /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [23] Online speech data disabled.
+:: 24 Deny system-wide location access
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location" /v Value /t REG_SZ /d Deny /f >nul 2>&1
+echo     [24] System location access denied.
+:: 25 Find My Device off
+reg add "HKLM\SOFTWARE\Microsoft\PolicyManager\default\Settings\AllowFindMyDevice" /v value /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [25] Find My Device disabled.
+:: 26 Cloud clipboard / history off
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" /v AllowClipboardHistory /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" /v AllowCrossDeviceClipboard /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [26] Cloud clipboard/history disabled.
+:: 27 Diagtrack ETW autologger off
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\WMI\Autologger\AutoLogger-Diagtrack-Listener" /v Start /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [27] Diagtrack ETW logger disabled.
+:: 28 Feedback notifications off
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\DataCollection" /v DoNotShowFeedbackNotifications /t REG_DWORD /d 1 /f >nul 2>&1
+echo     [28] Feedback notifications disabled.
+:: 29 Bing/Cortana in search off
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Search" /v BingSearchEnabled /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Search" /v CortanaConsent /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [29] Bing/Cortana search disabled.
+:: 30 Online tips off
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Explorer" /v AllowOnlineTips /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [30] Online tips disabled.
+:: 31 Windows Media DRM internet access off
+reg add "HKLM\SOFTWARE\Policies\Microsoft\WMDRM" /v DisableOnline /t REG_DWORD /d 1 /f >nul 2>&1
+echo     [31] WMP DRM internet access disabled.
+
+:: ---- EXPLORER / UI SNAPPINESS ----------------------------------------------
+echo   Interface:
+:: 32 Classic context menu (Win11) - faster right click
+reg add "HKCU\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" /ve /t REG_SZ /d "" /f >nul 2>&1
+echo     [32] Classic right-click menu restored.
+:: 33 Quick Access recent/frequent off
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer" /v ShowRecent /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer" /v ShowFrequent /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [33] Quick Access history disabled.
+:: 34 Taskbar search box hidden
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Search" /v SearchboxTaskbarMode /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [34] Taskbar search box hidden.
+:: 35 Task View button hidden
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v ShowTaskViewButton /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [35] Task View button hidden.
+:: 36 Snap Assist flyout off
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v EnableSnapAssistFlyout /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [36] Snap Assist flyout disabled.
+:: 37 Explorer opens This PC
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v LaunchTo /t REG_DWORD /d 1 /f >nul 2>&1
+echo     [37] Explorer opens to This PC.
+:: 38 Apps can take foreground instantly
+reg add "HKCU\Control Panel\Desktop" /v ForegroundLockTimeout /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [38] Foreground lock timeout removed.
+:: 39 Autorun/Autoplay off on all drives
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" /v NoDriveTypeAutoRun /t REG_DWORD /d 255 /f >nul 2>&1
+echo     [39] Autorun/Autoplay disabled.
+:: 40 People bar off
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\People" /v PeopleBand /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [40] People bar disabled.
+
+:: ---- SCHEDULED TASKS + UPDATES ---------------------------------------------
+echo   Tasks and updates:
+:: 41 Disable extra telemetry/diagnostic scheduled tasks
+for %%T in (
+  "\Microsoft\Windows\Maintenance\WinSAT"
+  "\Microsoft\Windows\Application Experience\StartupAppTask"
+  "\Microsoft\Windows\Application Experience\PcaPatchDbTask"
+  "\Microsoft\Windows\Autochk\Proxy"
+  "\Microsoft\Windows\CloudExperienceHost\CreateObjectTask"
+  "\Microsoft\Windows\Power Efficiency Diagnostics\AnalyzeSystem"
+  "\Microsoft\Windows\DiskFootprint\Diagnostics"
+  "\Microsoft\Windows\Shell\FamilySafetyMonitor"
+) do schtasks /Change /TN %%T /Disable >nul 2>&1
+echo     [41] Extra diagnostic tasks disabled.
+:: 42 Edge auto-update tasks off
+for %%T in (MicrosoftEdgeUpdateTaskMachineCore MicrosoftEdgeUpdateTaskMachineUA) do schtasks /Change /TN "%%T" /Disable >nul 2>&1
+echo     [42] Edge auto-update tasks disabled.
+:: 43 Disable automatic driver updates via Windows Update (stable GPU driver)
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v ExcludeWUDriversInQualityUpdate /t REG_DWORD /d 1 /f >nul 2>&1
+echo     [43] Auto driver updates via WU disabled.
+:: 44 No auto-restart while users are logged on
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoRebootWithLoggedOnUsers /t REG_DWORD /d 1 /f >nul 2>&1
+echo     [44] WU auto-restart with users disabled.
+:: 45 Disable crash dump creation (faster recovery, saves disk)
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\CrashControl" /v CrashDumpEnabled /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [45] Crash dump creation disabled.
+:: 46 Disable GameBarPresenceWriter
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\GameDVR" /v AppCaptureEnabled /t REG_DWORD /d 0 /f >nul 2>&1
+taskkill /f /im GameBarPresenceWriter.exe >nul 2>&1
+echo     [46] GameBar presence writer disabled.
+
+:: ---- POWER / CPU FINE-TUNING -----------------------------------------------
+echo   Power fine-tuning:
+:: 47 Active system cooling (fan ramps before throttling)
+powercfg -setacvalueindex SCHEME_CURRENT SUB_PROCESSOR SYSCOOLPOL 0 >nul 2>&1
+echo     [47] Active system cooling policy set.
+:: 48 PCI Express ASPM off (max performance)
+powercfg -setacvalueindex SCHEME_CURRENT SUB_PCIEXPRESS ASPM 0 >nul 2>&1
+echo     [48] PCI Express power saving disabled.
+:: 49 Wake timers off
+powercfg -setacvalueindex SCHEME_CURRENT SUB_SLEEP bd3b718a-0680-4d9d-8ab2-e1d2b4ac806d 0 >nul 2>&1
+echo     [49] Wake timers disabled.
+:: 50 Maximum processor frequency unlimited
+powercfg -setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCFREQMAX 0 >nul 2>&1
+echo     [50] Processor frequency cap removed.
+:: 51 Reinforce USB selective-suspend off
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\USB" /v DisableSelectiveSuspend /t REG_DWORD /d 1 /f >nul 2>&1
+powercfg -setactive SCHEME_CURRENT >nul 2>&1
+echo     [51] USB selective suspend disabled.
+
+:: ---- MORE BLOAT / DISTRACTION REMOVAL --------------------------------------
+echo   Final debloat:
+:: 52 Faster Explorer folder loading (no auto folder-type discovery)
+reg add "HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags\AllFolders\Shell" /v FolderType /t REG_SZ /d NotSpecified /f >nul 2>&1
+echo     [52] Explorer folder auto-discovery disabled.
+:: 53 Windows Ink Workspace off
+reg add "HKLM\SOFTWARE\Policies\Microsoft\WindowsInkWorkspace" /v AllowWindowsInkWorkspace /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [53] Windows Ink Workspace disabled.
+:: 54 Shared Experiences / Nearby sharing off
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" /v EnableCdp /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [54] Shared Experiences disabled.
+:: 55 No app notifications on lock screen
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" /v NoToastApplicationNotificationOnLockScreen /t REG_DWORD /d 1 /f >nul 2>&1
+echo     [55] Lock-screen notifications disabled.
+:: 56 Suggested content in Settings off
+for %%V in (SubscribedContent-338393Enabled SubscribedContent-353694Enabled SubscribedContent-353696Enabled) do reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v %%V /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [56] Settings suggestions disabled.
+:: 57 Stop pre-installed / OEM suggested apps
+for %%V in (ContentDeliveryAllowed PreInstalledAppsEnabled OemPreInstalledAppsEnabled) do reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v %%V /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [57] Auto-installed suggested apps disabled.
+:: 58 Disable Spotlight collection on desktop
+reg add "HKCU\Software\Policies\Microsoft\Windows\CloudContent" /v DisableSpotlightCollectionOnDesktop /t REG_DWORD /d 1 /f >nul 2>&1
+echo     [58] Desktop Spotlight disabled.
+:: 59 Disable first-logon animation (faster login)
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableFirstLogonAnimation /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [59] First-logon animation disabled.
+:: 60 Hide recently added apps in Start
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Explorer" /v HideRecentlyAddedApps /t REG_DWORD /d 1 /f >nul 2>&1
+echo     [60] Recently-added apps hidden in Start.
+:: 61 Disable live-tile cloud notifications
+reg add "HKCU\Software\Policies\Microsoft\Windows\CurrentVersion\PushNotifications" /v NoCloudApplicationNotification /t REG_DWORD /d 1 /f >nul 2>&1
+echo     [61] Live-tile cloud notifications disabled.
+:: 62 Disable post-update "welcome / what's new" pages
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v SubscribedContent-310093Enabled /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [62] Post-update welcome pages disabled.
+:: 63 Disable OOBE "get even more out of Windows" nag
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v ScoobeSystemSettingEnabled /t REG_DWORD /d 0 /f >nul 2>&1
+echo     [63] OOBE upsell nag disabled.
+
+:: ---- GPU VENDOR-SPECIFIC (auto-applied to your GPU) ------------------------
+echo   GPU vendor:
+:: 64 NVIDIA telemetry off
+if /i "%GPU_VENDOR%"=="NVIDIA" (
+    powershell -NoProfile -Command "Get-ScheduledTask -TaskPath '\' -ErrorAction SilentlyContinue | Where-Object {$_.TaskName -like 'Nv*'} | Disable-ScheduledTask -ErrorAction SilentlyContinue" >nul 2>&1
+    sc query NvTelemetryContainer >nul 2>&1 && sc config NvTelemetryContainer start= demand >nul 2>&1
+    reg add "HKLM\SOFTWARE\NVIDIA Corporation\Global\FTS" /v EnableRID44231 /t REG_DWORD /d 0 /f >nul 2>&1
+    echo     [64] NVIDIA telemetry disabled.
+) else (
+    echo     [64] NVIDIA telemetry - skipped ^(no NVIDIA GPU^).
+)
+:: 65 AMD ULPS off (lower multi-GPU latency)
+if /i "%GPU_VENDOR%"=="AMD" (
+    powershell -NoProfile -Command "Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}' | Where-Object { $_.PSChildName -match '^\d{4}$' } | ForEach-Object { Set-ItemProperty -Path $_.PSPath -Name EnableUlps -Value 0 -ErrorAction SilentlyContinue }" >nul 2>&1
+    echo     [65] AMD ULPS disabled.
+) else (
+    echo     [65] AMD ULPS - skipped ^(no AMD GPU^).
+)
+echo.
+echo   65 more advanced tweaks applied.  TOTAL: 150 tweaks.
 echo.
 
 :: ===========================================================================
@@ -803,7 +1051,7 @@ echo     - Network tuned for low latency (Nagle off, throttling off)
 echo     - Visual effects set to best performance
 echo     - Background apps disabled, memory tuned for %RAM_GB% GB
 echo     - English (US) + Arabic keyboards installed (Alt+Shift to switch)
-echo     - 85 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
+echo     - 150 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
 echo       NTFS/SSD/pagefile tuning, mouse+keyboard latency, svchost grouping,
 echo       DNS 1.1.1.1, QoS/RSC/Winsock, DWM MPO off, Fast Startup off,
 echo       latency-sensitive games, debloat, and more.
