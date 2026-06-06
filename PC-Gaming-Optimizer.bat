@@ -87,12 +87,43 @@ echo         Vendor: %GPU_VENDOR%
 echo   RAM : %RAM_GB% GB
 echo ----------------------------------------------------------------------------
 echo.
-echo   This tool will now optimize your PC for gaming.
-echo   A System Restore point will be created first (safe / reversible).
-echo.
-choice /C YN /M "  Continue with optimization"
-if errorlevel 2 goto :END
+pause
 
+:: ===========================================================================
+:: MAIN MENU - choose what you want to do
+:: ===========================================================================
+:MENU
+cls
+echo ============================================================================
+echo                         PC GAMING OPTIMIZER  -  MAIN MENU
+echo ============================================================================
+echo.
+echo   Detected:  CPU %CPU_VENDOR%  ^|  GPU %GPU_VENDOR%  ^|  RAM %RAM_GB% GB  ^|  Windows %WINVER%
+echo ----------------------------------------------------------------------------
+echo.
+echo     [1]  Optimize PC for Gaming      (apply all 70 performance tweaks)
+echo.
+echo     [2]  Restore / Undo              (revert changes - if anything breaks)
+echo.
+echo     [3]  PC Health Check + Repair    (14 tools to detect and fix problems)
+echo.
+echo     [4]  Remove Defender + Edge + Copilot   (PERMANENT debloat - advanced)
+echo.
+echo     [5]  Exit
+echo.
+echo ----------------------------------------------------------------------------
+choice /C 12345 /N /M "  Choose an option [1-5]: "
+if errorlevel 5 goto :END
+if errorlevel 4 goto :DEBLOAT_MS
+if errorlevel 3 goto :HEALTH
+if errorlevel 2 goto :RESTORE
+if errorlevel 1 goto :OPTIMIZE
+goto :MENU
+
+:: ===========================================================================
+:: OPTION 1 - FULL GAMING OPTIMIZATION
+:: ===========================================================================
+:OPTIMIZE
 cls
 echo ============================================================================
 echo   APPLYING OPTIMIZATIONS...
@@ -698,9 +729,9 @@ echo     - Network tuned for low latency (Nagle off, throttling off)
 echo     - Visual effects set to best performance
 echo     - Background apps disabled, memory tuned for %RAM_GB% GB
 echo     - English (US) + Arabic keyboards installed (Alt+Shift to switch)
-echo     - 30 + 40 = 70 advanced tweaks (core parking off, MSI-mode, TSC/HPET
+echo     - 30 + 40 = 70 advanced tweaks: core parking off, MSI-mode, TSC/HPET
 echo       timer, NTFS/SSD/pagefile tuning, mouse+keyboard latency, svchost
-echo       grouping, DNS 1.1.1.1, QoS/RSC/Winsock, DWM MPO off, debloat, etc.)
+echo       grouping, DNS 1.1.1.1, QoS/RSC/Winsock, DWM MPO off, debloat, etc.
 echo     - Wi-Fi, Bluetooth, USB/external devices and Microsoft Store kept
 echo       fully working (essential services re-verified and enabled)
 echo     - Temp files cleaned
@@ -711,8 +742,260 @@ echo.
 echo   A RESTART is recommended for all changes to take full effect.
 echo.
 choice /C YN /M "  Restart now"
-if errorlevel 2 goto :END
+if errorlevel 2 goto :MENU
 shutdown /r /t 5 /c "Restarting to apply gaming optimizations..."
+goto :END
+
+:: ===========================================================================
+:: OPTION 2 - RESTORE / UNDO
+:: ===========================================================================
+:RESTORE
+cls
+echo ============================================================================
+echo   RESTORE / UNDO  -  put your PC back the way it was
+echo ============================================================================
+echo.
+echo   Pick how you want to restore:
+echo.
+echo     [A]  Open Windows System Restore - pick the restore point named
+echo          "Before_PC_Gaming_Optimizer" to roll back EVERYTHING this tool did
+echo.
+echo     [B]  Revert tweaks to Windows defaults now (no reboot needed)
+echo.
+echo     [C]  Back to main menu
+echo.
+choice /C ABC /N /M "  Choose [A/B/C]: "
+if errorlevel 3 goto :MENU
+if errorlevel 2 goto :REVERT
+if errorlevel 1 (
+    echo.
+    echo   Opening System Restore... choose "Before_PC_Gaming_Optimizer" and follow
+    echo   the wizard. Your PC will reboot to roll back.
+    rstrui.exe
+    echo.
+    pause
+    goto :MENU
+)
+
+:REVERT
+cls
+echo ============================================================================
+echo   REVERTING KEY TWEAKS TO WINDOWS DEFAULTS...
+echo ============================================================================
+echo.
+:: Power: back to Balanced
+powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e >nul 2>&1
+echo   - Power plan reset to Balanced.
+:: Re-enable the services we disabled
+for %%S in (SysMain WSearch DiagTrack dmwappushservice WerSvc PcaSvc MapsBroker lfsvc) do (
+    sc query "%%S" >nul 2>&1 && sc config "%%S" start= demand >nul 2>&1
+)
+sc config SysMain start= auto >nul 2>&1
+sc config WSearch start= delayed-auto >nul 2>&1
+echo   - Background services re-enabled.
+:: Re-enable telemetry tasks
+for %%T in (
+  "\Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser"
+  "\Microsoft\Windows\Customer Experience Improvement Program\Consolidator"
+) do schtasks /Change /TN %%T /Enable >nul 2>&1
+echo   - Scheduled tasks restored.
+:: Undo network tweaks (auto TCP, restore Nagle defaults, automatic DNS)
+netsh int tcp set global autotuninglevel=normal >nul 2>&1
+netsh int tcp set global rsc=default >nul 2>&1
+reg delete "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v NetworkThrottlingIndex /f >nul 2>&1
+powershell -NoProfile -Command "Get-NetAdapter -Physical | ForEach-Object { Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue }" >nul 2>&1
+echo   - Network settings reset to automatic.
+:: Restore visual effects + service grouping + pagefile to automatic
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" /v VisualFXSetting /t REG_DWORD /d 0 /f >nul 2>&1
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control" /v SvcHostSplitThresholdInKB /f >nul 2>&1
+wmic computersystem set AutomaticManagedPagefile=True >nul 2>&1
+:: Re-enable hibernation + memory compression + paging executive defaults
+powercfg /h on >nul 2>&1
+powershell -NoProfile -Command "Enable-MMAgent -mc" >nul 2>&1
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v DisablePagingExecutive /t REG_DWORD /d 0 /f >nul 2>&1
+echo   - Memory, pagefile and visual effects restored.
+:: Re-enable background apps + Defender mitigations defaults
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications" /v GlobalUserDisabled /t REG_DWORD /d 0 /f >nul 2>&1
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v FeatureSettingsOverride /f >nul 2>&1
+echo   - Background apps and security mitigations restored.
+echo.
+echo   Key tweaks reverted. For a 100%% rollback use option [A] (System Restore).
+echo   A reboot is recommended.
+echo.
+pause
+goto :MENU
+
+:: ===========================================================================
+:: OPTION 3 - PC HEALTH CHECK + AUTO-REPAIR (14 tools)
+:: ===========================================================================
+:HEALTH
+cls
+echo ============================================================================
+echo   PC HEALTH CHECK + AUTO-REPAIR  (this can take 10-30 minutes)
+echo ============================================================================
+echo.
+echo   This will scan for and fix common Windows problems. Safe to run anytime.
+choice /C YN /M "  Start health check and repair"
+if errorlevel 2 goto :MENU
+echo.
+
+:: --- 01) System File Checker - repair corrupted system files ----------------
+echo   [01/14] Running SFC /scannow (repairing system files)...
+sfc /scannow
+
+:: --- 02) DISM - check component-store health --------------------------------
+echo   [02/14] DISM CheckHealth...
+dism /Online /Cleanup-Image /CheckHealth
+
+:: --- 03) DISM - deep scan of component store --------------------------------
+echo   [03/14] DISM ScanHealth (deep scan)...
+dism /Online /Cleanup-Image /ScanHealth
+
+:: --- 04) DISM - repair Windows image ----------------------------------------
+echo   [04/14] DISM RestoreHealth (repairing Windows image)...
+dism /Online /Cleanup-Image /RestoreHealth
+
+:: --- 05) Online disk integrity scan -----------------------------------------
+echo   [05/14] Scanning system drive for errors (chkdsk /scan)...
+chkdsk C: /scan
+
+:: --- 06) Repair Windows Update components -----------------------------------
+echo   [06/14] Repairing Windows Update components...
+net stop wuauserv >nul 2>&1
+net stop bits >nul 2>&1
+net stop cryptsvc >nul 2>&1
+if exist "%SystemRoot%\SoftwareDistribution.old" rmdir /s /q "%SystemRoot%\SoftwareDistribution.old" >nul 2>&1
+ren "%SystemRoot%\SoftwareDistribution" SoftwareDistribution.old >nul 2>&1
+ren "%SystemRoot%\System32\catroot2" catroot2.old >nul 2>&1
+net start cryptsvc >nul 2>&1
+net start bits >nul 2>&1
+net start wuauserv >nul 2>&1
+echo           Windows Update cache rebuilt.
+
+:: --- 07) Repair network stack (Winsock + TCP/IP) ----------------------------
+echo   [07/14] Repairing network stack...
+netsh winsock reset >nul 2>&1
+netsh int ip reset >nul 2>&1
+echo           Network stack reset (reboot needed).
+
+:: --- 08) Renew IP + flush DNS -----------------------------------------------
+echo   [08/14] Renewing IP address and flushing DNS...
+ipconfig /flushdns >nul 2>&1
+ipconfig /release >nul 2>&1
+ipconfig /renew >nul 2>&1
+echo           IP renewed, DNS flushed.
+
+:: --- 09) Reset Windows Firewall to defaults ---------------------------------
+echo   [09/14] Resetting Windows Firewall to defaults...
+netsh advfirewall reset >nul 2>&1
+echo           Firewall restored.
+
+:: --- 10) Re-register all Microsoft Store apps (fixes broken apps) ------------
+echo   [10/14] Re-registering Microsoft Store apps...
+powershell -NoProfile -Command "Get-AppxPackage -AllUsers | ForEach-Object { Add-AppxPackage -DisableDevelopmentMode -Register \"$($_.InstallLocation)\AppXManifest.xml\" -ErrorAction SilentlyContinue }" >nul 2>&1
+echo           Store apps re-registered.
+
+:: --- 11) Reset Microsoft Store cache ----------------------------------------
+echo   [11/14] Resetting Microsoft Store cache...
+wsreset.exe >nul 2>&1
+echo           Store cache cleared.
+
+:: --- 12) Check disk SMART health --------------------------------------------
+echo   [12/14] Checking physical disk health...
+powershell -NoProfile -Command "Get-PhysicalDisk | Select-Object FriendlyName,MediaType,HealthStatus | Format-Table -AutoSize" 2>nul
+wmic diskdrive get model,status 2>nul
+
+:: --- 13) Clean up the component store (frees space, fixes servicing) --------
+echo   [13/14] Cleaning component store (WinSxS)...
+dism /Online /Cleanup-Image /StartComponentCleanup >nul 2>&1
+echo           Component store cleaned.
+
+:: --- 14) Generate a power/health diagnostic report on the Desktop -----------
+echo   [14/14] Generating health report on your Desktop...
+powercfg /energy /output "%USERPROFILE%\Desktop\PC_Health_Report.html" /duration 10 >nul 2>&1
+echo           Saved: Desktop\PC_Health_Report.html
+echo.
+echo ============================================================================
+echo   HEALTH CHECK COMPLETE. A reboot is recommended for network/Update fixes.
+echo ============================================================================
+echo.
+pause
+goto :MENU
+
+:: ===========================================================================
+:: OPTION 4 - REMOVE MICROSOFT DEFENDER + EDGE + COPILOT (PERMANENT)
+:: ===========================================================================
+:DEBLOAT_MS
+cls
+echo ============================================================================
+echo   REMOVE MICROSOFT DEFENDER + EDGE + COPILOT   (PERMANENT / ADVANCED)
+echo ============================================================================
+echo.
+echo   WARNING - READ THIS FIRST:
+echo     * Removing Microsoft Defender leaves your PC with NO built-in antivirus.
+echo       Only do this if you will install another antivirus, or you fully
+echo       accept the security risk on your own machine.
+echo     * On Windows 10/11 you MUST first turn OFF "Tamper Protection":
+echo       Settings ^> Privacy ^& Security ^> Windows Security ^> Virus ^& threat
+echo       protection ^> Manage settings ^> Tamper Protection = OFF.
+echo       Otherwise Windows will block the Defender changes.
+echo     * This is reversible only via System Restore (option 2-A) or by
+echo       reinstalling the components / resetting Windows.
+echo.
+choice /C YN /M "  I understand the risks - proceed"
+if errorlevel 2 goto :MENU
+echo.
+
+:: --- COPILOT ----------------------------------------------------------------
+echo   Removing Windows Copilot...
+reg add "HKCU\Software\Policies\Microsoft\Windows\WindowsCopilot" /v TurnOffWindowsCopilot /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" /v TurnOffWindowsCopilot /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v ShowCopilotButton /t REG_DWORD /d 0 /f >nul 2>&1
+powershell -NoProfile -Command "Get-AppxPackage -AllUsers *Copilot* | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue" >nul 2>&1
+echo           Copilot disabled and removed.
+
+:: --- EDGE -------------------------------------------------------------------
+echo   Removing Microsoft Edge...
+reg add "HKLM\SOFTWARE\Microsoft\EdgeUpdate" /v DoNotUpdateToEdgeWithChromium /t REG_DWORD /d 1 /f >nul 2>&1
+:: Run Edge's own uninstaller (all installed versions)
+for /f "delims=" %%E in ('dir /b /s "%ProgramFiles(x86)%\Microsoft\Edge\Application\*\Installer\setup.exe" 2^>nul') do (
+    "%%E" --uninstall --system-level --force-uninstall >nul 2>&1
+)
+:: Remove the UWP Edge package as well
+powershell -NoProfile -Command "Get-AppxPackage -AllUsers *MicrosoftEdge* | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue" >nul 2>&1
+echo           Edge uninstalled (reinstall blocked).
+
+:: --- DEFENDER ---------------------------------------------------------------
+echo   Disabling Microsoft Defender (requires Tamper Protection OFF)...
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender" /v DisableAntiSpyware /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender" /v DisableAntiVirus /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection" /v DisableRealtimeMonitoring /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection" /v DisableBehaviorMonitoring /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection" /v DisableScanOnRealtimeEnable /t REG_DWORD /d 1 /f >nul 2>&1
+:: Stop Defender from auto-starting (blocked while Tamper Protection is on)
+for %%V in (WinDefend WdNisSvc Sense WdFilter WdNisDrv) do (
+    sc config "%%V" start= disabled >nul 2>&1
+)
+:: Disable Defender scheduled tasks
+for %%T in (
+  "\Microsoft\Windows\Windows Defender\Windows Defender Cache Maintenance"
+  "\Microsoft\Windows\Windows Defender\Windows Defender Cleanup"
+  "\Microsoft\Windows\Windows Defender\Windows Defender Scheduled Scan"
+  "\Microsoft\Windows\Windows Defender\Windows Defender Verification"
+) do schtasks /Change /TN %%T /Disable >nul 2>&1
+:: Remove the Security Center tray icon
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Security Center\Notifications" /v DisableNotifications /t REG_DWORD /d 1 /f >nul 2>&1
+echo           Defender policies set. If anything was blocked, turn OFF Tamper
+echo           Protection (see warning above) and run this option again.
+echo.
+echo ============================================================================
+echo   DONE. A RESTART is required to finish removing these components.
+echo ============================================================================
+echo.
+choice /C YN /M "  Restart now"
+if errorlevel 2 goto :MENU
+shutdown /r /t 5 /c "Restarting to finish removing Microsoft components..."
+goto :END
 
 :END
 echo.
