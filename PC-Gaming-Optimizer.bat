@@ -101,21 +101,21 @@ echo.
 echo   Detected:  CPU %CPU_VENDOR%  ^|  GPU %GPU_VENDOR%  ^|  RAM %RAM_GB% GB  ^|  Windows %WINVER%
 echo ----------------------------------------------------------------------------
 echo.
-echo     [1]  Optimize PC for Gaming      (apply all 70 performance tweaks)
-echo.
-echo     [2]  Restore / Undo              (revert changes - if anything breaks)
-echo.
-echo     [3]  PC Health Check + Repair    (14 tools to detect and fix problems)
-echo.
-echo     [4]  Remove Defender + Edge + Copilot   (PERMANENT debloat - advanced)
-echo.
-echo     [5]  Exit
+echo     [1]  Optimize PC for Gaming        (full tweak - makes a restore point first)
+echo     [2]  Restore Last Restore Point     (roll Windows back if anything breaks)
+echo     [3]  Create Fresh Restore Point     (save current state on demand)
+echo     [4]  Live Monitor                   (CPU / GPU / RAM usage + temperature)
+echo     [5]  PC Health Check + Repair        (14 tools to detect and fix problems)
+echo     [6]  Remove Defender + Edge + Copilot (PERMANENT debloat - advanced)
+echo     [7]  Exit
 echo.
 echo ----------------------------------------------------------------------------
-choice /C 12345 /N /M "  Choose an option [1-5]: "
-if errorlevel 5 goto :END
-if errorlevel 4 goto :DEBLOAT_MS
-if errorlevel 3 goto :HEALTH
+choice /C 1234567 /N /M "  Choose an option [1-7]: "
+if errorlevel 7 goto :END
+if errorlevel 6 goto :DEBLOAT_MS
+if errorlevel 5 goto :HEALTH
+if errorlevel 4 goto :MONITOR
+if errorlevel 3 goto :NEWRP
 if errorlevel 2 goto :RESTORE
 if errorlevel 1 goto :OPTIMIZE
 goto :MENU
@@ -141,10 +141,8 @@ echo.
 :: ---------------------------------------------------------------------------
 :: 4) CREATE A SYSTEM RESTORE POINT (safety net)
 :: ---------------------------------------------------------------------------
-echo  [ 1/12] Creating System Restore point...
-powershell -NoProfile -Command "Enable-ComputerRestore -Drive 'C:\'" >nul 2>&1
-reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore" /v SystemRestorePointCreationFrequency /t REG_DWORD /d 0 /f >nul 2>&1
-powershell -NoProfile -Command "Checkpoint-Computer -Description 'Before_PC_Gaming_Optimizer' -RestorePointType 'MODIFY_SETTINGS'" >nul 2>&1
+echo  [ 1/12] Creating System Restore point (automatic safety net)...
+call :MAKE_RP "Before_PC_Gaming_Optimizer"
 echo         Done.
 echo.
 
@@ -655,6 +653,82 @@ echo   40 more advanced tweaks applied.
 echo.
 
 :: ===========================================================================
+:: 14B2) BONUS PACK 3: 15 MORE ADVANCED TWEAKS
+:: ===========================================================================
+echo ============================================================================
+echo   APPLYING 15 MORE ADVANCED TWEAKS...
+echo ============================================================================
+echo.
+
+:: --- 01) Disable Fast Startup (cleaner boot, no leftover state) -------------
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power" /v HiberbootEnabled /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [01] Fast Startup disabled.
+
+:: --- 02) Disable Large System Cache (better for games) ----------------------
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v LargeSystemCache /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [02] Large System Cache disabled.
+
+:: --- 03) Mark Games as latency-sensitive with a high clock rate ------------
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v "Latency Sensitive" /t REG_SZ /d "True" /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v "Background Only" /t REG_SZ /d "False" /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v "Clock Rate" /t REG_DWORD /d 10000 /f >nul 2>&1
+echo   [03] Games marked latency-sensitive.
+
+:: --- 04) Extra GPU stability (TDR DDI delay) --------------------------------
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" /v TdrDdiDelay /t REG_DWORD /d 10 /f >nul 2>&1
+echo   [04] GPU TDR DDI delay raised.
+
+:: --- 05) Disable Windows Spotlight lock-screen ads --------------------------
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v RotatingLockScreenEnabled /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" /v RotatingLockScreenOverlayEnabled /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [05] Lock-screen Spotlight ads disabled.
+
+:: --- 06) Disable Explorer sync-provider ads ---------------------------------
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v ShowSyncProviderNotifications /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [06] Explorer ad notifications disabled.
+
+:: --- 07) Stop Start menu app/document tracking ------------------------------
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v Start_TrackProgs /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v Start_TrackDocs /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [07] Start menu tracking disabled.
+
+:: --- 08) Disable cloud consumer features / auto-installed apps --------------
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\CloudContent" /v DisableWindowsConsumerFeatures /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\CloudContent" /v DisableSoftLanding /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [08] Cloud consumer features disabled.
+
+:: --- 09) Stop Windows from juggling the default printer ---------------------
+reg add "HKCU\Software\Microsoft\Windows NT\CurrentVersion\Windows" /v LegacyDefaultPrinterMode /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [09] Default-printer auto-switching disabled.
+
+:: --- 10) Disable Aero Shake (minimize distraction) --------------------------
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v DisallowShaking /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [10] Aero Shake disabled.
+
+:: --- 11) Disable taskbar animations -----------------------------------------
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v TaskbarAnimations /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [11] Taskbar animations disabled.
+
+:: --- 12) Delivery Optimization service to manual ----------------------------
+sc query DoSvc >nul 2>&1 && sc config DoSvc start= demand >nul 2>&1
+echo   [12] Delivery Optimization set to manual.
+
+:: --- 13) Connected Devices Platform service to manual -----------------------
+sc query CDPSvc >nul 2>&1 && sc config CDPSvc start= demand >nul 2>&1
+echo   [13] Connected Devices Platform set to manual.
+
+:: --- 14) Disable low-disk-space nag popups ----------------------------------
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" /v NoLowDiskSpaceChecks /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [14] Low-disk-space popups disabled.
+
+:: --- 15) Disable Push-To-Install (silent remote app installs) ---------------
+sc query PushToInstall >nul 2>&1 && sc config PushToInstall start= disabled >nul 2>&1
+echo   [15] Push-To-Install service disabled.
+echo.
+echo   15 more advanced tweaks applied.  Total: 85 tweaks.
+echo.
+
+:: ===========================================================================
 :: 14C) GUARANTEE CONNECTIVITY + DEVICES + MICROSOFT STORE KEEP WORKING
 ::      None of the tweaks above disable these; this section makes 100%% sure
 ::      Wi-Fi, Bluetooth, USB/external devices, audio and the Store still work.
@@ -729,9 +803,10 @@ echo     - Network tuned for low latency (Nagle off, throttling off)
 echo     - Visual effects set to best performance
 echo     - Background apps disabled, memory tuned for %RAM_GB% GB
 echo     - English (US) + Arabic keyboards installed (Alt+Shift to switch)
-echo     - 30 + 40 = 70 advanced tweaks: core parking off, MSI-mode, TSC/HPET
-echo       timer, NTFS/SSD/pagefile tuning, mouse+keyboard latency, svchost
-echo       grouping, DNS 1.1.1.1, QoS/RSC/Winsock, DWM MPO off, debloat, etc.
+echo     - 85 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
+echo       NTFS/SSD/pagefile tuning, mouse+keyboard latency, svchost grouping,
+echo       DNS 1.1.1.1, QoS/RSC/Winsock, DWM MPO off, Fast Startup off,
+echo       latency-sensitive games, debloat, and more.
 echo     - Wi-Fi, Bluetooth, USB/external devices and Microsoft Store kept
 echo       fully working (essential services re-verified and enabled)
 echo     - Temp files cleaned
@@ -747,32 +822,45 @@ shutdown /r /t 5 /c "Restarting to apply gaming optimizations..."
 goto :END
 
 :: ===========================================================================
-:: OPTION 2 - RESTORE / UNDO
+:: OPTION 2 - RESTORE LAST RESTORE POINT
 :: ===========================================================================
 :RESTORE
 cls
 echo ============================================================================
-echo   RESTORE / UNDO  -  put your PC back the way it was
+echo   RESTORE LAST RESTORE POINT  -  roll your PC back
 echo ============================================================================
+echo.
+echo   Available restore points (newest at the bottom):
+echo ----------------------------------------------------------------------------
+powershell -NoProfile -Command "Get-ComputerRestorePoint | Sort-Object SequenceNumber | Format-Table SequenceNumber,@{N='Date';E={$_.ConvertToDateTime($_.CreationTime)}},Description -AutoSize" 2>nul
+echo ----------------------------------------------------------------------------
 echo.
 echo   Pick how you want to restore:
 echo.
-echo     [A]  Open Windows System Restore - pick the restore point named
-echo          "Before_PC_Gaming_Optimizer" to roll back EVERYTHING this tool did
+echo     [A]  Restore the LAST (most recent) restore point now and REBOOT
+echo     [B]  Open System Restore to pick a point manually
+echo     [C]  Revert just this tool's tweaks to defaults (no reboot)
+echo     [D]  Back to main menu
 echo.
-echo     [B]  Revert tweaks to Windows defaults now (no reboot needed)
-echo.
-echo     [C]  Back to main menu
-echo.
-choice /C ABC /N /M "  Choose [A/B/C]: "
-if errorlevel 3 goto :MENU
-if errorlevel 2 goto :REVERT
-if errorlevel 1 (
+choice /C ABCD /N /M "  Choose [A/B/C/D]: "
+if errorlevel 4 goto :MENU
+if errorlevel 3 goto :REVERT
+if errorlevel 2 (
     echo.
-    echo   Opening System Restore... choose "Before_PC_Gaming_Optimizer" and follow
-    echo   the wizard. Your PC will reboot to roll back.
+    echo   Opening System Restore... pick a point and follow the wizard.
     rstrui.exe
     echo.
+    pause
+    goto :MENU
+)
+if errorlevel 1 (
+    echo.
+    echo   This will roll Windows back to the most recent restore point and
+    echo   automatically REBOOT. Open programs will close.
+    choice /C YN /M "   Restore the last restore point now"
+    if errorlevel 2 goto :MENU
+    echo   Restoring... your PC will reboot shortly.
+    powershell -NoProfile -Command "$rp = Get-ComputerRestorePoint | Sort-Object SequenceNumber | Select-Object -Last 1; if ($rp) { Restore-Computer -RestorePoint $rp.SequenceNumber -Confirm:$false } else { Write-Host '  No restore points found - nothing to restore.'; Start-Sleep 3 }"
     pause
     goto :MENU
 )
@@ -997,6 +1085,52 @@ if errorlevel 2 goto :MENU
 shutdown /r /t 5 /c "Restarting to finish removing Microsoft components..."
 goto :END
 
+:: ===========================================================================
+:: OPTION 3 - CREATE A FRESH RESTORE POINT ON DEMAND
+:: ===========================================================================
+:NEWRP
+cls
+echo ============================================================================
+echo   CREATE A FRESH RESTORE POINT
+echo ============================================================================
+echo.
+echo   This saves the current state of Windows so you can roll back to it later
+echo   from option [2]. Recommended before installing drivers or new software.
+echo.
+choice /C YN /M "  Create a restore point now"
+if errorlevel 2 goto :MENU
+echo.
+echo   Creating restore point, please wait...
+for /f "tokens=2 delims==" %%t in ('wmic os get LocalDateTime /value 2^>nul ^| find "="') do set "STAMP=%%t"
+set "RPNAME=Manual_%STAMP:~0,8%_%STAMP:~8,6%"
+call :MAKE_RP "%RPNAME%"
+echo.
+echo   Restore point created: %RPNAME%
+echo   You can roll back to it anytime from menu option [2].
+echo.
+pause
+goto :MENU
+
+:: ===========================================================================
+:: OPTION 4 - LIVE MONITOR (CPU / GPU / RAM usage + temperature)
+:: ===========================================================================
+:MONITOR
+cls
+echo ============================================================================
+echo   LIVE MONITOR   -   CPU / GPU / RAM usage and temperature
+echo ============================================================================
+echo.
+powershell -NoProfile -Command "$cpu=(Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average; $os=Get-CimInstance Win32_OperatingSystem; $used=$os.TotalVisibleMemorySize-$os.FreePhysicalMemory; $rp=[math]::Round(($used/$os.TotalVisibleMemorySize)*100,0); $rg=[math]::Round($used/1MB,1); $tg=[math]::Round($os.TotalVisibleMemorySize/1MB,1); $gpu='N/A'; try{$s=(Get-Counter '\GPU Engine(*engtype_3D)\Utilization Percentage' -EA Stop).CounterSamples; $gpu=[math]::Round((($s | Measure-Object CookedValue -Sum).Sum),0)}catch{}; $ct='N/A'; try{$t=Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature -EA Stop | Select-Object -First 1; $ct=[math]::Round((($t.CurrentTemperature/10)-273.15),1)}catch{}; $gt='N/A'; if(Get-Command nvidia-smi -EA SilentlyContinue){try{$gt=((nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits) | Select-Object -First 1).Trim()}catch{}}; Write-Host ('   CPU Load   : {0,5} %%' -f $cpu); Write-Host ('   RAM Usage  : {0,5} %%    {1} of {2} GB used' -f $rp,$rg,$tg); Write-Host ('   GPU Usage  : {0,5} %%' -f $gpu); Write-Host ('   CPU Temp   : {0,5} C' -f $ct); Write-Host ('   GPU Temp   : {0,5} C' -f $gt)"
+echo.
+echo ----------------------------------------------------------------------------
+echo   Note: CPU temp needs motherboard WMI support; GPU temp needs an NVIDIA
+echo   card with nvidia-smi. "N/A" means your hardware does not expose it here.
+echo.
+echo   Auto-refreshes every 3 seconds.  Press Q to return to the menu.
+choice /C QR /N /T 3 /D R >nul
+if errorlevel 2 goto :MONITOR
+goto :MENU
+
 :END
 echo.
 echo   Exiting. Enjoy your optimized PC!  Game on.
@@ -1004,3 +1138,12 @@ echo.
 pause
 endlocal
 exit /b 0
+
+:: ===========================================================================
+:: SUBROUTINE - create a System Restore point.  Usage: call :MAKE_RP "Name"
+:: ===========================================================================
+:MAKE_RP
+powershell -NoProfile -Command "Enable-ComputerRestore -Drive 'C:\'" >nul 2>&1
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore" /v SystemRestorePointCreationFrequency /t REG_DWORD /d 0 /f >nul 2>&1
+powershell -NoProfile -Command "Checkpoint-Computer -Description '%~1' -RestorePointType 'MODIFY_SETTINGS'" >nul 2>&1
+goto :eof
