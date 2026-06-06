@@ -137,11 +137,13 @@ echo     [3]  Create Fresh Restore Point     (save current state on demand)
 echo     [4]  Live Monitor                   (CPU / GPU / RAM usage + temperature)
 echo     [5]  PC Health Check + Repair        (14 tools to detect and fix problems)
 echo     [6]  Remove Defender/Edge/Copilot + Disable Win Update (PERMANENT)
-echo     [7]  Exit
+echo     [7]  Fix Tamper Protection toggle    (unlock greyed-out Windows Security)
+echo     [8]  Exit
 echo.
 echo ----------------------------------------------------------------------------
-choice /C 1234567 /N /M "  Choose an option [1-7]: "
-if errorlevel 7 goto :END
+choice /C 12345678 /N /M "  Choose an option [1-8]: "
+if errorlevel 8 goto :END
+if errorlevel 7 goto :FIXTP
 if errorlevel 6 goto :DEBLOAT_MS
 if errorlevel 5 goto :HEALTH
 if errorlevel 4 goto :MONITOR
@@ -1679,6 +1681,56 @@ echo.
 echo   Auto-refreshes every 10 seconds.  Press R to refresh now, or Q to quit.
 choice /C QR /N /T 10 /D R >nul
 if errorlevel 2 goto :MONITOR
+goto :MENU
+
+:: ===========================================================================
+:: OPTION 7 - FIX TAMPER PROTECTION / UNLOCK WINDOWS SECURITY TOGGLE
+:: ===========================================================================
+:FIXTP
+cls
+echo ============================================================================
+echo   FIX TAMPER PROTECTION / WINDOWS SECURITY TOGGLE
+echo ============================================================================
+echo.
+echo   No script can switch Tamper Protection off - Microsoft blocks that by
+echo   design. But if the toggle is GREYED OUT or says "managed by your
+echo   organization", a policy is locking the Windows Security app. This option
+echo   removes those policy locks (including ones a previous run may have set)
+echo   so the toggle becomes usable again. Then you turn it off by hand.
+echo.
+choice /C YN /N /M "  Remove the policy locks now? [Y/N]: "
+if errorlevel 2 goto :MENU
+echo.
+echo   Removing Defender / Security Center policy locks...
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender" /f >nul 2>&1
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender Security Center" /f >nul 2>&1
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows Advanced Threat Protection" /f >nul 2>&1
+:: Re-enable the Security Center + Health services so the app works again
+sc config wscsvc start= auto >nul 2>&1
+sc start wscsvc >nul 2>&1
+sc config SecurityHealthService start= demand >nul 2>&1
+:: Restore the Defender services to their defaults so the UI is normal
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\WinDefend" /v Start /t REG_DWORD /d 2 /f >nul 2>&1
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\wscsvc" /v Start /t REG_DWORD /d 2 /f >nul 2>&1
+:: Bring back the Windows Security app if it was removed
+powershell -NoProfile -Command "Get-AppxPackage -AllUsers *SecHealthUI* | ForEach-Object { Add-AppxPackage -DisableDevelopmentMode -Register \"$($_.InstallLocation)\AppXManifest.xml\" -ErrorAction SilentlyContinue }" >nul 2>&1
+echo   Done.
+echo.
+echo   ----------------------------------------------------------------------
+echo   NEXT STEPS (do these by hand - they cannot be scripted):
+echo     1. RESTART your PC now.
+echo     2. Open  Windows Security ^> Virus ^& threat protection ^>
+echo        Manage settings.
+echo     3. The Tamper Protection toggle should no longer be greyed out -
+echo        switch it OFF.
+echo     4. Run option [6] again to fully remove Defender.
+echo   ----------------------------------------------------------------------
+echo.
+echo   If the toggle is STILL greyed out after this, your PC is managed by a
+echo   work/school account or third-party security software - in that case
+echo   only the account owner / that software can disable it.
+echo.
+pause
 goto :MENU
 
 :END
