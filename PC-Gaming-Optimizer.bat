@@ -1409,14 +1409,39 @@ choice /C YN /N /M "  I understand the risks - proceed? [Y/N]: "
 if errorlevel 2 goto :MENU
 echo.
 
+:: --- TAMPER PROTECTION CHECK (this is what blocks Defender removal) ----------
+echo   Checking Tamper Protection status...
+set "TP=Unknown"
+powershell -NoProfile -Command "(Get-MpComputerStatus).IsTamperProtected" > "%TEMP%\_pco_tp.txt" 2>nul
+set /p TP=<"%TEMP%\_pco_tp.txt"
+del "%TEMP%\_pco_tp.txt" >nul 2>&1
+if /i "%TP%"=="True" (
+    echo.
+    echo   ##########################################################################
+    echo   #  TAMPER PROTECTION IS ON. Windows will BLOCK every Defender change.    #
+    echo   #  There is NO script that can bypass this - it is by design.            #
+    echo   #  Turn it OFF first:  Settings ^> Privacy ^& Security ^> Windows Security  #
+    echo   #  ^> Virus ^& threat protection ^> Manage settings ^> Tamper Protection OFF #
+    echo   #  Then run this option again to remove Defender.                        #
+    echo   ##########################################################################
+    echo.
+    echo   Edge, Copilot, OneDrive and Windows Update can still be removed now.
+    choice /C CS /N /M "  [C]ontinue with the rest, or [S]top and fix Tamper first: "
+    if errorlevel 2 goto :MENU
+    echo.
+)
+
 :: --- COPILOT ----------------------------------------------------------------
 echo   Removing Windows Copilot...
 reg add "HKCU\Software\Policies\Microsoft\Windows\WindowsCopilot" /v TurnOffWindowsCopilot /t REG_DWORD /d 1 /f >nul 2>&1
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" /v TurnOffWindowsCopilot /t REG_DWORD /d 1 /f >nul 2>&1
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v ShowCopilotButton /t REG_DWORD /d 0 /f >nul 2>&1
-reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Explorer" /v DisableSearchBoxSuggestions /t REG_DWORD /d 1 /f >nul 2>&1
-powershell -NoProfile -Command "Get-AppxPackage -AllUsers *Copilot* | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue" >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot" /v AllowCopilotRuntime /t REG_DWORD /d 0 /f >nul 2>&1
+taskkill /f /im Copilot.exe >nul 2>&1
+taskkill /f /im ai.exe >nul 2>&1
+powershell -NoProfile -Command "Get-AppxPackage -AllUsers '*Copilot*','Microsoft.Copilot','MicrosoftWindows.Client.CoPilot' | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue" >nul 2>&1
 powershell -NoProfile -Command "Get-AppxProvisionedPackage -Online | Where-Object {$_.DisplayName -like '*Copilot*'} | ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue }" >nul 2>&1
+powershell -NoProfile -Command "winget uninstall --id Microsoft.Copilot --silent --accept-source-agreements" >nul 2>&1
 echo           Copilot disabled and removed.
 
 :: --- EDGE -------------------------------------------------------------------
@@ -1429,6 +1454,16 @@ for /f "delims=" %%E in ('dir /b /s "%ProgramFiles(x86)%\Microsoft\Edge\Applicat
 for /f "delims=" %%E in ('dir /b /s "%LocalAppData%\Microsoft\Edge\Application\*\Installer\setup.exe" 2^>nul') do "%%E" --uninstall --force-uninstall >nul 2>&1
 powershell -NoProfile -Command "Get-AppxPackage -AllUsers *MicrosoftEdge* | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue" >nul 2>&1
 echo           Edge uninstalled (reinstall blocked).
+
+:: --- ONEDRIVE ---------------------------------------------------------------
+echo   Removing OneDrive...
+taskkill /f /im OneDrive.exe >nul 2>&1
+if exist "%SystemRoot%\System32\OneDriveSetup.exe" "%SystemRoot%\System32\OneDriveSetup.exe" /uninstall >nul 2>&1
+if exist "%SystemRoot%\SysWOW64\OneDriveSetup.exe" "%SystemRoot%\SysWOW64\OneDriveSetup.exe" /uninstall >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\OneDrive" /v DisableFileSyncNGSC /t REG_DWORD /d 1 /f >nul 2>&1
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v OneDrive /f >nul 2>&1
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v OneDriveSetup /f >nul 2>&1
+echo           OneDrive uninstalled.
 
 :: --- DEFENDER ---------------------------------------------------------------
 echo   Disabling Microsoft Defender (needs Tamper Protection OFF first)...
@@ -1470,6 +1505,14 @@ for %%T in (
   "\Microsoft\Windows\UpdateOrchestrator\Schedule Scan Static Task"
 ) do schtasks /Change /TN %%T /Disable >nul 2>&1
 echo           Windows Update disabled (re-enable from option 2 or by resetting).
+echo.
+echo   ---- VERIFICATION (what is still present right now) ----------------------
+powershell -NoProfile -Command "$rt=try{(Get-MpComputerStatus).RealTimeProtectionEnabled}catch{'unknown'}; Write-Host ('     Defender real-time still ON : ' + $rt); Write-Host ('     Edge still installed        : ' + (Test-Path (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'))); Write-Host ('     OneDrive still installed    : ' + (Test-Path (Join-Path $env:LOCALAPPDATA 'Microsoft\OneDrive\OneDrive.exe'))); Write-Host ('     Copilot package present     : ' + [bool](Get-AppxPackage *Copilot* -ErrorAction SilentlyContinue))"
+echo   --------------------------------------------------------------------------
+echo.
+echo   If "Defender real-time still ON" shows True, Tamper Protection is blocking
+echo   it - turn Tamper Protection OFF and run this option again. That is a
+echo   Windows restriction, not a fault in this tool.
 echo.
 echo ============================================================================
 echo   DONE. A RESTART is required to finish removing these components.
