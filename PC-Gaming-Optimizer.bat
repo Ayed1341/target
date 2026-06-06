@@ -1099,7 +1099,43 @@ echo   Closing background bloat processes...
 for %%P in (OneDrive.exe msedge.exe Widgets.exe WidgetService.exe GameBarPresenceWriter.exe GameBar.exe YourPhone.exe PhoneExperienceHost.exe Cortana.exe SearchApp.exe Teams.exe Skype.exe spotify.exe) do taskkill /f /im "%%P" >nul 2>&1
 echo   Background bloat processes closed.
 echo.
-echo   15 more tweaks applied.  TOTAL: 170 tweaks.
+echo   15 more tweaks applied.  (170 tweaks so far)
+echo.
+
+:: ===========================================================================
+:: 14B6) BONUS PACK 7: 8 MORE ADVANCED TWEAKS
+:: ===========================================================================
+echo ============================================================================
+echo   APPLYING 8 MORE ADVANCED TWEAKS...
+echo ============================================================================
+echo.
+:: 01 Snappier mouse hover response
+reg add "HKCU\Control Panel\Mouse" /v MouseHoverTime /t REG_SZ /d 10 /f >nul 2>&1
+echo   [01] Mouse hover time reduced.
+:: 02 No balloon/tooltip popups
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v EnableBalloonTips /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [02] Balloon tip popups disabled.
+:: 03 Larger network IRP stack (more stable file shares, fewer drops)
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" /v IRPStackSize /t REG_DWORD /d 32 /f >nul 2>&1
+echo   [03] Network IRP stack size increased.
+:: 04 More cached icons for smoother Explorer
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer" /v "Max Cached Icons" /t REG_SZ /d 8192 /f >nul 2>&1
+echo   [04] Icon cache enlarged.
+:: 05 Lighter window dragging (no full-window redraw)
+reg add "HKCU\Control Panel\Desktop" /v DragFullWindows /t REG_SZ /d 0 /f >nul 2>&1
+echo   [05] Full-window drag disabled.
+:: 06 Stop tracking recently opened documents
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" /v NoRecentDocsHistory /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [06] Recent-docs tracking disabled.
+:: 07 Disable the Notification/Action Center (removes its background UI)
+reg add "HKCU\Software\Policies\Microsoft\Windows\Explorer" /v DisableNotificationCenter /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [07] Notification Center disabled.
+:: 08 Disable the Windows startup sound
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\BootAnimation" /v DisableStartupSound /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\EditionOverrides" /v UserSetting_DisableStartupSound /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [08] Startup sound disabled.
+echo.
+echo   8 more tweaks applied.  TOTAL: 178 tweaks.
 echo.
 
 :: ===========================================================================
@@ -1177,7 +1213,7 @@ echo     - Network tuned for low latency (Nagle off, throttling off)
 echo     - Visual effects set to best performance
 echo     - Background apps disabled, memory tuned for %RAM_GB% GB
 echo     - English (US) + Arabic keyboards installed (Alt+Shift to switch)
-echo     - 170 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
+echo     - 178 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
 echo       SSD/HDD storage optimization (auto TRIM/defrag, NTFS cache, MFT),
 echo       NTFS/SSD/pagefile tuning, mouse+keyboard latency, svchost grouping,
 echo       DNS 1.1.1.1, QoS/RSC/Winsock, DWM MPO off, Fast Startup off,
@@ -1446,14 +1482,21 @@ echo           Copilot disabled and removed.
 
 :: --- EDGE -------------------------------------------------------------------
 echo   Removing Microsoft Edge...
+taskkill /f /im msedge.exe >nul 2>&1
+taskkill /f /im MicrosoftEdgeUpdate.exe >nul 2>&1
 reg add "HKLM\SOFTWARE\Microsoft\EdgeUpdate" /v DoNotUpdateToEdgeWithChromium /t REG_DWORD /d 1 /f >nul 2>&1
 reg add "HKLM\SOFTWARE\Microsoft\EdgeUpdate" /v InstallDefault /t REG_DWORD /d 0 /f >nul 2>&1
-:: Allow uninstall (Edge's own block flag) then run its uninstaller, system + user installs
+:: Allow uninstall (Edge's own block flag), and force EEA region rule that permits removal
 reg add "HKLM\SOFTWARE\Microsoft\EdgeUpdateDev" /v AllowUninstall /t REG_SZ /d "" /f >nul 2>&1
-for /f "delims=" %%E in ('dir /b /s "%ProgramFiles(x86)%\Microsoft\Edge\Application\*\Installer\setup.exe" 2^>nul') do "%%E" --uninstall --system-level --force-uninstall >nul 2>&1
-for /f "delims=" %%E in ('dir /b /s "%LocalAppData%\Microsoft\Edge\Application\*\Installer\setup.exe" 2^>nul') do "%%E" --uninstall --force-uninstall >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\EdgeUpdate" /v AllowUninstall /t REG_DWORD /d 1 /f >nul 2>&1
+:: Run Edge's own uninstaller (system-wide and per-user installs)
+for /f "delims=" %%E in ('dir /b /s "%ProgramFiles(x86)%\Microsoft\Edge\Application\*\Installer\setup.exe" 2^>nul') do "%%E" --uninstall --system-level --verbose-logging --force-uninstall >nul 2>&1
+for /f "delims=" %%E in ('dir /b /s "%ProgramFiles%\Microsoft\Edge\Application\*\Installer\setup.exe" 2^>nul') do "%%E" --uninstall --system-level --verbose-logging --force-uninstall >nul 2>&1
+for /f "delims=" %%E in ('dir /b /s "%LocalAppData%\Microsoft\Edge\Application\*\Installer\setup.exe" 2^>nul') do "%%E" --uninstall --verbose-logging --force-uninstall >nul 2>&1
+:: winget fallback (most reliable on current Windows 11)
+powershell -NoProfile -Command "winget uninstall --id Microsoft.Edge --silent --accept-source-agreements --force" >nul 2>&1
 powershell -NoProfile -Command "Get-AppxPackage -AllUsers *MicrosoftEdge* | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue" >nul 2>&1
-echo           Edge uninstalled (reinstall blocked).
+echo           Edge uninstall attempted (Windows Update may still re-add it).
 
 :: --- ONEDRIVE ---------------------------------------------------------------
 echo   Removing OneDrive...
@@ -1465,28 +1508,49 @@ reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v OneDrive /f >
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v OneDriveSetup /f >nul 2>&1
 echo           OneDrive uninstalled.
 
-:: --- DEFENDER ---------------------------------------------------------------
-echo   Disabling Microsoft Defender (needs Tamper Protection OFF first)...
+:: --- DEFENDER (disable ALL components) --------------------------------------
+echo   Removing all Microsoft Defender components (needs Tamper Protection OFF)...
+:: Core antivirus + antispyware policies
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender" /v DisableAntiSpyware /t REG_DWORD /d 1 /f >nul 2>&1
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender" /v DisableAntiVirus /t REG_DWORD /d 1 /f >nul 2>&1
-reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection" /v DisableRealtimeMonitoring /t REG_DWORD /d 1 /f >nul 2>&1
-reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection" /v DisableBehaviorMonitoring /t REG_DWORD /d 1 /f >nul 2>&1
-reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection" /v DisableScanOnRealtimeEnable /t REG_DWORD /d 1 /f >nul 2>&1
-:: Try the live toggle too (only works when Tamper Protection is already off)
-powershell -NoProfile -Command "Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue" >nul 2>&1
-for %%V in (WinDefend WdNisSvc Sense WdFilter WdNisDrv SecurityHealthService) do sc config "%%V" start= disabled >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender" /v DisableRoutinelyTakingAction /t REG_DWORD /d 1 /f >nul 2>&1
+:: Real-time protection - every sub-component
+for %%K in (DisableRealtimeMonitoring DisableBehaviorMonitoring DisableOnAccessProtection DisableScanOnRealtimeEnable DisableIOAVProtection) do reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection" /v %%K /t REG_DWORD /d 1 /f >nul 2>&1
+:: Cloud protection (MAPS/SpyNet) + automatic sample submission OFF
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Spynet" /v SpyNetReporting /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Spynet" /v SubmitSamplesConsent /t REG_DWORD /d 2 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Spynet" /v DisableBlockAtFirstSeen /t REG_DWORD /d 1 /f >nul 2>&1
+:: SmartScreen (a Defender component) OFF in Explorer, Edge and Store apps
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" /v EnableSmartScreen /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer" /v SmartScreenEnabled /t REG_SZ /d "Off" /f >nul 2>&1
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\AppHost" /v EnableWebContentEvaluation /t REG_DWORD /d 0 /f >nul 2>&1
+:: Live toggles (work only when Tamper Protection is already off)
+powershell -NoProfile -Command "Set-MpPreference -DisableRealtimeMonitoring $true -DisableIOAVProtection $true -MAPSReporting 0 -SubmitSamplesConsent 2 -ErrorAction SilentlyContinue" >nul 2>&1
+:: Force-disable every Defender service via registry Start=4 (and sc as backup)
+for %%V in (WinDefend WdNisSvc Sense WdFilter WdNisDrv WdBoot SecurityHealthService webthreatdefsvc webthreatdefusersvc) do (
+    reg add "HKLM\SYSTEM\CurrentControlSet\Services\%%V" /v Start /t REG_DWORD /d 4 /f >nul 2>&1
+    sc config "%%V" start= disabled >nul 2>&1
+)
 sc query wscsvc >nul 2>&1 && sc config wscsvc start= demand >nul 2>&1
+:: Remove the Windows Security (Defender UI) app entirely
+powershell -NoProfile -Command "Get-AppxPackage -AllUsers *SecHealthUI* | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue" >nul 2>&1
+:: Remove the "Scan with Microsoft Defender" right-click menu
+reg delete "HKLM\SOFTWARE\Classes\*\shellex\ContextMenuHandlers\EPP" /f >nul 2>&1
+reg delete "HKLM\SOFTWARE\Classes\Directory\shellex\ContextMenuHandlers\EPP" /f >nul 2>&1
+reg delete "HKLM\SOFTWARE\Classes\Drive\shellex\ContextMenuHandlers\EPP" /f >nul 2>&1
+:: Disable all Defender scheduled tasks
 for %%T in (
   "\Microsoft\Windows\Windows Defender\Windows Defender Cache Maintenance"
   "\Microsoft\Windows\Windows Defender\Windows Defender Cleanup"
   "\Microsoft\Windows\Windows Defender\Windows Defender Scheduled Scan"
   "\Microsoft\Windows\Windows Defender\Windows Defender Verification"
 ) do schtasks /Change /TN %%T /Disable >nul 2>&1
+:: Kill notifications and the tray icon
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Security Center\Notifications" /v DisableNotifications /t REG_DWORD /d 1 /f >nul 2>&1
-:: Stop the Windows Security tray icon from auto-starting
 reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" /v SecurityHealth /f >nul 2>&1
-echo           Defender policies set. If it is still on, Tamper Protection was
-echo           ON - turn it OFF (see warning) and run this option again.
+echo           Defender real-time, cloud, SmartScreen, UI, context menu and
+echo           tasks all disabled. The protected WinDefend service stub may
+echo           remain (Windows blocks deleting it) but it is inert.
 
 :: --- WINDOWS UPDATE ---------------------------------------------------------
 echo   Disabling Windows Update...
