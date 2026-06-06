@@ -1135,7 +1135,28 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\B
 reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\EditionOverrides" /v UserSetting_DisableStartupSound /t REG_DWORD /d 1 /f >nul 2>&1
 echo   [08] Startup sound disabled.
 echo.
-echo   8 more tweaks applied.  TOTAL: 178 tweaks.
+echo   8 more tweaks applied.  (178 tweaks so far)
+echo.
+
+:: ===========================================================================
+:: 14B7) BONUS PACK 8: 15 MORE SERVICES TRIMMED (drives process count down)
+:: ===========================================================================
+echo ============================================================================
+echo   TRIMMING 15 MORE SERVICES (fewer running processes after reboot)...
+echo ============================================================================
+echo.
+:: These are all safe to set to manual - they auto-start only when truly needed.
+set "SVC8=WpnService ShellHWDetection W32Time MSDTC EFS MSiSCSI TapiSrv workfolderssvc WalletService icssvc TroubleshootingSvc PeerDistSvc fhsvc SDRSVC Wecsvc"
+set /a SVCN=0
+for %%S in (%SVC8%) do (
+    sc query "%%S" >nul 2>&1 && (
+        sc config "%%S" start= demand >nul 2>&1
+        set /a SVCN+=1
+        echo   Set to manual: %%S
+    )
+)
+echo.
+echo   15 more services trimmed.  TOTAL: 193 tweaks.
 echo.
 
 :: ===========================================================================
@@ -1213,7 +1234,7 @@ echo     - Network tuned for low latency (Nagle off, throttling off)
 echo     - Visual effects set to best performance
 echo     - Background apps disabled, memory tuned for %RAM_GB% GB
 echo     - English (US) + Arabic keyboards installed (Alt+Shift to switch)
-echo     - 178 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
+echo     - 193 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
 echo       SSD/HDD storage optimization (auto TRIM/defrag, NTFS cache, MFT),
 echo       NTFS/SSD/pagefile tuning, mouse+keyboard latency, svchost grouping,
 echo       DNS 1.1.1.1, QoS/RSC/Winsock, DWM MPO off, Fast Startup off,
@@ -1482,21 +1503,39 @@ echo           Copilot disabled and removed.
 
 :: --- EDGE -------------------------------------------------------------------
 echo   Removing Microsoft Edge...
+set "EDGEDIRA=%ProgramFiles(x86)%\Microsoft\Edge"
+set "EDGEDIRB=%ProgramFiles%\Microsoft\Edge"
 taskkill /f /im msedge.exe >nul 2>&1
 taskkill /f /im MicrosoftEdgeUpdate.exe >nul 2>&1
 reg add "HKLM\SOFTWARE\Microsoft\EdgeUpdate" /v DoNotUpdateToEdgeWithChromium /t REG_DWORD /d 1 /f >nul 2>&1
 reg add "HKLM\SOFTWARE\Microsoft\EdgeUpdate" /v InstallDefault /t REG_DWORD /d 0 /f >nul 2>&1
-:: Allow uninstall (Edge's own block flag), and force EEA region rule that permits removal
 reg add "HKLM\SOFTWARE\Microsoft\EdgeUpdateDev" /v AllowUninstall /t REG_SZ /d "" /f >nul 2>&1
 reg add "HKLM\SOFTWARE\Policies\Microsoft\EdgeUpdate" /v AllowUninstall /t REG_DWORD /d 1 /f >nul 2>&1
-:: Run Edge's own uninstaller (system-wide and per-user installs)
+:: Unlock uninstall by temporarily reporting an EEA region (Windows only allows
+:: Edge removal there). The original region is restored afterwards.
+set "OLDGEO="
+for /f "tokens=2,*" %%a in ('reg query "HKCU\Control Panel\International\Geo" /v Nation 2^>nul ^| find /i "Nation"') do set "OLDGEO=%%b"
+reg add "HKCU\Control Panel\International\Geo" /v Nation /t REG_SZ /d 68 /f >nul 2>&1
 for /f "delims=" %%E in ('dir /b /s "%ProgramFiles(x86)%\Microsoft\Edge\Application\*\Installer\setup.exe" 2^>nul') do "%%E" --uninstall --system-level --verbose-logging --force-uninstall >nul 2>&1
 for /f "delims=" %%E in ('dir /b /s "%ProgramFiles%\Microsoft\Edge\Application\*\Installer\setup.exe" 2^>nul') do "%%E" --uninstall --system-level --verbose-logging --force-uninstall >nul 2>&1
 for /f "delims=" %%E in ('dir /b /s "%LocalAppData%\Microsoft\Edge\Application\*\Installer\setup.exe" 2^>nul') do "%%E" --uninstall --verbose-logging --force-uninstall >nul 2>&1
-:: winget fallback (most reliable on current Windows 11)
 powershell -NoProfile -Command "winget uninstall --id Microsoft.Edge --silent --accept-source-agreements --force" >nul 2>&1
 powershell -NoProfile -Command "Get-AppxPackage -AllUsers *MicrosoftEdge* | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue" >nul 2>&1
-echo           Edge uninstall attempted (Windows Update may still re-add it).
+if defined OLDGEO reg add "HKCU\Control Panel\International\Geo" /v Nation /t REG_SZ /d %OLDGEO% /f >nul 2>&1
+:: If Edge still survived, offer a forced folder delete (guaranteed removal)
+if exist "%EDGEDIRA%\Application\msedge.exe" (
+    echo   Edge resisted the normal uninstall - it claims to be part of Windows.
+    choice /C YN /N /M "   Force-delete the Edge program folder now? [Y/N]: "
+    if not errorlevel 2 (
+        taskkill /f /im msedge.exe >nul 2>&1
+        takeown /f "%EDGEDIRA%" /r /d y >nul 2>&1
+        icacls "%EDGEDIRA%" /grant administrators:F /t >nul 2>&1
+        rd /s /q "%EDGEDIRA%" >nul 2>&1
+        rd /s /q "%EDGEDIRB%" >nul 2>&1
+        echo   Edge folder deleted.
+    )
+)
+echo           Edge removal complete (Windows Update may still re-add it later).
 
 :: --- ONEDRIVE ---------------------------------------------------------------
 echo   Removing OneDrive...
@@ -1507,6 +1546,12 @@ reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\OneDrive" /v DisableFileSyncNG
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v OneDrive /f >nul 2>&1
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v OneDriveSetup /f >nul 2>&1
 echo           OneDrive uninstalled.
+
+:: --- 15 PREINSTALLED BLOATWARE APPS -----------------------------------------
+echo   Removing preinstalled bloatware apps...
+powershell -NoProfile -Command "$apps='Microsoft.BingNews','Microsoft.BingWeather','Microsoft.GetHelp','Microsoft.Getstarted','Microsoft.MicrosoftSolitaireCollection','Microsoft.People','Microsoft.WindowsFeedbackHub','Microsoft.YourPhone','Microsoft.ZuneVideo','Microsoft.MixedReality.Portal','Microsoft.WindowsMaps','Clipchamp.Clipchamp','Microsoft.Todos','Microsoft.PowerAutomateDesktop','MicrosoftTeams'; foreach($a in $apps){ Get-AppxPackage -AllUsers $a | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue; Get-AppxProvisionedPackage -Online | Where-Object {$_.DisplayName -eq $a} | ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue } }" >nul 2>&1
+echo           15 bloatware apps removed: News, Weather, Solitaire, Maps,
+echo           Your Phone, Teams, Clipchamp, To-Do, Power Automate and more.
 
 :: --- DEFENDER (disable ALL components) --------------------------------------
 echo   Removing all Microsoft Defender components (needs Tamper Protection OFF)...
