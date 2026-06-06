@@ -1549,11 +1549,13 @@ reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v OneDrive /f >
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v OneDriveSetup /f >nul 2>&1
 echo           OneDrive uninstalled.
 
-:: --- 15 PREINSTALLED BLOATWARE APPS -----------------------------------------
-echo   Removing preinstalled bloatware apps...
-powershell -NoProfile -Command "$apps='Microsoft.BingNews','Microsoft.BingWeather','Microsoft.GetHelp','Microsoft.Getstarted','Microsoft.MicrosoftSolitaireCollection','Microsoft.People','Microsoft.WindowsFeedbackHub','Microsoft.YourPhone','Microsoft.ZuneVideo','Microsoft.MixedReality.Portal','Microsoft.WindowsMaps','Clipchamp.Clipchamp','Microsoft.Todos','Microsoft.PowerAutomateDesktop','MicrosoftTeams'; foreach($a in $apps){ Get-AppxPackage -AllUsers $a | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue; Get-AppxProvisionedPackage -Online | Where-Object {$_.DisplayName -eq $a} | ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue } }" >nul 2>&1
-echo           15 bloatware apps removed: News, Weather, Solitaire, Maps,
-echo           Your Phone, Teams, Clipchamp, To-Do, Power Automate and more.
+:: --- PREINSTALLED BLOATWARE APPS (comprehensive, safe list) ------------------
+echo   Removing unnecessary preinstalled apps...
+echo   (keeps Photos, Calculator, Camera, Snipping Tool, Store, Terminal, Xbox)
+powershell -NoProfile -Command "$apps='Microsoft.3DBuilder','Microsoft.Microsoft3DViewer','Microsoft.MicrosoftOfficeHub','Microsoft.OneConnect','Microsoft.Print3D','Microsoft.SkypeApp','Microsoft.WindowsAlarms','Microsoft.WindowsSoundRecorder','Microsoft.Wallet','Microsoft.BingNews','Microsoft.BingWeather','Microsoft.BingFinance','Microsoft.BingSports','Microsoft.GetHelp','Microsoft.Getstarted','Microsoft.MicrosoftSolitaireCollection','Microsoft.People','Microsoft.WindowsFeedbackHub','Microsoft.YourPhone','Microsoft.ZuneVideo','Microsoft.ZuneMusic','Microsoft.MixedReality.Portal','Microsoft.WindowsMaps','Clipchamp.Clipchamp','Microsoft.Todos','Microsoft.PowerAutomateDesktop','MicrosoftTeams','Microsoft.Messaging','Microsoft.Office.Sway','Microsoft.NetworkSpeedTest','Microsoft.Office.OneNote','Microsoft.Whiteboard','Microsoft.OutlookForWindows','MicrosoftCorporationII.QuickAssist','Microsoft.Windows.DevHome'; foreach($a in $apps){ Get-AppxPackage -AllUsers $a | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue; Get-AppxProvisionedPackage -Online | Where-Object {$_.DisplayName -eq $a} | ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue } }" >nul 2>&1
+echo           35+ unnecessary apps removed - News, Weather, Solitaire, Maps,
+echo           Your Phone, Teams, Skype, Office Hub, 3D apps, Clipchamp, To-Do,
+echo           Power Automate, Whiteboard, Sway, QuickAssist, DevHome and more.
 
 :: --- DEFENDER (disable ALL components) --------------------------------------
 echo   Removing all Microsoft Defender components (needs Tamper Protection OFF)...
