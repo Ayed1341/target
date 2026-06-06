@@ -151,7 +151,9 @@ function Test-ConfigDrift {
         $leaf = Split-Path $root -Leaf
         $base = Join-Path $latest.FullName $leaf
         if (-not (Test-Path -LiteralPath $base)) { continue }
-        Get-ChildItem -LiteralPath $root -Recurse -File -Include *.cfg,*.ini,*.xml,*.yml,*.toml,*.json -ErrorAction SilentlyContinue | ForEach-Object {
+        # Pruned, depth-bounded walk (shared with the config archive) so drift
+        # detection no longer hashes emulators' thousands of bundled config files.
+        Get-EmulatorConfigFiles -Root $root | ForEach-Object {
             $rel = $_.FullName.Substring($root.Length).TrimStart('\','/')
             $old = Join-Path $base $rel
             if (Test-Path -LiteralPath $old) {
