@@ -973,7 +973,38 @@ if /i "%GPU_VENDOR%"=="AMD" (
     echo     [65] AMD ULPS - skipped ^(no AMD GPU^).
 )
 echo.
-echo   65 more advanced tweaks applied.  TOTAL: 150 tweaks.
+echo   65 more advanced tweaks applied.  (150 tweaks so far)
+echo.
+
+:: ===========================================================================
+:: 14B4) BONUS PACK 5: SSD / HDD STORAGE OPTIMIZATION (5 advanced tweaks)
+:: ===========================================================================
+echo ============================================================================
+echo   OPTIMIZING STORAGE (SSD / HDD)...
+echo ============================================================================
+echo.
+echo   Detected drives and their type:
+powershell -NoProfile -Command "Get-PhysicalDisk | Select-Object DeviceId,FriendlyName,MediaType,@{N='SizeGB';E={[math]::Round($_.Size/1GB)}} | Format-Table -AutoSize" 2>nul
+echo.
+:: 01 Auto-optimize each drive the correct way: TRIM for SSD, defrag for HDD
+echo   [01] Optimizing all drives (TRIM on SSD, defrag on HDD - may take a while)...
+defrag /C /O /H >nul 2>&1
+defrag %SystemDrive% /L >nul 2>&1
+echo        Done - Windows applied the right method per drive.
+:: 02 Bigger NTFS in-memory metadata cache (faster file/directory access)
+fsutil behavior set memoryusage 2 >nul 2>&1
+echo   [02] NTFS metadata RAM cache increased.
+:: 03 Larger MFT reservation (less fragmentation with many small files)
+fsutil behavior set mftzone 2 >nul 2>&1
+echo   [03] NTFS MFT zone enlarged.
+:: 04 Turn off write-cache buffer flushing for faster writes
+powershell -NoProfile -Command "Get-CimInstance Win32_DiskDrive | ForEach-Object { $p='HKLM:\SYSTEM\CurrentControlSet\Enum\'+$_.PNPDeviceID+'\Device Parameters\Disk'; if(Test-Path $p){ Set-ItemProperty -Path $p -Name CacheIsPowerProtected -Value 1 -Type DWord -ErrorAction SilentlyContinue; Set-ItemProperty -Path $p -Name UserWriteCacheSetting -Value 1 -Type DWord -ErrorAction SilentlyContinue } }" >nul 2>&1
+echo   [04] Write-cache buffer flushing disabled - best with a UPS or laptop battery.
+:: 05 Disable legacy boot-time defrag/layout (useless on SSD, adds wear)
+reg add "HKLM\SOFTWARE\Microsoft\Dfrg\BootOptimizeFunction" /v Enable /t REG_SZ /d N /f >nul 2>&1
+echo   [05] Legacy boot defrag/layout disabled.
+echo.
+echo   5 storage tweaks applied.  TOTAL: 155 tweaks.
 echo.
 
 :: ===========================================================================
@@ -1051,7 +1082,8 @@ echo     - Network tuned for low latency (Nagle off, throttling off)
 echo     - Visual effects set to best performance
 echo     - Background apps disabled, memory tuned for %RAM_GB% GB
 echo     - English (US) + Arabic keyboards installed (Alt+Shift to switch)
-echo     - 150 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
+echo     - 155 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
+echo       SSD/HDD storage optimization (auto TRIM/defrag, NTFS cache, MFT),
 echo       NTFS/SSD/pagefile tuning, mouse+keyboard latency, svchost grouping,
 echo       DNS 1.1.1.1, QoS/RSC/Winsock, DWM MPO off, Fast Startup off,
 echo       latency-sensitive games, debloat, and more.
