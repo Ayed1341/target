@@ -260,11 +260,7 @@ echo.
 :: 13) KEYBOARD FIX: ADD ENGLISH (US) + ARABIC LAYOUTS
 :: ---------------------------------------------------------------------------
 echo  [10/12] Configuring keyboard languages (English + Arabic)...
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$list = New-WinUserLanguageList -Language 'en-US';" ^
-  "$list.Add('ar-SA');" ^
-  "Set-WinUserLanguageList -LanguageList $list -Force;" ^
-  "Set-WinDefaultInputMethodOverride -InputTip '0409:00000409'" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$list = New-WinUserLanguageList -Language 'en-US'; $list.Add('ar-SA'); Set-WinUserLanguageList -LanguageList $list -Force; Set-WinDefaultInputMethodOverride -InputTip '0409:00000409'" >nul 2>&1
 :: Toggle hotkey: Left Alt + Shift switches between languages (value 1)
 reg add "HKCU\Keyboard Layout\Toggle" /v "Language Hotkey" /t REG_SZ /d 1 /f >nul 2>&1
 reg add "HKCU\Keyboard Layout\Toggle" /v "Hotkey" /t REG_SZ /d 1 /f >nul 2>&1
