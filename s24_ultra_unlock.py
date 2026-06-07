@@ -5926,6 +5926,125 @@ fastboot reboot
 """)
 
 
+def m122_ksa_network_fix():
+    header("KSA / DS-Lite Network Fix — Samsung OEM Daemon Trigger")
+    import time
+
+    print(f"""
+  {R}{BO}  ══ ROOT CAUSE IDENTIFIED ══{RE}
+
+  {W}Your device has TWO issues preventing the OEM daemon from running:{RE}
+
+  {R}  1. CSC = KSA (Saudi Arabia){RE}
+  {W}     KSA CSC may require a Samsung account to be linked before{RE}
+  {W}     the OEM unlock timer starts counting.{RE}
+
+  {R}  2. Network = DS-Lite / IPv6-only (192.0.0.2){RE}
+  {W}     Samsung's OEM unlock verification uses IPv4 to reach its servers.{RE}
+  {W}     DS-Lite (carrier-grade NAT over IPv6) breaks Samsung's check.{RE}
+  {W}     Your WiFi gives you only IPv6 — Samsung daemon gets no response.{RE}
+""")
+
+    # ── Step 1: Diagnose current network type ────────────────────────────────
+    print(f"{C}{BO}  STEP 1 — Network Diagnosis{RE}")
+    ip = get_wifi_ip()
+    out_pub, _, _ = shell("curl -s --max-time 5 http://ifconfig.me 2>/dev/null || curl -s --max-time 5 http://api.ipify.org 2>/dev/null")
+    out_pub6, _, _ = shell("curl -s --max-time 5 http://ifconfig.co 2>/dev/null")
+    out_v4, _, rc4 = shell("curl -4 --max-time 5 -s http://ifconfig.me 2>/dev/null")
+    out_v6, _, rc6 = shell("curl -6 --max-time 5 -s http://ifconfig.co 2>/dev/null")
+    print(f"  Local WiFi IP  : {ip or 'N/A'}")
+    print(f"  Public IPv4    : {out_v4.strip() or 'NONE — IPv4 unreachable (DS-Lite confirmed)'}")
+    print(f"  Public IPv6    : {out_v6.strip() or 'N/A'}")
+    has_ipv4 = bool(out_v4.strip()) and rc4 == 0
+    if not has_ipv4:
+        print(f"\n  {R}{BO}DS-Lite confirmed — no direct IPv4. Samsung daemon WILL fail on this WiFi.{RE}")
+        print(f"  {Y}Solution: Switch to mobile data (4G/LTE) for Samsung verification.{RE}")
+    else:
+        print(f"\n  {G}IPv4 available — network should work for Samsung verification.{RE}")
+
+    # ── Step 2: Switch to mobile data instructions ───────────────────────────
+    print(f"\n{C}{BO}  STEP 2 — Switch to Mobile Data (stc ksa 4G){RE}")
+    print(f"""
+  {Y}Do this on the phone RIGHT NOW:{RE}
+  {G}  1.{RE} {W}Pull down notification bar → tap WiFi icon to turn OFF WiFi{RE}
+  {G}  2.{RE} {W}Make sure mobile data is ON: Settings → Connections → Mobile networks → ON{RE}
+  {G}  3.{RE} {W}Wait 2-3 minutes for stc 4G to fully connect{RE}
+  {G}  4.{RE} {W}Reboot the phone (most important step){RE}
+  {G}  5.{RE} {W}After reboot, stay on mobile data (no WiFi) for 30 minutes{RE}
+  {G}  6.{RE} {W}Run Method 68 — watch if sys.oem_unlock_allowed changes to 0 or 1{RE}
+""")
+    # Try to disable WiFi programmatically
+    out_wdis, _, rc_wdis = shell("su -c 'svc wifi disable' 2>/dev/null", timeout=5)
+    if rc_wdis == 0:
+        print(f"  {G}✓ WiFi disabled via root — now on mobile data{RE}")
+    else:
+        print(f"  {Y}→ Disable WiFi manually: Settings → Connections → WiFi → OFF{RE}")
+
+    # ── Step 3: Samsung account for KSA ──────────────────────────────────────
+    print(f"\n{C}{BO}  STEP 3 — Samsung Account (Required for KSA CSC){RE}")
+    print(f"""
+  {W}For KSA (Saudi Arabia) region, Samsung account may be required:{RE}
+  {G}  1.{RE} {W}Settings → Samsung account → Sign in (or create free account){RE}
+  {G}  2.{RE} {W}Complete account verification (SMS OTP to your number){RE}
+  {G}  3.{RE} {W}Leave signed in for 24 hours on mobile data{RE}
+  {G}  4.{RE} {W}Then check: Settings → Developer Options → OEM Unlocking{RE}
+  {W}  Remember: REMOVE Samsung account BEFORE the actual fastboot unlock{RE}
+""")
+    shell("am start -a android.intent.action.VIEW -d market://details?id=com.sec.android.app.samsungapps 2>/dev/null", timeout=5)
+
+    # ── Step 4: Force mobile data connectivity ────────────────────────────────
+    print(f"\n{C}{BO}  STEP 4 — Force Mobile Data + Connectivity Triggers{RE}")
+    shell("su -c 'svc data enable' 2>/dev/null", timeout=5)
+    shell("su -c 'svc wifi disable' 2>/dev/null", timeout=5)
+    time.sleep(5)
+    # Check if mobile data is now up
+    out_mob, _, _ = shell("getprop gsm.data.state")
+    out_mob_ip, _, _ = shell("ip addr show rmnet_data0 2>/dev/null | grep 'inet ' | awk '{print $2}' | head -1")
+    if not out_mob_ip.strip():
+        out_mob_ip, _, _ = shell("ip addr show | grep -v 'lo\|wlan\|dummy' | grep 'inet ' | awk '{print $2}' | head -1")
+    print(f"  Mobile data state : {out_mob.strip() or 'N/A'}")
+    print(f"  Mobile IP         : {out_mob_ip.strip() or 'not assigned yet'}")
+    # Send connectivity broadcast
+    shell("am broadcast -a android.net.conn.CONNECTIVITY_CHANGE 2>/dev/null")
+    shell("am broadcast -a com.samsung.android.server.oem_unlock.action.OEM_UNLOCK_CHECK 2>/dev/null")
+    time.sleep(3)
+    v_check, _, _ = shell("getprop sys.oem_unlock_allowed 2>/dev/null")
+    val = v_check.strip()
+    print(f"\n  sys.oem_unlock_allowed = {G if val=='1' else Y}{val or 'N/A'}{RE}")
+    if val == "1":
+        success("OEM UNLOCK ACTIVATED! Go to Developer Options → OEM Unlocking → Enable!")
+    elif val == "0":
+        success("Daemon started! sys=0 means timer is NOW counting on mobile data.")
+        info("Keep mobile data connected for 7 days — toggle will appear when done.")
+    else:
+        warn("Still N/A — reboot the phone while on mobile data (WiFi OFF)")
+
+    # ── Step 5: Alternative — DNS fix for IPv6 network ───────────────────────
+    print(f"\n{C}{BO}  STEP 5 — DNS Override (if staying on WiFi){RE}")
+    print(f"""
+  {W}If you prefer to stay on WiFi, force Samsung servers via DNS:{RE}
+  {G}  Settings → Connections → WiFi → long-press your network → Modify{RE}
+  {G}  → Advanced options → IP settings → Static{RE}
+  {G}  → DNS 1: 8.8.8.8   DNS 2: 8.8.4.4{RE}
+  {G}  → Then toggle WiFi off and on{RE}
+  {W}  Note: This won't fix the DS-Lite IPv4 problem — mobile data is better.{RE}
+""")
+
+    # ── Step 6: Reboot recommendation ────────────────────────────────────────
+    print(f"\n{C}{BO}  STEP 6 — Reboot on Mobile Data{RE}")
+    print(f"""
+  {R}{BO}  MOST IMPORTANT: Reboot with WiFi OFF and mobile data ON.{RE}
+  {W}  The Samsung OEM daemon runs at boot and checks connectivity.{RE}
+  {W}  On 4G/LTE it gets a real IPv4 address and can reach Samsung servers.{RE}
+""")
+    choice = input(f"  {Y}Reboot now with mobile data? (y/n): {RE}").strip().lower()
+    if choice == "y":
+        shell("su -c 'svc wifi disable; svc data enable; sleep 2; reboot' 2>/dev/null", timeout=15)
+        info("Reboot initiated — phone will restart on mobile data")
+    else:
+        tip("Manually: turn WiFi OFF → turn mobile data ON → reboot → wait 10min → run Method 68")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MENU
 # ─────────────────────────────────────────────────────────────────────────────
@@ -6051,6 +6170,7 @@ METHODS = [
     (m119_toggle_visibility_props,  "OEM Toggle Visibility — Property Deep Scan"),
     (m120_oem_longpress_tricks,     "OEM Toggle Hidden Entry Points & Deep Link Tricks"),
     (m121_ultimate_unlock,          "ULTIMATE 40-TECHNIQUE UNLOCK ASSAULT  [★★★ run this]"),
+    (m122_ksa_network_fix,          "KSA + DS-Lite Network Fix  [★★★ run if in Saudi Arabia]"),
 ]
 
 
@@ -6086,17 +6206,17 @@ def main():
     while True:
         show_menu()
         try:
-            choice = input(f"\n{C}{BO}Select method [0-121]: {RE}").strip()
+            choice = input(f"\n{C}{BO}Select method [0-122]: {RE}").strip()
             if choice == "0":
                 info("Goodbye!"); break
             n = int(choice)
-            if 1 <= n <= 121:
+            if 1 <= n <= 122:
                 banner()
                 METHODS[n - 1][0]()
                 input(f"\n{Y}Press Enter to return to menu…{RE}")
                 banner()
             else:
-                error("Enter a number between 0 and 121")
+                error("Enter a number between 0 and 122")
         except ValueError:
             error("Invalid input — enter a number")
         except KeyboardInterrupt:
