@@ -1940,94 +1940,149 @@ def m55_eligibility_report():
     if not serial:
         error("No device connected"); return
 
-    print(f"{C}{BO}Gathering all unlock eligibility data…{RE}\n")
+    print(f"{C}{BO}Gathering all unlock eligibility data…{RE}")
+    print(f"{Y}Note: Settings reads may return N/A in Termux (no root) — not a real failure{RE}\n")
 
-    checks = {}
+    checks   = {}   # label -> (status, detail, is_hard_blocker)
+    cant_read = []  # labels where we genuinely cannot determine state
 
-    # 1. Device model
+    # ── 1. Device model ──────────────────────────────────────────────────────
     model, _, _ = shell("getprop ro.product.model")
-    checks["Model is S24 Ultra (S928B)"] = ("s928" in model.lower(), model)
+    checks["Model is S24 Ultra (S928B)"] = ("s928" in model.lower(), model, True)
 
-    # 2. Region (XX = global = unlockable)
+    # ── 2. Region ────────────────────────────────────────────────────────────
     bl, _, _ = shell("getprop ro.bootloader")
     is_global = "XX" in bl if bl else False
-    checks["Global variant (XX region)"] = (is_global, bl or "N/A")
+    checks["Global variant (XX region)"] = (is_global, bl or "N/A", True)
 
-    # 3. Developer options — use robust get_setting
-    dev = get_setting("global", "development_settings_enabled")
-    checks["Developer Options enabled"] = (dev == "1", f"value={dev or 'N/A'}")
+    # ── 3. Developer Options — multi-method, no root needed ──────────────────
+    dev_ok = False
+    dev_method = "undetected"
+    # a) settings read
+    dev_s = get_setting("global", "development_settings_enabled")
+    if dev_s == "1":
+        dev_ok = True; dev_method = "settings"
+    # b) pm resolve-activity (works without root when dev options on)
+    if not dev_ok:
+        out_pm, _, rc_pm = shell("pm resolve-activity --brief -a android.settings.APPLICATION_DEVELOPMENT_SETTINGS 2>/dev/null")
+        if rc_pm == 0 and "android.settings" in (out_pm or ""):
+            dev_ok = True; dev_method = "pm-resolve"
+    # c) persist.sys.usb.config contains adb
+    if not dev_ok:
+        out_usb, _, _ = shell("getprop persist.sys.usb.config 2>/dev/null")
+        if "adb" in (out_usb or ""):
+            dev_ok = True; dev_method = f"usb.config={out_usb.strip()}"
+    # d) cmd settings
+    if not dev_ok:
+        out_cmd, _, _ = shell("cmd settings get global development_settings_enabled 2>/dev/null")
+        if out_cmd.strip() == "1":
+            dev_ok = True; dev_method = "cmd-settings"
+    # e) content provider
+    if not dev_ok:
+        out_cp, _, _ = shell("content query --uri content://settings/global --where \"name='development_settings_enabled'\" 2>/dev/null")
+        if "value=1" in (out_cp or ""):
+            dev_ok = True; dev_method = "content-provider"
 
-    # 4. OEM unlock setting
-    oem = get_setting("global", "oem_unlock_allowed")
-    checks["OEM unlock allowed (setting)"] = (oem == "1", f"value={oem or 'N/A'}")
+    if not dev_ok and dev_s in (None, "", "null", "N/A"):
+        cant_read.append("Developer Options")
+        dev_note = "cannot read (Termux limitation) — assumed enabled if you did 7-tap"
+    else:
+        dev_note = f"detected via {dev_method}" if dev_ok else "NOT enabled"
+    checks["Developer Options enabled"] = (dev_ok, dev_note, False)  # not a hard blocker if unreadable
 
-    # 5. OEM unlock system prop
+    # ── 4. OEM unlock setting (secondary — getprop is primary) ───────────────
+    oem_s = get_setting("global", "oem_unlock_allowed")
+    oem_s_ok = oem_s == "1"
+    if oem_s in (None, "", "null", "N/A"):
+        cant_read.append("oem_unlock_allowed setting")
+        oem_s_note = "cannot read (Termux limitation)"
+    else:
+        oem_s_note = f"value={oem_s}"
+    checks["OEM unlock allowed (setting)"] = (oem_s_ok, oem_s_note, False)
+
+    # ── 5. sys.oem_unlock_allowed (THE key check — set by Samsung daemon) ────
     oem_sys, _, _ = shell("getprop sys.oem_unlock_allowed")
-    checks["sys.oem_unlock_allowed"] = (oem_sys == "1", f"value={oem_sys or 'N/A'}")
+    oem_sys = oem_sys.strip()
+    oem_sys_ok = oem_sys == "1"
+    if oem_sys_ok:
+        oem_sys_note = "✓ ALLOWED — toggle is active, ready to enable"
+    elif oem_sys in ("0", ""):
+        oem_sys_note = "NOT YET — 7-day internet timer still running"
+    else:
+        oem_sys_note = f"value={oem_sys or 'N/A'}"
+    checks["sys.oem_unlock_allowed  ★ KEY"] = (oem_sys_ok, oem_sys_note, True)
 
-    # 6. Bootloader currently locked
+    # ── 6–10. Hardware / platform checks ────────────────────────────────────
     locked, _, _ = shell("getprop ro.boot.flash.locked")
-    checks["Bootloader currently LOCKED (to unlock)"] = (locked == "1", f"flash.locked={locked}")
+    checks["Bootloader currently LOCKED (to unlock)"] = (locked == "1", f"flash.locked={locked}", False)
 
-    # 7. Verified boot state
     vbs, _, _ = shell("getprop ro.boot.verifiedbootstate")
-    checks["Verified boot state"] = (vbs == "green", f"state={vbs}")
+    checks["Verified boot state (green=stock)"] = (vbs == "green", f"state={vbs}", False)
 
-    # 8. Knox warranty intact
     knox, _, _ = shell("getprop ro.boot.warranty_bit")
-    checks["Knox warranty bit intact (0)"] = (knox == "0", f"bit={knox}")
+    checks["Knox warranty bit intact (0)"] = (knox == "0", f"bit={knox}", False)
 
-    # 9. Internet connectivity — robust multi-method check
     inet = check_internet()
     ip   = get_wifi_ip()
-    checks["Internet connectivity"] = (inet, f"IP={ip or 'none'} ping={'OK' if inet else 'FAIL'}")
+    checks["Internet connectivity"] = (inet, f"IP={ip or 'none'} ping={'OK' if inet else 'FAIL'}", True)
 
-    # 10. Android version (16 = unlockable)
     android, _, _ = shell("getprop ro.build.version.release")
-    checks["Android version (16 supports unlock)"] = (True, f"Android {android}")
+    checks["Android version (16 supports unlock)"] = (True, f"Android {android}", False)
 
-    # Print report
-    pass_count = 0
-    fail_count = 0
-    warn_count = 0
-    for label, (status, detail) in checks.items():
+    oem_sup, _, _ = shell("getprop ro.oem_unlock_supported 2>/dev/null")
+    if oem_sup.strip() == "0":
+        checks["ro.oem_unlock_supported"] = (False, "0 — hardware reports unsupported!", True)
+    elif oem_sup.strip():
+        checks["ro.oem_unlock_supported"] = (True, oem_sup.strip(), False)
+
+    # ── Print report ─────────────────────────────────────────────────────────
+    pass_c = fail_c = warn_c = unread_c = 0
+    hard_blockers = []
+    for label, (status, detail, is_hard) in checks.items():
         if status:
-            print(f"  {G}[PASS]{RE} {W}{label:<45}{RE} {C}{detail}{RE}")
-            pass_count += 1
+            print(f"  {G}[PASS]{RE} {W}{label:<50}{RE} {C}{detail}{RE}")
+            pass_c += 1
+        elif "cannot read" in detail or "assumed" in detail:
+            print(f"  {Y}[INFO]{RE} {W}{label:<50}{RE} {Y}{detail}{RE}")
+            unread_c += 1
+        elif "LOCKED" in label or "Knox" in label or "verified" in label.lower():
+            print(f"  {C}[INFO]{RE} {W}{label:<50}{RE} {Y}{detail}{RE}")
+            warn_c += 1
         else:
-            # Some "fails" are just informational
-            if "LOCKED" in label:
-                print(f"  {C}[INFO]{RE} {W}{label:<45}{RE} {Y}{detail}{RE}")
-                warn_count += 1
-            else:
-                print(f"  {R}[FAIL]{RE} {W}{label:<45}{RE} {Y}{detail}{RE}")
-                fail_count += 1
+            print(f"  {R}[FAIL]{RE} {W}{label:<50}{RE} {Y}{detail}{RE}")
+            fail_c += 1
+            if is_hard:
+                hard_blockers.append(label)
 
     print(f"\n{C}{'─'*62}{RE}")
-    print(f"  {G}PASS: {pass_count}{RE}  {R}FAIL: {fail_count}{RE}  {C}INFO: {warn_count}{RE}")
+    print(f"  {G}PASS: {pass_c}{RE}  {R}FAIL: {fail_c}{RE}  {Y}INFO: {warn_c}{RE}  {W}UNREADABLE: {unread_c}{RE}")
+    if cant_read:
+        print(f"  {Y}(Settings unreadable in Termux without root — not real failures){RE}")
     print(f"{C}{'─'*62}{RE}\n")
 
-    # Verdict
-    blocker_fails = [l for l, (s, _) in checks.items()
-                     if not s and "LOCKED" not in l and "Knox" not in l]
-    if not blocker_fails:
+    # ── Verdict ───────────────────────────────────────────────────────────────
+    if not hard_blockers:
         print(f"{G}{BO}  ✓ VERDICT: Device IS ELIGIBLE for bootloader unlock!{RE}")
         print(f"\n{C}  Next steps:{RE}")
-        oem_val = get_setting("global", "oem_unlock_allowed")
-        if oem_val != "1":
-            print(f"  {Y}  1. Enable OEM Unlocking toggle in Developer Options (Method 42){RE}")
-            print(f"  {Y}  2. Wait for the 7-day timer if toggle is greyed out (Method 41){RE}")
-            print(f"  {W}  3. Reboot to bootloader (Method 7) then run fastboot unlock from PC{RE}")
-            print(f"  {R}  ★ Or run Method 56 (One-Button Master Unlock) to do it all automatically{RE}")
+        if not oem_sys_ok:
+            print(f"  {Y}  1. Wait for 7-day internet timer (sys.oem_unlock_allowed must become 1){RE}")
+            print(f"  {Y}  2. Keep WiFi connected continuously — Method 68 monitors in real-time{RE}")
+            print(f"  {W}  3. Once timer done: Developer Options → OEM Unlocking → Enable{RE}")
+            print(f"  {W}  4. Reboot to bootloader → PC: fastboot flashing unlock{RE}")
         else:
-            print(f"  {G}  1. OEM unlock is already allowed!{RE}")
+            print(f"  {G}  1. OEM unlock is ALLOWED — open Developer Options → OEM Unlocking → Enable{RE}")
             print(f"  {W}  2. Reboot to bootloader (Method 7){RE}")
             print(f"  {W}  3. From PC: fastboot flashing unlock{RE}")
-            print(f"  {R}  ★ Or run Method 56 (One-Button Master Unlock){RE}")
+        print(f"  {R}  ★ Or run Method 56 (One-Button Master Unlock) to do it all automatically{RE}")
     else:
-        print(f"{R}{BO}  ✗ VERDICT: Blockers found — resolve before unlocking:{RE}")
-        for b in blocker_fails:
-            print(f"  {R}  • {b}{RE}")
+        print(f"{R}{BO}  ✗ VERDICT: Hard blockers found:{RE}")
+        for b in hard_blockers:
+            _, detail, _ = checks[b]
+            print(f"  {R}  • {b}{RE}: {detail}")
+        print()
+        if not oem_sys_ok:
+            print(f"  {Y}Main action: Keep WiFi connected — 7-day timer must complete{RE}")
+            print(f"  {Y}Run Method 78 for countdown, Method 68 to watch in real-time{RE}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
