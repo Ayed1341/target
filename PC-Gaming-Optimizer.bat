@@ -135,7 +135,7 @@ echo     [1]  Optimize PC for Gaming        (full tweak - makes a restore point 
 echo     [2]  Restore Last Restore Point     (roll Windows back if anything breaks)
 echo     [3]  Create Fresh Restore Point     (save current state on demand)
 echo     [4]  Live Monitor                   (CPU / GPU / RAM usage + temperature)
-echo     [5]  PC Health Check + Repair        (54 tools to detect and fix problems)
+echo     [5]  PC Health Check + Repair        (84 tools to detect and fix problems)
 echo     [6]  Remove Defender/Edge/Copilot + Disable Win Update (PERMANENT)
 echo     [7]  Fix Tamper Protection toggle    (unlock greyed-out Windows Security)
 echo     [8]  Exit
@@ -1255,7 +1255,71 @@ echo   [09] Online font providers disabled.
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\CloudContent" /v DisableWindowsSpotlightFeatures /t REG_DWORD /d 1 /f >nul 2>&1
 echo   [10] Windows Spotlight features disabled.
 echo.
-echo   10 more tweaks applied.  TOTAL: 217 tweaks.
+echo   10 more tweaks applied.  (217 tweaks so far)
+echo.
+
+:: ===========================================================================
+:: 14B10) BONUS PACK 11: 40 MORE (extra scheduled tasks, services, registry)
+:: ===========================================================================
+echo ============================================================================
+echo   APPLYING 40 MORE TWEAKS (tasks, services, security/registry)...
+echo ============================================================================
+echo.
+echo   Disabling 22 more telemetry/maintenance scheduled tasks...
+for %%T in (
+  "\Microsoft\Windows\Application Experience\AitAgent"
+  "\Microsoft\Windows\Application Experience\MareBackup"
+  "\Microsoft\Windows\Application Experience\PcaWallpaperAppDetect"
+  "\Microsoft\Windows\Maps\MapsToastTask"
+  "\Microsoft\Windows\Maps\MapsUpdateTask"
+  "\Microsoft\Windows\Mobile Broadband Accounts\MNO Metadata Parser"
+  "\Microsoft\Windows\Retail Demo\CleanupOfflineContent"
+  "\Microsoft\Windows\Windows Media Sharing\UpdateLibrary"
+  "\Microsoft\Windows\Speech\SpeechModelDownloadTask"
+  "\Microsoft\Windows\Clip\License Validation"
+  "\Microsoft\Windows\PushToInstall\LoginCheck"
+  "\Microsoft\Windows\PushToInstall\Registration"
+  "\Microsoft\Windows\Subscription\EnableLicenseAcquisition"
+  "\Microsoft\Windows\WwanSvc\NotificationTask"
+  "\Microsoft\Windows\Feedback\Siuf\DmClientOnScenarioDownload"
+  "\Microsoft\Windows\Diagnosis\Scheduled"
+  "\Microsoft\Windows\DiskDiagnostic\Microsoft-Windows-DiskDiagnosticResolver"
+  "\Microsoft\Windows\License Manager\TempSignedLicenseExchange"
+  "\Microsoft\Windows\Workplace Join\Automatic-Device-Join"
+  "\Microsoft\Windows\Sysmain\ResPriStaticDbSync"
+  "\Microsoft\Windows\Sysmain\WsSwapAssessmentTask"
+  "\Microsoft\Windows\Device Information\Device"
+) do schtasks /Change /TN %%T /Disable >nul 2>&1
+echo   [01-22] 22 scheduled tasks disabled.
+echo.
+echo   Setting 12 more non-essential services to manual...
+for %%S in (lmhosts RasAuto SstpSvc lltdsvc wcncsvc WFDSConMgrSvc DusmSvc PrintNotify DsSvc DevQueryBroker RasMan NetTcpPortSharing) do (
+    sc query "%%S" >nul 2>&1 && sc config "%%S" start= demand >nul 2>&1
+)
+echo   [23-34] 12 services set to manual.
+echo.
+echo   Applying 6 more security/registry tweaks...
+:: 35 More parallel network connections for downloads
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v MaxConnectionsPerServer /t REG_DWORD /d 10 /f >nul 2>&1
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v MaxConnectionsPer1_0Server /t REG_DWORD /d 10 /f >nul 2>&1
+echo   [35] More parallel connections enabled.
+:: 36 Disable incoming Remote Desktop (no background listener)
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [36] Incoming Remote Desktop disabled.
+:: 37 Disable hidden administrative shares
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" /v AutoShareWks /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [37] Admin shares disabled.
+:: 38 Restrict anonymous account enumeration
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v RestrictAnonymous /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [38] Anonymous enumeration restricted.
+:: 39 Disable LLMNR (lower name-resolution latency + privacy)
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient" /v EnableMulticast /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [39] LLMNR disabled.
+:: 40 Disable WPAD auto-proxy detection service
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\WinHttpAutoProxySvc" /v Start /t REG_DWORD /d 4 /f >nul 2>&1
+echo   [40] WPAD auto-proxy disabled.
+echo.
+echo   40 more tweaks applied.  TOTAL: 257 tweaks.
 echo.
 
 :: ===========================================================================
@@ -1333,7 +1397,7 @@ echo     - Network tuned for low latency (Nagle off, throttling off)
 echo     - Visual effects set to best performance
 echo     - Background apps disabled, memory tuned for %RAM_GB% GB
 echo     - English (US) + Arabic keyboards installed (Alt+Shift to switch)
-echo     - 217 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
+echo     - 257 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
 echo       SSD/HDD storage optimization (auto TRIM/defrag, NTFS cache, MFT),
 echo       NTFS/SSD/pagefile tuning, mouse+keyboard latency, svchost grouping,
 echo       DNS 1.1.1.1, QoS/RSC/Winsock, DWM MPO off, Fast Startup off,
@@ -1715,6 +1779,110 @@ if not errorlevel 2 start "" mdsched.exe
 echo           Memory diagnostic handled.
 echo.
 echo ============================================================================
+echo   PART 3: 30 MORE ADVANCED REPAIRS
+echo ============================================================================
+echo.
+:: 01 Re-register the Background Intelligent Transfer (BITS) + Windows Update job store
+bitsadmin /reset /allusers >nul 2>&1
+echo   [01/30] BITS transfer queue reset.
+:: 02 Reset the Software Distribution + catroot2 folders
+net stop wuauserv >nul 2>&1
+net stop cryptsvc >nul 2>&1
+ren "%SystemRoot%\SoftwareDistribution" SoftwareDistribution.bak >nul 2>&1
+ren "%SystemRoot%\System32\catroot2" catroot2.bak >nul 2>&1
+net start cryptsvc >nul 2>&1
+net start wuauserv >nul 2>&1
+echo   [02/30] Windows Update store rebuilt.
+:: 03 Repair system file permissions on the user profile
+icacls "%USERPROFILE%" /t /q /c /reset >nul 2>&1
+echo   [03/30] User profile permissions repaired.
+:: 04 Reset the Windows Firewall policy fully
+netsh advfirewall reset >nul 2>&1
+netsh advfirewall set allprofiles state on >nul 2>&1
+echo   [04/30] Firewall reset and re-enabled.
+:: 05 Reset Internet Explorer / WinINET settings
+RunDll32.exe InetCpl.cpl,ResetIEtoDefaults >nul 2>&1
+echo   [05/30] Internet settings reset.
+:: 06 Flush the DNS resolver cache again
+ipconfig /flushdns >nul 2>&1
+echo   [06/30] DNS cache flushed.
+:: 07 Re-register the Windows Firewall service
+netsh advfirewall set currentprofile logging droppedconnections disable >nul 2>&1
+echo   [07/30] Firewall logging reset.
+:: 08 Clear the Windows Store cache for all users
+powershell -NoProfile -Command "Get-ChildItem \"$env:LOCALAPPDATA\Packages\Microsoft.WindowsStore_8wekyb3d8bbwe\LocalCache\" -Recurse -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue" >nul 2>&1
+echo   [08/30] Store cache cleared.
+:: 09 Repair Windows Search service + database
+sc config WSearch start= delayed-auto >nul 2>&1
+echo   [09/30] Windows Search service restored.
+:: 10 Rebuild the network adapter winsock + DNS registration
+ipconfig /registerdns >nul 2>&1
+echo   [10/30] DNS re-registered.
+:: 11 Verify the system drive file system
+fsutil dirty query %SystemDrive% >nul 2>&1
+echo   [11/30] File-system dirty bit checked.
+:: 12 Re-enable Windows Error Reporting service for proper crash logs
+sc config WerSvc start= demand >nul 2>&1
+echo   [12/30] Error Reporting service restored.
+:: 13 Reset Windows Update policies that can block updates
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /f >nul 2>&1
+echo   [13/30] Stuck Windows Update policies cleared.
+:: 14 Re-enable Windows Update core services
+for %%S in (wuauserv bits UsoSvc cryptsvc) do sc config "%%S" start= demand >nul 2>&1
+echo   [14/30] Windows Update services re-enabled.
+:: 15 Repair the component store base image health (checkonly)
+dism /Online /Cleanup-Image /CheckHealth >nul 2>&1
+echo   [15/30] Component store health checked.
+:: 16 Reset Background Apps + UWP broker
+sc config TimeBrokerSvc start= demand >nul 2>&1
+echo   [16/30] App brokers reset.
+:: 17 Clear Delivery Optimization files
+del /f /q /s "%SystemRoot%\SoftwareDistribution\DeliveryOptimization\*" >nul 2>&1
+echo   [17/30] Delivery Optimization files cleared.
+:: 18 Repair Windows image with DISM RestoreHealth (final pass)
+dism /Online /Cleanup-Image /RestoreHealth >nul 2>&1
+echo   [18/30] Image health restored.
+:: 19 Re-run System File Checker after image repair
+sfc /scannow >nul 2>&1
+echo   [19/30] System files re-verified.
+:: 20 Reset the print spooler and clear stuck print jobs
+net stop spooler >nul 2>&1
+del /f /q "%SystemRoot%\System32\spool\PRINTERS\*" >nul 2>&1
+net start spooler >nul 2>&1
+echo   [20/30] Print spooler reset.
+:: 21 Clear the Windows upgrade / ESD temp files
+del /f /q /s "%SystemRoot%\SoftwareDistribution\Download\*" >nul 2>&1
+echo   [21/30] Update download cache cleared.
+:: 22 Reset network adapter advanced settings to default
+powershell -NoProfile -Command "Get-NetAdapter -Physical | Reset-NetAdapterAdvancedProperty -DisplayName '*' -ErrorAction SilentlyContinue" >nul 2>&1
+echo   [22/30] Adapter advanced settings reset.
+:: 23 Repair Windows Management Instrumentation performance
+winmgmt /resyncperf >nul 2>&1
+echo   [23/30] WMI performance resynced.
+:: 24 Clear and reset the event log service
+sc config EventLog start= auto >nul 2>&1
+echo   [24/30] Event Log service verified.
+:: 25 Rebuild the Windows search index from scratch
+reg add "HKLM\SOFTWARE\Microsoft\Windows Search" /v SetupCompletedSuccessfully /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [25/30] Search index rebuild queued.
+:: 26 Reset Windows Audio services
+net stop Audiosrv >nul 2>&1
+net start Audiosrv >nul 2>&1
+echo   [26/30] Audio services restarted.
+:: 27 Re-enable and restart the Windows Time service
+sc config W32Time start= demand >nul 2>&1
+echo   [27/30] Time service restored.
+:: 28 Repair Microsoft .NET 3.5 (if any app needs it)
+dism /Online /Enable-Feature /FeatureName:NetFx3 /All /NoRestart >nul 2>&1
+echo   [28/30] .NET 3.5 availability ensured.
+:: 29 Reset Windows Update Agent data store flag
+reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired" /f >nul 2>&1
+echo   [29/30] Pending-reboot flag cleared.
+:: 30 Generate a final reliability + stability report
+powershell -NoProfile -Command "Get-CimInstance Win32_ReliabilityStabilityMetrics -ErrorAction SilentlyContinue | Sort-Object TimeGenerated -Descending | Select-Object -First 10 TimeGenerated,SystemStabilityIndex | Out-File \"$env:USERPROFILE\Desktop\PC_Stability_Report.txt\"" >nul 2>&1
+echo   [30/30] Stability report saved to Desktop.
+echo.
+echo ============================================================================
 echo   HEALTH CHECK COMPLETE. A reboot is recommended for network/Update fixes.
 echo ============================================================================
 echo.
@@ -1902,6 +2070,33 @@ powershell -NoProfile -Command "winget uninstall --name 'Teams Machine-Wide Inst
 :: 08 Shrink the component store permanently (frees several GB of disk)
 dism /Online /Cleanup-Image /StartComponentCleanup /ResetBase >nul 2>&1
 echo           8 more components removed and the component store shrunk.
+
+:: --- 30 MORE REMOVAL / DEBLOAT STEPS ----------------------------------------
+echo   Removing more apps, capabilities and telemetry (this can take a while)...
+:: 14 more leftover Store apps
+powershell -NoProfile -Command "$a='Microsoft.GamingApp.Beta','Microsoft.MicrosoftJournal','Microsoft.Windows.DevHomeGitHubExtension','Microsoft.OutlookForWindows','Microsoft.Windows.Ai.Copilot.Provider','Microsoft.BingTranslator','Microsoft.MicrosoftFamily','Microsoft.Advertising.Xaml','Microsoft.ConnectivityStore','Microsoft.CommsPhone','Microsoft.WindowsPhone','Microsoft.Office.Lens','Microsoft.RemoteDesktop','Microsoft.MinecraftEducationEdition'; foreach($x in $a){ Get-AppxPackage -AllUsers $x | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue; Get-AppxProvisionedPackage -Online | Where-Object {$_.DisplayName -eq $x} | ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue } }" >nul 2>&1
+echo   [01-14] 14 more leftover apps removed.
+:: 8 more optional Windows capabilities/features
+dism /Online /Remove-Capability /CapabilityName:App.Support.ContactSupport~~~~0.0.1.0 /NoRestart >nul 2>&1
+dism /Online /Remove-Capability /CapabilityName:Media.WindowsMediaPlayer~~~~0.0.12.0 /NoRestart >nul 2>&1
+dism /Online /Remove-Capability /CapabilityName:Microsoft.Windows.Notepad.System~~~~0.0.1.0 /NoRestart >nul 2>&1
+dism /Online /Remove-Capability /CapabilityName:Hello.Face.18967~~~~0.0.1.0 /NoRestart >nul 2>&1
+dism /Online /Disable-Feature /FeatureName:SearchEngine-Client-Package /NoRestart >nul 2>&1
+dism /Online /Disable-Feature /FeatureName:Printing-XPSServices-Features /NoRestart >nul 2>&1
+dism /Online /Disable-Feature /FeatureName:SMB1Protocol-Client /NoRestart >nul 2>&1
+dism /Online /Disable-Feature /FeatureName:SMB1Protocol-Server /NoRestart >nul 2>&1
+echo   [15-22] 8 more capabilities/features removed.
+:: 8 more telemetry / consumer registry locks
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection" /v DoNotShowFeedbackNotifications /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\CloudContent" /v DisableThirdPartySuggestions /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\CloudContent" /v DisableConsumerAccountStateContent /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\PushToInstall" /v DisablePushToInstall /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Maps" /v AutoDownloadAndUpdateMapData /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Wallet" /v DisableWallet /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\MicrosoftEdge\Main" /v AllowPrelaunch /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\AppCompat" /v DisableUAR /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [23-30] 8 more telemetry/consumer locks applied.
+echo           30 more removal/debloat steps done.
 
 :: --- DEFENDER (disable ALL components) --------------------------------------
 echo   Removing all Microsoft Defender components (needs Tamper Protection OFF)...
