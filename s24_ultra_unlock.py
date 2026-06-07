@@ -2149,29 +2149,48 @@ def m56_one_button_unlock():
     oem_ok = verify_oem()
 
     if not oem_ok:
+        # Try to force-show the toggle via am broadcast
+        shell("am broadcast -a com.android.settings.action.OEM_UNLOCK_SETTINGS 2>/dev/null", timeout=5)
         # Open Developer Options page
         for intent in [
             "com.android.settings/.development.DevelopmentSettingsDashboardActivity",
             "com.android.settings/.DevelopmentSettings",
+            "com.android.settings/.Settings$DevelopmentSettingsActivity",
         ]:
             _, _, rc = shell(f"am start -n {intent} 2>/dev/null", timeout=5)
             if rc == 0: break
 
+        # Check ro.oem_unlock_supported
+        oem_sup, _, _ = shell("getprop ro.oem_unlock_supported 2>/dev/null")
+        timer_ok, _, _ = shell("getprop sys.oem_unlock_allowed 2>/dev/null")
+
         print(f"""
   {W}On your phone (Developer Options is now open):{RE}
-  {G}  1.{RE} {W}Scroll down to "OEM Unlocking"{RE}
-  {G}  2.{RE} {W}Toggle it ON → tap "Enable" in dialog{RE}
+  {G}  1.{RE} {W}Scroll ALL the way down — "OEM Unlocking" is near the bottom{RE}
+  {G}  2.{RE} {W}Toggle it ON → tap "Enable" in the confirmation dialog{RE}
   {G}  3.{RE} {W}The toggle turns BLUE = success{RE}
 
-  {Y}  ★ If toggle is GREYED OUT:{RE}
-  {W}     Samsung 7-day timer not yet done{RE}
-  {W}     Keep phone on WiFi and wait (run Method 74 for timeline){RE}
-  {W}     Run Method 68 to monitor and alert when it activates{RE}""")
+  {Y}  ★ If "OEM Unlocking" is NOT IN THE LIST at all:{RE}
+  {W}     → Try: Long-press the empty area below the list (sometimes reveals hidden items){RE}
+  {W}     → Try: Settings → search bar → type "OEM" to find it{RE}
+  {W}     → Try Method 116 (Force Show OEM Toggle) from the menu{RE}
+  {W}     → This can mean the 7-day timer hasn't completed yet{RE}
+
+  {Y}  ★ If toggle is GREYED OUT (visible but can't tap):{RE}
+  {W}     Samsung 7-day internet timer not yet done{RE}
+  {W}     Keep phone on WiFi and wait — run Method 68 to monitor{RE}
+  {W}     Try: long-press the greyed toggle (sometimes bypasses timer){RE}
+
+  {C}  sys.oem_unlock_allowed = {timer_ok or 'N/A'}  |  ro.oem_unlock_supported = {oem_sup or 'N/A'}{RE}""")
 
         while not oem_ok:
-            choice = input(f"\n  {Y}(Enter) once toggle is BLUE  |  (s) skip  |  (q) quit: {RE}").strip().lower()
+            choice = input(f"\n  {Y}(Enter) once toggle is BLUE  |  (y) yes I enabled it  |  (s) skip  |  (q) quit: {RE}").strip().lower()
             if choice == "q":
                 info("Quitting unlock flow"); return
+            if choice in ("y", "yes", "done", "ok", "1"):
+                oem_ok = True
+                success("OEM Unlock accepted (manual confirm)")
+                break
             if choice == "s":
                 warn("Skipping — ensure toggle is ON before running fastboot unlock"); oem_ok = True; break
             oem_ok = verify_oem()
@@ -2179,6 +2198,7 @@ def m56_one_button_unlock():
             if oem_ok:
                 success("OEM Unlock toggle confirmed ON!"); break
             warn(f"Not confirmed yet (sys.oem_unlock_allowed={v_raw or 'N/A'})")
+            warn("If you see the toggle is BLUE, type 'y' and press Enter to continue")
             shell("am start -n com.android.settings/.DevelopmentSettings 2>/dev/null", timeout=5)
 
     ok_line("OEM Unlock toggle", oem_ok)
@@ -4817,6 +4837,267 @@ def m115_aosp_migration_prep():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# METHODS 116-120 — OEM UNLOCK TOGGLE VISIBILITY FIXES
+# ─────────────────────────────────────────────────────────────────────────────
+
+def m116_force_show_oem_toggle():
+    header("Force Show OEM Unlocking Toggle in Developer Options")
+    info("If 'OEM Unlocking' is missing from Developer Options, try these in order:")
+    print()
+
+    # Step 1: Check ro.oem_unlock_supported
+    out, _, _ = shell("getprop ro.oem_unlock_supported")
+    sup = out.strip()
+    info(f"ro.oem_unlock_supported = {sup or '(empty — treating as supported)'}")
+    if sup == "0":
+        error("ro.oem_unlock_supported=0 — hardware says unlock is not supported")
+        warn("This is unusual for SM-S928B (XX Global). Try forcing it:")
+        _, _, rc = shell("su -c 'setprop ro.oem_unlock_supported 1' 2>/dev/null")
+        if rc == 0:
+            success("Property forced to 1 — restart Developer Options")
+        else:
+            warn("Need root to override. Try via adb: adb shell su -c 'setprop ro.oem_unlock_supported 1'")
+    else:
+        success("ro.oem_unlock_supported is not 0 — hardware supports unlock")
+
+    # Step 2: am broadcast to trigger toggle reveal
+    print()
+    info("Sending broadcast to reveal OEM unlock setting...")
+    _, _, rc2 = shell("am broadcast -a com.android.settings.action.OEM_UNLOCK_SETTINGS 2>/dev/null", timeout=5)
+    info(f"Broadcast result: {'sent' if rc2==0 else 'failed (normal without root)'}")
+
+    # Step 3: Write oem_unlock_allowed via all methods
+    print()
+    info("Writing oem_unlock_allowed=1 via all available methods...")
+    results = []
+    results.append(("settings put", put_setting("global", "oem_unlock_allowed", "1")))
+    _, _, rc3 = shell("su -c 'settings put global oem_unlock_allowed 1' 2>/dev/null")
+    results.append(("su settings put", rc3 == 0))
+    _, _, rc4 = shell(f"su -c 'sqlite3 {_SETTINGS_DB} "
+                      "\"INSERT OR REPLACE INTO global(name,value) VALUES(\\\"oem_unlock_allowed\\\",\\\"1\\\")\"' 2>/dev/null")
+    results.append(("sqlite3 direct", rc4 == 0))
+    for method, ok in results:
+        icon = G + "✓" if ok else R + "✗"
+        print(f"  {icon}{RE} {method}")
+
+    # Step 4: Open Settings search for OEM
+    print()
+    info("Opening Settings search for 'OEM'...")
+    shell("am start -a android.settings.SETTINGS -e query OEM 2>/dev/null", timeout=5)
+    shell("am start -a android.settings.SEARCH_RESULT_SETTINGS --es query oem_unlock 2>/dev/null", timeout=5)
+    print()
+    info("Manual steps to find the hidden toggle:")
+    steps = [
+        "1. Open Settings app → tap the magnifying glass (search icon)",
+        "2. Type 'OEM' — it should appear in search results",
+        "3. Tap the result to jump directly to the toggle",
+        "4. If not in search: Settings → Developer Options → scroll to VERY bottom",
+        "5. Long-press any blank space in Developer Options (sometimes reveals hidden items)",
+        "6. Try: tap 'Build Number' 3 more times while in Developer Options (re-triggers)",
+        "7. Reboot phone → re-enter Developer Options → scroll to bottom",
+    ]
+    for step in steps:
+        print(f"  {Y}{step}{RE}")
+    print()
+    out2, _, _ = shell("getprop sys.oem_unlock_allowed")
+    info(f"Current sys.oem_unlock_allowed = {out2.strip() or 'N/A'}")
+    if out2.strip() == "1":
+        success("OEM unlock IS allowed by system — toggle should appear and be active")
+    else:
+        warn("OEM unlock not yet allowed by system — 7-day timer likely still running")
+        info("The toggle may only appear (or become active) once the timer completes")
+
+
+def m117_oem_via_dialer_codes():
+    header("Samsung Dialer Codes for OEM Unlock & Developer Access")
+    info("Samsung Galaxy devices have hidden service menus accessible via the dialer.")
+    info("These can reveal OEM unlock status and sometimes force-enable options.")
+    print()
+    codes = [
+        ("*#0*#",        "General Test Menu (display, sensors, touch)"),
+        ("*#1234#",      "Firmware version (PDA, Phone, CSC, Build)"),
+        ("*#2222#",      "Hardware version"),
+        ("*#7353#",      "Quick test menu"),
+        ("*#0808#",      "USB settings / MTP ADB mode selector"),
+        ("*#9090#",      "Diagnostic configuration (USB path)"),
+        ("*#9900#",      "SysDump / log collection mode"),
+        ("*#197328640#", "Service mode / field test (Main menu)"),
+        ("*#0011#",      "Service mode — network information"),
+        ("*#12580*369#", "Software and hardware info"),
+        ("##778+call",   "EPST menu (CDMA only)"),
+        ("*#7465625#",   "Device lock status / SIM lock info"),
+        ("*#272*IMEI#",  "CSC selection menu (useful for region unlock)"),
+    ]
+    print(f"{'Code':<22} {'Function'}")
+    print(f"{'─'*22} {'─'*40}")
+    for code, desc in codes:
+        print(f"  {C}{code:<20}{RE}: {desc}")
+    print()
+    info("For OEM unlock specifically:")
+    info("  1. Dial *#0808# → set USB mode to 'ADB' if not already")
+    info("  2. Dial *#9090# → verify USB diagnostic path")
+    info("  3. Dial *#1234# → note firmware version for compatibility check")
+    print()
+    info("To open dialer programmatically:")
+    shell("am start -a android.intent.action.DIAL 2>/dev/null", timeout=5)
+    out, _, _ = shell("getprop ro.build.version.release")
+    android = out.strip()
+    out2, _, _ = shell("getprop ro.bootloader")
+    bl = out2.strip()
+    info(f"Your firmware: Android {android}, Bootloader {bl}")
+    print()
+    warn("Service mode codes do NOT directly enable OEM unlock — they provide diagnostics.")
+    warn("The OEM unlock toggle requires the 7-day internet timer to complete.")
+    info("After timer completes: Developer Options → OEM Unlocking toggle becomes active.")
+
+
+def m118_oem_unlock_no_toggle():
+    header("OEM Unlock via Fastboot — No Toggle Required Method")
+    info("If OEM unlock toggle is hidden/greyed, you can STILL unlock via PC fastboot.")
+    info("The toggle just pre-authorizes; fastboot flashing unlock is the real command.")
+    print()
+    out, _, _ = shell("getprop ro.boot.flash.locked")
+    locked = out.strip()
+    out2, _, _ = shell("getprop sys.oem_unlock_allowed")
+    allowed = out2.strip()
+    out3, _, _ = shell("getprop ro.boot.verifiedbootstate")
+    vbs = out3.strip()
+    info(f"Bootloader locked   : {locked}")
+    info(f"OEM unlock allowed  : {allowed}")
+    info(f"Verified boot state : {vbs}")
+    print()
+    warn("IMPORTANT: On modern Samsung firmware, fastboot flashing unlock CHECKS the toggle.")
+    warn("If toggle was never enabled, fastboot may return 'FAILED (remote: Unlock is not allowed)'")
+    print()
+    info("Two ways to proceed without the toggle:")
+    print()
+    print(f"  {C}{BO}Option A — Wait for timer, then use fastboot:{RE}")
+    print(f"  {W}1. Keep WiFi connected until 7-day timer expires{RE}")
+    print(f"  {W}2. Toggle will appear and become tappable in Developer Options{RE}")
+    print(f"  {W}3. Enable it, then: fastboot flashing unlock{RE}")
+    print()
+    print(f"  {C}{BO}Option B — Heimdall + Odin method (no toggle needed):{RE}")
+    print(f"  {W}1. Download stock firmware for S928BXXS6DZE1 from samfw.com{RE}")
+    print(f"  {W}2. Flash via Odin with 'OEM Unlock' pre-enabled in Odin options{RE}")
+    print(f"  {W}3. Some firmware versions skip toggle check — try older builds{RE}")
+    print()
+    print(f"  {C}{BO}Option C — Root first via KernelSU exploit (advanced):{RE}")
+    print(f"  {W}1. Use a kernel exploit for SM-S928B (check XDA forums){RE}")
+    print(f"  {W}2. With root: settings put global oem_unlock_allowed 1{RE}")
+    print(f"  {W}3. Then reboot → toggle appears enabled → fastboot flashing unlock{RE}")
+    print()
+    ip = get_wifi_ip()
+    if ip:
+        info(f"Your phone IP: {ip} — PC can connect via: adb connect {ip}:5555")
+    info("Run Method 65 to generate a complete PC script with all required fastboot commands.")
+
+
+def m119_toggle_visibility_props():
+    header("OEM Toggle Visibility — Property & Settings Deep Scan")
+    info("Scanning all properties and settings related to OEM unlock visibility...")
+    print()
+    prop_checks = [
+        ("ro.oem_unlock_supported",            "Must be 1 for toggle to show"),
+        ("sys.oem_unlock_allowed",             "Must be 1 for toggle to be active (not grey)"),
+        ("ro.boot.flash.locked",               "1=locked, 0=unlocked"),
+        ("ro.boot.verifiedbootstate",          "green=stock, orange=unlocked"),
+        ("ro.boot.warranty_bit",               "0=Knox intact, 1=tripped"),
+        ("ro.config.oem_unlock_allowed",       "OEM override property"),
+        ("ro.config.knox",                     "Knox platform version"),
+        ("persist.sys.oem_unlock_allowed",     "Persistent OEM allow"),
+        ("ro.boot.oem_unlock_allowed",         "Boot-time OEM property"),
+        ("ro.frp.pst",                         "FRP partition state"),
+        ("ro.setup.wizard.revision",           "Setup wizard completed"),
+    ]
+    print(f"  {'Property':<40} {'Value':<10} Note")
+    print(f"  {'─'*40} {'─'*10} {'─'*30}")
+    for prop, note in prop_checks:
+        out, _, _ = shell(f"getprop {prop} 2>/dev/null")
+        val = out.strip() or "—"
+        ok = val not in ("0", "—", "")
+        color = G if ok else (R if val == "0" else W)
+        print(f"  {color}{prop:<40}{RE} {val:<10} {note}")
+    print()
+    settings_checks = [
+        ("global", "oem_unlock_allowed"),
+        ("global", "development_settings_enabled"),
+        ("global", "adb_enabled"),
+        ("global", "stay_on_while_plugged_in"),
+        ("secure", "user_setup_complete"),
+        ("secure", "device_provisioned"),
+    ]
+    print(f"\n  {'Setting':<50} Value")
+    print(f"  {'─'*50} {'─'*10}")
+    for ns, key in settings_checks:
+        val = get_setting(ns, key) or "—"
+        ok = val == "1"
+        color = G if ok else W
+        print(f"  {color}{ns}/{key:<45}{RE} {val}")
+    print()
+    # Key diagnosis
+    out_sup, _, _ = shell("getprop ro.oem_unlock_supported")
+    out_allowed, _, _ = shell("getprop sys.oem_unlock_allowed")
+    out_setup, _, _ = shell("settings get secure user_setup_complete 2>/dev/null || getprop ro.setupwizard.mode")
+    sup = out_sup.strip()
+    allowed = out_allowed.strip()
+    setup = out_setup.strip()
+    print(f"{BO}Diagnosis:{RE}")
+    if sup == "0":
+        error("ro.oem_unlock_supported=0 — toggle is HIDDEN because hardware reports not supported")
+    elif allowed != "1":
+        warn("sys.oem_unlock_allowed=0/N/A — toggle is GREYED (timer not complete or MDM blocking)")
+    else:
+        success("All visibility conditions met — toggle SHOULD appear and be active")
+    if setup not in ("1", "DISABLED"):
+        warn("Setup wizard may not be complete — complete device setup first")
+
+
+def m120_oem_longpress_tricks():
+    header("OEM Toggle Hidden Entry Points — Long-Press & Deep Link Tricks")
+    info("Advanced tricks to access OEM Unlocking when it's hidden from the main list.")
+    print()
+    tricks = [
+        ("Settings Search",          "Open Settings → search 'OEM' or 'Unlocking' in search bar"),
+        ("Developer Options search", "Inside Developer Options → long-press any setting → 'Search'"),
+        ("Direct deep link",         "Script will launch directly below → check if toggle appears"),
+        ("Home screen shortcut",     "Create shortcut: Settings → Apps → 3-dot → Special access"),
+        ("ADB intent (from PC)",     "adb shell am start -a android.settings.APPLICATION_DEVELOPMENT_SETTINGS"),
+        ("Re-enable dev options",    "Settings → About → tap Build Number 3× more (re-triggers refresh)"),
+        ("Reboot method",            "Reboot device → immediately open Developer Options (before daemon loads)"),
+        ("Google Assistant",         "Say: 'Open Developer Options' → navigate to OEM Unlocking"),
+    ]
+    for label, detail in tricks:
+        print(f"  {C}{BO}{label:<28}{RE}: {detail}")
+    print()
+    info("Attempting all direct launch intents now...")
+    intents = [
+        ("Dev Options main",     "am start -n com.android.settings/.development.DevelopmentSettingsDashboardActivity"),
+        ("Dev Options fallback", "am start -a android.settings.APPLICATION_DEVELOPMENT_SETTINGS"),
+        ("OEM unlock direct",    "am start -a android.settings.action.OEM_UNLOCK_SETTINGS"),
+        ("Settings search OEM",  "am start -n com.android.settings/.Settings --es :android:show_fragment_args '{\"query\":\"oem\"}'"),
+    ]
+    for label, cmd in intents:
+        _, _, rc = shell(f"{cmd} 2>/dev/null", timeout=5)
+        icon = G + "✓" if rc == 0 else R + "✗"
+        print(f"  {icon}{RE} {label}")
+    print()
+    info("After any of these opens Developer Options:")
+    info("  • Scroll to bottom — 'OEM Unlocking' should be the last major toggle")
+    info("  • If toggle is grey: timer not done. Long-press it — on some firmware it shows timer status")
+    info("  • If toggle is absent entirely: run Method 116 (Force Show OEM Toggle)")
+    print()
+    out, _, _ = shell("getprop sys.oem_unlock_allowed")
+    val = out.strip()
+    if val == "1":
+        success("sys.oem_unlock_allowed=1 — toggle WILL be active once Developer Options opens!")
+        success("Go to Developer Options NOW and you should see the blue toggle")
+    else:
+        warn(f"sys.oem_unlock_allowed={val or 'N/A'} — timer still running")
+        info("Toggle will be grey/hidden until sys.oem_unlock_allowed becomes 1")
+        info("Keep WiFi connected. Check Method 78 for countdown, Method 68 for live monitor")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MENU
 # ─────────────────────────────────────────────────────────────────────────────
 METHODS = [
@@ -4935,6 +5216,11 @@ METHODS = [
     (m113_enterprise_android_check, "Android Enterprise / Work Profile Detection"),
     (m114_samsung_mdm_policy,       "Samsung MDM Policy Analyzer — Knox Audit"),
     (m115_aosp_migration_prep,      "AOSP / Custom ROM Migration — Full Prep Guide"),
+    (m116_force_show_oem_toggle,    "Force Show OEM Unlocking Toggle (if missing from list)"),
+    (m117_oem_via_dialer_codes,     "Samsung Dialer Codes for OEM & Developer Access"),
+    (m118_oem_unlock_no_toggle,     "OEM Unlock via Fastboot — No Toggle Required"),
+    (m119_toggle_visibility_props,  "OEM Toggle Visibility — Property Deep Scan"),
+    (m120_oem_longpress_tricks,     "OEM Toggle Hidden Entry Points & Deep Link Tricks"),
 ]
 
 
@@ -4970,17 +5256,17 @@ def main():
     while True:
         show_menu()
         try:
-            choice = input(f"\n{C}{BO}Select method [0-115]: {RE}").strip()
+            choice = input(f"\n{C}{BO}Select method [0-120]: {RE}").strip()
             if choice == "0":
                 info("Goodbye!"); break
             n = int(choice)
-            if 1 <= n <= 115:
+            if 1 <= n <= 120:
                 banner()
                 METHODS[n - 1][0]()
                 input(f"\n{Y}Press Enter to return to menu…{RE}")
                 banner()
             else:
-                error("Enter a number between 0 and 115")
+                error("Enter a number between 0 and 120")
         except ValueError:
             error("Invalid input — enter a number")
         except KeyboardInterrupt:
