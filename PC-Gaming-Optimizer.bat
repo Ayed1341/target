@@ -353,14 +353,14 @@ echo   [02] Processor min/max state locked to 100%%.
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" /v PowerThrottlingOff /t REG_DWORD /d 1 /f >nul 2>&1
 echo   [03] CPU power throttling disabled.
 
-:: --- 04) Disable dynamic tick (steadier frame timing / lower DPC) -----------
-bcdedit /set disabledynamictick yes >nul 2>&1
-echo   [04] Dynamic tick disabled.
+:: --- 04) Timer: leave dynamic tick at Windows default (better on Win11) -----
+bcdedit /deletevalue disabledynamictick >nul 2>&1
+echo   [04] Dynamic tick left at Windows 11 default (modern best practice).
 
-:: --- 05) Use TSC instead of platform clock (lower timer latency) ------------
+:: --- 05) Remove any forced HPET/platform clock (use default TSC) ------------
 bcdedit /deletevalue useplatformclock >nul 2>&1
-bcdedit /set tscsyncpolicy Enhanced >nul 2>&1
-echo   [05] High-resolution TSC timer policy set.
+bcdedit /deletevalue tscsyncpolicy >nul 2>&1
+echo   [05] Forced HPET removed; timers left at modern default.
 
 :: --- 06) Disable Prefetch + Superfetch/SysMain at registry level ------------
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters" /v EnablePrefetcher /t REG_DWORD /d 0 /f >nul 2>&1
@@ -401,11 +401,9 @@ echo   [13] GPU TDR timeout raised.
 powershell -NoProfile -Command "$id=(Get-CimInstance Win32_VideoController | Where-Object { $_.PNPDeviceID -like 'PCI*' } | Select-Object -First 1).PNPDeviceID; if($id){ $p='HKLM:\SYSTEM\CurrentControlSet\Enum\'+$id+'\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties'; New-Item -Path $p -Force | Out-Null; Set-ItemProperty -Path $p -Name MSISupported -Type DWord -Value 1 }" >nul 2>&1
 echo   [14] GPU MSI-mode interrupts enabled.
 
-:: --- 15) Disable fullscreen optimizations globally (true exclusive FS) ------
-reg add "HKCU\System\GameConfigStore" /v GameDVR_FSEBehaviorMode /t REG_DWORD /d 2 /f >nul 2>&1
-reg add "HKCU\System\GameConfigStore" /v GameDVR_HonorUserFSEBehaviorMode /t REG_DWORD /d 1 /f >nul 2>&1
-reg add "HKCU\System\GameConfigStore" /v GameDVR_DXGIHonorFSEWindowsCompatible /t REG_DWORD /d 1 /f >nul 2>&1
-echo   [15] Fullscreen optimizations disabled.
+:: --- 15) Fullscreen optimizations: leave at Win11 default (often LOWER latency) --
+reg add "HKCU\System\GameConfigStore" /v GameDVR_FSEBehaviorMode /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [15] Fullscreen optimizations left at Windows 11 default (modern).
 
 :: --- 16) Disable Xbox / Game-bar related services ---------------------------
 for %%S in (XblAuthManager XblGameSave XboxGipSvc XboxNetApiSvc BcastDVRUserService) do (
@@ -470,20 +468,9 @@ echo   [28] TCP congestion + RTO tuned for gaming.
 powershell -NoProfile -Command "Get-NetAdapter -Physical | ForEach-Object { Disable-NetAdapterLso -Name $_.Name -ErrorAction SilentlyContinue }" >nul 2>&1
 echo   [29] Large Send Offload disabled (lower latency).
 
-:: --- 30) OPTIONAL: disable CPU security mitigations + VBS for max FPS -------
-echo.
-echo   [30] OPTIONAL: Disabling Spectre/Meltdown mitigations and VBS/Memory
-echo        Integrity can add a few %% FPS, but REDUCES system security.
-choice /C YN /M "        Apply this optional max-performance tweak"
-if errorlevel 2 (
-    echo        Skipped tweak 30 - security kept intact.
-) else (
-    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v FeatureSettingsOverride /t REG_DWORD /d 3 /f >nul 2>&1
-    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v FeatureSettingsOverrideMask /t REG_DWORD /d 3 /f >nul 2>&1
-    reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard" /v EnableVirtualizationBasedSecurity /t REG_DWORD /d 0 /f >nul 2>&1
-    reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" /v Enabled /t REG_DWORD /d 0 /f >nul 2>&1
-    echo        Applied: mitigations + VBS disabled.
-)
+:: --- 30) Security mitigations: KEPT ON (modern - negligible FPS on Zen3/12thGen+) --
+echo   [30] CPU security mitigations and Memory Integrity kept ON - modern
+echo        best practice; on your hardware the FPS cost is negligible.
 echo.
 echo   30 advanced tweaks applied.
 echo.
@@ -532,9 +519,9 @@ echo   [07] Name-resolution priority optimized.
 powershell -NoProfile -Command "Get-NetAdapter -Physical | Where-Object {$_.Status -eq 'Up'} | ForEach-Object { Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ServerAddresses ('1.1.1.1','8.8.8.8') -ErrorAction SilentlyContinue }" >nul 2>&1
 echo   [08] DNS set to 1.1.1.1 / 8.8.8.8 (reversible to automatic anytime).
 
-:: --- 09) Raise RTC/IRQ8 priority --------------------------------------------
-reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v IRQ8Priority /t REG_DWORD /d 1 /f >nul 2>&1
-echo   [09] System timer IRQ priority raised.
+:: --- 09) IRQ8 priority: removed (no measurable effect on modern hardware) ---
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v IRQ8Priority /f >nul 2>&1
+echo   [09] Legacy IRQ priority tweak skipped (placebo on modern PCs).
 
 :: --- 10) Enable x2APIC + disable legacy APIC (better interrupt routing) -----
 bcdedit /set x2apicpolicy enable >nul 2>&1
@@ -554,15 +541,9 @@ echo   [12] Faster boot configured.
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v DisablePagingExecutive /t REG_DWORD /d 1 /f >nul 2>&1
 echo   [13] Kernel paging disabled (kept in RAM).
 
-:: --- 14) Set a fixed pagefile sized to RAM (no resize stutter) --------------
-if %RAM_GB% GTR 0 (
-    set /a "PFSIZE=%RAM_GB%*1024"
-    powershell -NoProfile -Command "$cs=Get-CimInstance Win32_ComputerSystem; if($cs.AutomaticManagedPagefile){$cs.AutomaticManagedPagefile=$false; Set-CimInstance -InputObject $cs}" >nul 2>&1
-    powershell -NoProfile -Command "$s=!PFSIZE!; $p=Get-CimInstance Win32_PageFileSetting; if($p){$p.InitialSize=$s; $p.MaximumSize=$s; Set-CimInstance -InputObject $p}" >nul 2>&1
-    echo   [14] Fixed pagefile set to !PFSIZE! MB.
-) else (
-    echo   [14] Skipped pagefile sizing ^(RAM not detected^).
-)
+:: --- 14) Pagefile: leave Windows-managed (modern best practice) -------------
+powershell -NoProfile -Command "$cs=Get-CimInstance Win32_ComputerSystem; if(-not $cs.AutomaticManagedPagefile){$cs.AutomaticManagedPagefile=$true; Set-CimInstance -InputObject $cs}" >nul 2>&1
+echo   [14] Pagefile left system-managed (recommended on Win11).
 
 :: --- 15) Do not clear pagefile at shutdown (faster shutdown) ----------------
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v ClearPageFileAtShutdown /t REG_DWORD /d 0 /f >nul 2>&1
@@ -1180,9 +1161,9 @@ echo   [02] Keyboard prediction/autocorrect disabled.
 :: 03 Disable NTFS compression overhead
 fsutil behavior set disablecompression 1 >nul 2>&1
 echo   [03] NTFS compression overhead disabled.
-:: 04 Raise disk I/O page-lock limit (better throughput)
-reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v IoPageLockLimit /t REG_DWORD /d 67108864 /f >nul 2>&1
-echo   [04] Disk I/O page-lock limit raised.
+:: 04 IoPageLockLimit: removed (XP-era value, ignored by modern Windows)
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v IoPageLockLimit /f >nul 2>&1
+echo   [04] Legacy IoPageLockLimit skipped (no effect on Win10/11).
 :: 05 Enable TCP Fast Open (faster connection setup)
 netsh int tcp set global fastopen=enabled >nul 2>&1
 echo   [05] TCP Fast Open enabled.
@@ -1428,11 +1409,12 @@ echo     - Network tuned for low latency (Nagle off, throttling off)
 echo     - Visual effects set to best performance
 echo     - Background apps disabled, memory tuned for %RAM_GB% GB
 echo     - English (US) + Arabic keyboards installed (Alt+Shift to switch)
-echo     - 263 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
-echo       SSD/HDD storage optimization (auto TRIM/defrag, NTFS cache, MFT),
-echo       NTFS/SSD/pagefile tuning, mouse+keyboard latency, svchost grouping,
-echo       DNS 1.1.1.1, QoS/RSC/Winsock, DWM MPO off, Fast Startup off,
-echo       latency-sensitive games, debloat, and more.
+echo     - 250+ tweaks, MODERNIZED for Windows 11 + RTX 30-series:
+echo       core parking off, MSI-mode interrupts, Hardware GPU Scheduling,
+echo       SSD TRIM, network latency tuning, DNS 1.1.1.1, DWM MPO off,
+echo       Game DVR off, deep debloat. Outdated/placebo and risky timer/
+echo       mitigation tweaks removed; timers, pagefile and security
+echo       mitigations left at modern Windows 11 defaults.
 echo     - Wi-Fi, Bluetooth, USB/external devices and Microsoft Store kept
 echo       fully working (essential services re-verified and enabled)
 echo     - Temp files cleaned
