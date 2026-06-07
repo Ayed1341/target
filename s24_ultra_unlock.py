@@ -2005,11 +2005,11 @@ def m55_eligibility_report():
     oem_sys = oem_sys.strip()
     oem_sys_ok = oem_sys == "1"
     if oem_sys_ok:
-        oem_sys_note = "✓ ALLOWED — toggle is active, ready to enable"
+        oem_sys_note = "✓ ALLOWED — OEM Unlocking toggle is VISIBLE and active"
     elif oem_sys in ("0", ""):
-        oem_sys_note = "NOT YET — 7-day internet timer still running"
+        oem_sys_note = "NOT YET — toggle is HIDDEN from Developer Options (timer running)"
     else:
-        oem_sys_note = f"value={oem_sys or 'N/A'}"
+        oem_sys_note = f"NOT SET — toggle HIDDEN until timer completes (value={oem_sys or 'N/A'})"
     checks["sys.oem_unlock_allowed  ★ KEY"] = (oem_sys_ok, oem_sys_note, True)
 
     # ── 6–10. Hardware / platform checks ────────────────────────────────────
@@ -2065,15 +2065,16 @@ def m55_eligibility_report():
         print(f"{G}{BO}  ✓ VERDICT: Device IS ELIGIBLE for bootloader unlock!{RE}")
         print(f"\n{C}  Next steps:{RE}")
         if not oem_sys_ok:
-            print(f"  {Y}  1. Wait for 7-day internet timer (sys.oem_unlock_allowed must become 1){RE}")
-            print(f"  {Y}  2. Keep WiFi connected continuously — Method 68 monitors in real-time{RE}")
-            print(f"  {W}  3. Once timer done: Developer Options → OEM Unlocking → Enable{RE}")
-            print(f"  {W}  4. Reboot to bootloader → PC: fastboot flashing unlock{RE}")
+            print(f"  {Y}  1. WAIT — 7-day timer not complete (OEM Unlocking is HIDDEN in Dev Options){RE}")
+            print(f"  {Y}  2. Keep WiFi on continuously until sys.oem_unlock_allowed = 1{RE}")
+            print(f"  {Y}  3. Method 68 watches every 5s and alerts when toggle appears{RE}")
+            print(f"  {W}  4. Once visible: Developer Options → OEM Unlocking → Enable (blue){RE}")
+            print(f"  {W}  5. Reboot to bootloader → PC: fastboot flashing unlock{RE}")
         else:
-            print(f"  {G}  1. OEM unlock is ALLOWED — open Developer Options → OEM Unlocking → Enable{RE}")
+            print(f"  {G}  1. OEM UNLOCKING IS VISIBLE — go to Developer Options → tap it → Enable{RE}")
             print(f"  {W}  2. Reboot to bootloader (Method 7){RE}")
             print(f"  {W}  3. From PC: fastboot flashing unlock{RE}")
-        print(f"  {R}  ★ Or run Method 56 (One-Button Master Unlock) to do it all automatically{RE}")
+        print(f"  {R}  ★ Or run Method 56 (One-Button Master Unlock) to guide you through each step{RE}")
     else:
         print(f"{R}{BO}  ✗ VERDICT: Hard blockers found:{RE}")
         for b in hard_blockers:
@@ -2081,8 +2082,9 @@ def m55_eligibility_report():
             print(f"  {R}  • {b}{RE}: {detail}")
         print()
         if not oem_sys_ok:
-            print(f"  {Y}Main action: Keep WiFi connected — 7-day timer must complete{RE}")
-            print(f"  {Y}Run Method 78 for countdown, Method 68 to watch in real-time{RE}")
+            print(f"  {Y}  ► OEM Unlocking is HIDDEN from Developer Options — this is NORMAL on OneUI{RE}")
+            print(f"  {Y}  ► The option only APPEARS once the 7-day internet timer completes{RE}")
+            print(f"  {Y}  ► Keep WiFi connected — run Method 68 to be notified when it activates{RE}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2218,25 +2220,49 @@ def m56_one_button_unlock():
         # Check ro.oem_unlock_supported
         oem_sup, _, _ = shell("getprop ro.oem_unlock_supported 2>/dev/null")
         timer_ok, _, _ = shell("getprop sys.oem_unlock_allowed 2>/dev/null")
+        timer_val = timer_ok.strip()
 
-        print(f"""
+        if timer_val != "1":
+            # Timer not done — toggle is HIDDEN on OneUI (not just greyed)
+            print(f"""
+  {R}{BO}  ══ SAMSUNG ONEU I — OEM UNLOCK TIMER NOT COMPLETE ══{RE}
+
+  {Y}  sys.oem_unlock_allowed = {timer_val or 'N/A'} (need: 1){RE}
+
+  {W}  On Samsung OneUI the "OEM Unlocking" item is completely{RE}
+  {W}  HIDDEN from Developer Options until the 7-day timer finishes.{RE}
+  {W}  This is NORMAL — the option is not greyed, it simply does not{RE}
+  {W}  appear in the list yet.{RE}
+
+  {C}  What to do RIGHT NOW:{RE}
+  {G}  1.{RE} {W}Go to Settings → Connections → WiFi → make sure connected{RE}
+  {G}  2.{RE} {W}Leave phone ON with WiFi connected for 7 cumulative days{RE}
+  {G}  3.{RE} {W}Do NOT factory reset (resets the 7-day timer to zero){RE}
+  {G}  4.{RE} {W}Keep screen from going fully off (Method 95 sets stay-awake){RE}
+  {G}  5.{RE} {W}Run Method 68 to get notified the moment the toggle appears{RE}
+
+  {Y}  Once timer completes:{RE}
+  {W}  • sys.oem_unlock_allowed becomes 1{RE}
+  {W}  • "OEM Unlocking" APPEARS in Developer Options{RE}
+  {W}  • Tap it, tap "Enable", then run fastboot flashing unlock from PC{RE}
+
+  {C}  sys.oem_unlock_allowed = {timer_val or 'N/A'}  |  ro.oem_unlock_supported = {oem_sup or 'N/A'}{RE}""")
+        else:
+            # Timer done, toggle should show
+            print(f"""
+  {G}{BO}  ══ TIMER COMPLETE — OEM UNLOCKING SHOULD NOW BE VISIBLE ══{RE}
+
   {W}On your phone (Developer Options is now open):{RE}
   {G}  1.{RE} {W}Scroll ALL the way down — "OEM Unlocking" is near the bottom{RE}
-  {G}  2.{RE} {W}Toggle it ON → tap "Enable" in the confirmation dialog{RE}
+  {G}  2.{RE} {W}Tap the toggle → tap "Enable" in the confirmation dialog{RE}
   {G}  3.{RE} {W}The toggle turns BLUE = success{RE}
 
-  {Y}  ★ If "OEM Unlocking" is NOT IN THE LIST at all:{RE}
-  {W}     → Try: Long-press the empty area below the list (sometimes reveals hidden items){RE}
-  {W}     → Try: Settings → search bar → type "OEM" to find it{RE}
-  {W}     → Try Method 116 (Force Show OEM Toggle) from the menu{RE}
-  {W}     → This can mean the 7-day timer hasn't completed yet{RE}
+  {Y}  If "OEM Unlocking" is still missing:{RE}
+  {W}     → Settings → search bar → type "OEM"{RE}
+  {W}     → Reboot phone, then open Developer Options again{RE}
+  {W}     → Run Method 116 (Force Show OEM Toggle){RE}
 
-  {Y}  ★ If toggle is GREYED OUT (visible but can't tap):{RE}
-  {W}     Samsung 7-day internet timer not yet done{RE}
-  {W}     Keep phone on WiFi and wait — run Method 68 to monitor{RE}
-  {W}     Try: long-press the greyed toggle (sometimes bypasses timer){RE}
-
-  {C}  sys.oem_unlock_allowed = {timer_ok or 'N/A'}  |  ro.oem_unlock_supported = {oem_sup or 'N/A'}{RE}""")
+  {C}  sys.oem_unlock_allowed = {timer_val}  ✓{RE}""")
 
         while not oem_ok:
             choice = input(f"\n  {Y}(Enter) once toggle is BLUE  |  (y) yes I enabled it  |  (s) skip  |  (q) quit: {RE}").strip().lower()
