@@ -2062,8 +2062,27 @@ def m56_one_button_unlock():
         return v2 == "1"
 
     def verify_dev():
+        # Method 1: settings read (may fail in Termux without root)
         v = get_setting("global", "development_settings_enabled")
-        return v == "1"
+        if v == "1":
+            return True
+        # Method 2: check if Developer Options activity resolves (only works when enabled)
+        out, _, rc = shell("pm resolve-activity --brief -a android.settings.APPLICATION_DEVELOPMENT_SETTINGS 2>/dev/null")
+        if rc == 0 and "android.settings" in (out or ""):
+            return True
+        # Method 3: USB config contains 'adb' → dev options was on at some point
+        out2, _, _ = shell("getprop persist.sys.usb.config 2>/dev/null")
+        if "adb" in (out2 or ""):
+            return True
+        # Method 4: check via cmd settings
+        out3, _, rc3 = shell("cmd settings get global development_settings_enabled 2>/dev/null")
+        if out3.strip() == "1":
+            return True
+        # Method 5: check content provider directly
+        out4, _, _ = shell("content query --uri content://settings/global --where \"name='development_settings_enabled'\" 2>/dev/null")
+        if "value=1" in (out4 or ""):
+            return True
+        return False
 
     # ── STEP 1: Battery ────────────────────────────────────────────────────────
     s("Battery level (Samsung requires ≥ 80% for unlock)")
@@ -2105,12 +2124,16 @@ def m56_one_button_unlock():
   {G}  3.{RE} {W}Enter PIN if prompted{RE}
   {G}  4.{RE} {W}You'll see: "Developer mode has been enabled"{RE}""")
         while not dev_ok:
-            input(f"\n  {Y}Press Enter after tapping Build Number 7× …{RE}")
+            ans = input(f"\n  {Y}Press Enter after tapping Build Number 7×  (or type 'y' if you see 'Developer mode enabled'): {RE}").strip().lower()
+            if ans in ("y", "yes", "done", "ok", "1"):
+                dev_ok = True
+                success("Developer Options accepted (manual confirm)")
+                break
             dev_ok = verify_dev()
             if dev_ok:
                 success("Developer Options confirmed ON")
                 break
-            warn("Not detected yet")
+            warn("Not detected yet — if you already see 'Developer mode has been enabled' on screen, type 'y' and press Enter")
             shell("am start -a android.settings.DEVICE_INFO_SETTINGS 2>/dev/null", timeout=5)
 
     ok_line("Developer Options", dev_ok)
