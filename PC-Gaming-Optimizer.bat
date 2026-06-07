@@ -139,11 +139,13 @@ echo     [5]  PC Health Check + Repair        (84 tools to detect and fix proble
 echo     [6]  Remove Defender/Edge/Copilot + Disable Win Update (PERMANENT)
 echo     [7]  Fix Tamper Protection toggle    (unlock greyed-out Windows Security)
 echo     [8]  Reinstall Default Apps          (recovery - if you removed too much)
-echo     [9]  Exit
+echo     [9]  NVIDIA GPU Optimization        (max performance + manual step guide)
+echo     [0]  Exit
 echo.
 echo ----------------------------------------------------------------------------
-choice /C 123456789 /N /M "  Choose an option [1-9]: "
-if errorlevel 9 goto :END
+choice /C 1234567890 /N /M "  Choose an option [0-9]: "
+if errorlevel 10 goto :END
+if errorlevel 9 goto :NVIDIA
 if errorlevel 8 goto :REINSTALL
 if errorlevel 7 goto :FIXTP
 if errorlevel 6 goto :DEBLOAT_MS
@@ -2315,6 +2317,66 @@ wsreset -i >nul 2>&1
 echo.
 echo   Done. Open the Microsoft Store to reinstall anything still missing
 echo   (search the app name and click Install).
+echo.
+pause
+goto :MENU
+
+:: ===========================================================================
+:: OPTION 9 - NVIDIA GPU OPTIMIZATION (scriptable bits + manual step guide)
+:: ===========================================================================
+:NVIDIA
+cls
+echo ============================================================================
+echo   NVIDIA GPU OPTIMIZATION
+echo ============================================================================
+echo.
+if /i not "%GPU_VENDOR%"=="NVIDIA" (
+    echo   No NVIDIA GPU detected. Found vendor: %GPU_VENDOR%
+    echo   This option only applies to NVIDIA cards.
+    echo.
+    pause
+    goto :MENU
+)
+echo   Detected GPU: %GPU_NAME%
+echo.
+echo   This applies the NVIDIA settings that CAN be scripted, then shows the
+echo   manual steps (driver / BIOS / Control Panel) that give the biggest gains.
+echo.
+choice /C YN /N /M "  Apply scriptable NVIDIA tweaks now? [Y/N]: "
+if errorlevel 2 goto :NVMANUAL
+echo.
+echo   Forcing PowerMizer to maximum performance and disabling ULPS...
+powershell -NoProfile -Command "$base='HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'; Get-ChildItem $base -ErrorAction SilentlyContinue | Where-Object { (Get-ItemProperty $_.PSPath -Name DriverDesc -ErrorAction SilentlyContinue).DriverDesc -match 'NVIDIA|GeForce|RTX|GTX' } | ForEach-Object { Set-ItemProperty $_.PSPath -Name PerfLevelSrc -Value 0x2222 -Type DWord -ErrorAction SilentlyContinue; Set-ItemProperty $_.PSPath -Name PowerMizerEnable -Value 1 -Type DWord -ErrorAction SilentlyContinue; Set-ItemProperty $_.PSPath -Name PowerMizerLevel -Value 1 -Type DWord -ErrorAction SilentlyContinue; Set-ItemProperty $_.PSPath -Name PowerMizerLevelAC -Value 1 -Type DWord -ErrorAction SilentlyContinue; Set-ItemProperty $_.PSPath -Name EnableUlps -Value 0 -Type DWord -ErrorAction SilentlyContinue }" >nul 2>&1
+echo   Disabling NVIDIA telemetry...
+powershell -NoProfile -Command "Get-ScheduledTask -TaskPath '\' -ErrorAction SilentlyContinue | Where-Object {$_.TaskName -like 'Nv*'} | Disable-ScheduledTask -ErrorAction SilentlyContinue" >nul 2>&1
+sc query NvTelemetryContainer >nul 2>&1 && sc config NvTelemetryContainer start= demand >nul 2>&1
+reg add "HKLM\SOFTWARE\NVIDIA Corporation\Global\FTS" /v EnableRID44231 /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\NVIDIA Corporation\Global\FTS" /v EnableRID64640 /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\NVIDIA Corporation\Global\FTS" /v EnableRID66610 /t REG_DWORD /d 0 /f >nul 2>&1
+echo   Setting GPU to persistent / max clocks where supported...
+where nvidia-smi >nul 2>&1 && nvidia-smi -pm 1 >nul 2>&1
+echo   Done - scriptable NVIDIA tweaks applied (a reboot makes PowerMizer stick).
+echo.
+
+:NVMANUAL
+echo ----------------------------------------------------------------------------
+echo   MANUAL STEPS - these give the BIGGEST gains and CANNOT be scripted:
+echo.
+echo     1. Install the latest NVIDIA Game Ready driver from nvidia.com or the
+echo        NVIDIA App. Use a clean install.
+echo     2. In your motherboard BIOS, enable Resizable BAR plus Above 4G
+echo        Decoding. This is a real FPS gain on RTX 30-series.
+echo     3. NVIDIA Control Panel -^> Manage 3D settings -^> Global:
+echo          - Power management mode = Prefer maximum performance
+echo          - Low Latency Mode = Ultra
+echo          - Vertical sync = Off
+echo          - Threaded optimization = On
+echo     4. In each game, turn ON NVIDIA Reflex / Low Latency, and cap your FPS
+echo        about 3 to 5 below your monitor refresh rate.
+echo     5. Windows Settings -^> System -^> Display -^> Graphics: set each game
+echo        to High performance so it always uses the RTX card.
+echo     6. Keep G-Sync / VRR on if your monitor supports it.
+echo ----------------------------------------------------------------------------
 echo.
 pause
 goto :MENU
