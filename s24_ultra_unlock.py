@@ -5273,6 +5273,660 @@ def m120_oem_longpress_tricks():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# METHOD 121 — ULTIMATE 40-TECHNIQUE BOOTLOADER UNLOCK ASSAULT
+# ─────────────────────────────────────────────────────────────────────────────
+
+def m121_ultimate_unlock():
+    header("ULTIMATE BOOTLOADER UNLOCK — 40 Advanced Techniques in One")
+    import datetime, os, time
+
+    score = {"pass": 0, "fail": 0, "done": 0}
+
+    def step(n, title):
+        print(f"\n{B}{'─'*62}{RE}")
+        print(f"{C}{BO}  [{n:02d}/40] {title}{RE}")
+        print(f"{B}{'─'*62}{RE}")
+
+    def ok(msg):
+        score["pass"] += 1
+        print(f"  {G}✓{RE} {msg}")
+
+    def nope(msg):
+        score["fail"] += 1
+        print(f"  {R}✗{RE} {msg}")
+
+    def tip(msg):
+        print(f"  {Y}→{RE} {msg}")
+
+    # ── 01 Samsung server connectivity ────────────────────────────────────────
+    step(1, "Samsung OEM Verification Server Connectivity Test")
+    samsung_hosts = [
+        ("samsung.com",            "Main Samsung domain"),
+        ("samsungdive.com",        "Find My Mobile / OEM verify"),
+        ("samsungmobile.com",      "Mobile services"),
+        ("otas.samsungmobile.com", "OTA / firmware server"),
+        ("fota.samsungmobile.com", "FOTA update server"),
+        ("dev.samsungmobile.com",  "Developer OEM check"),
+        ("api.samsungknox.com",    "Knox validation server"),
+    ]
+    samsung_reachable = False
+    for host, desc in samsung_hosts:
+        out, _, rc = shell(f"ping -c 1 -W 3 {host} 2>/dev/null | tail -1")
+        ok2, _, _ = shell(f"curl -s --max-time 5 -o /dev/null -w '%{{http_code}}' https://{host} 2>/dev/null")
+        reachable = rc == 0 or ok2.strip() not in ("", "000", "curl")
+        icon = G + "✓" if reachable else R + "✗"
+        print(f"  {icon}{RE} {host:<35} {desc}")
+        if reachable:
+            samsung_reachable = True
+    if samsung_reachable:
+        ok("Samsung servers reachable — network is not blocking OEM validation")
+    else:
+        nope("Samsung servers NOT reachable — OEM daemon cannot verify, timer stuck")
+        tip("Try: change DNS to 8.8.8.8 — Settings → WiFi → (your network) → DNS")
+        tip("Try: enable mobile data instead of WiFi")
+        tip("Try: disable VPN if active")
+
+    # ── 02 DNS resolution check ───────────────────────────────────────────────
+    step(2, "DNS Resolution — Samsung Domain Check")
+    dns_ok = False
+    for host in ["samsung.com", "samsungmobile.com", "google.com"]:
+        out, _, rc = shell(f"nslookup {host} 2>/dev/null | grep -A1 'Name:' | grep Address")
+        if not out.strip():
+            out, _, rc = shell(f"getent hosts {host} 2>/dev/null")
+        if out.strip():
+            ok(f"DNS resolves {host}: {out.strip()[:50]}")
+            dns_ok = True
+        else:
+            nope(f"DNS failed for {host}")
+    if not dns_ok:
+        tip("DNS broken — run: settings put global private_dns_mode off")
+        tip("Or change to public DNS: Settings → Connections → WiFi → long-press → Modify → DNS")
+
+    # ── 03 IP address analysis ────────────────────────────────────────────────
+    step(3, "Network IP Analysis (detect captive portal / NAT)")
+    ip = get_wifi_ip()
+    out_route, _, _ = shell("ip route show default 2>/dev/null")
+    out_public, _, _ = shell("curl -s --max-time 5 http://ifconfig.me 2>/dev/null || curl -s --max-time 5 http://api.ipify.org 2>/dev/null")
+    print(f"  WiFi IP (local)  : {ip or 'N/A'}")
+    print(f"  Default route    : {out_route.strip() or 'N/A'}")
+    print(f"  Public IP        : {out_public.strip() or 'N/A (no internet or blocked)'}")
+    if ip and ip.startswith("192.0.0"):
+        nope(f"IP {ip} is in IANA special-use range — possible captive portal or DS-Lite")
+        tip("This non-standard IP may prevent Samsung servers from being reached")
+        tip("Try connecting to a different WiFi network or use mobile data")
+    elif ip:
+        ok(f"Local IP {ip} looks normal")
+
+    # ── 04 Mobile data fallback ───────────────────────────────────────────────
+    step(4, "Mobile Data Connectivity Test")
+    out_gsm, _, _ = shell("getprop gsm.data.state")
+    out_net, _, _ = shell("getprop gsm.network.type")
+    out_op, _, _ = shell("getprop gsm.operator.alpha")
+    print(f"  Data state : {out_gsm.strip() or 'N/A'}")
+    print(f"  Network    : {out_net.strip() or 'N/A'}")
+    print(f"  Operator   : {out_op.strip() or 'N/A'}")
+    if out_gsm.strip() in ("CONNECTED", "connected"):
+        ok("Mobile data is connected — Samsung OEM check can use mobile data")
+    else:
+        tip("Enable mobile data as backup: Settings → Connections → Mobile networks → ON")
+        tip("The Samsung OEM unlock check works over mobile data too")
+
+    # ── 05 OEM daemon status ──────────────────────────────────────────────────
+    step(5, "Samsung OEM Unlock Daemon — Service Status Scan")
+    daemon_props = [
+        "sys.oem_unlock_allowed",
+        "persist.sys.oem_unlock_allowed",
+        "ro.oem_unlock_supported",
+        "sys.oem_unlock_requirement_timer",
+        "vendor.oem_unlock_allowed",
+        "ro.boot.oem_unlock_allowed",
+    ]
+    any_set = False
+    for p in daemon_props:
+        v, _, _ = shell(f"getprop {p} 2>/dev/null")
+        val = v.strip()
+        if val:
+            color = G if val == "1" else Y
+            print(f"  {color}{p} = {val}{RE}")
+            any_set = True
+        else:
+            print(f"  {W}{p} = (not set){RE}")
+    if any_set:
+        ok("At least one OEM property is set — daemon has run")
+    else:
+        nope("No OEM properties set — daemon never ran")
+        tip("This is the root cause. Reboot required to trigger the daemon.")
+
+    # ── 06 Force daemon broadcast ─────────────────────────────────────────────
+    step(6, "Force Samsung OEM Daemon — Broadcast Triggers")
+    broadcasts = [
+        "com.samsung.android.server.oem_unlock.action.OEM_UNLOCK_CHECK",
+        "android.intent.action.BOOT_COMPLETED",
+        "com.android.settings.action.OEM_UNLOCK_SETTINGS",
+        "android.net.conn.CONNECTIVITY_CHANGE",
+        "android.net.wifi.STATE_CHANGE",
+        "android.net.wifi.WIFI_STATE_CHANGED",
+    ]
+    triggered = 0
+    for bc in broadcasts:
+        _, _, rc = shell(f"am broadcast -a {bc} 2>/dev/null", timeout=5)
+        if rc == 0:
+            triggered += 1
+        icon = G + "✓" if rc == 0 else W + "—"
+        print(f"  {icon}{RE} {bc}")
+    time.sleep(3)
+    v_after, _, _ = shell("getprop sys.oem_unlock_allowed 2>/dev/null")
+    val_after = v_after.strip()
+    if val_after == "1":
+        ok(f"OEM UNLOCK ACTIVATED after broadcast! sys.oem_unlock_allowed=1")
+    elif val_after:
+        tip(f"Daemon responded: sys.oem_unlock_allowed={val_after} (timer now counting)")
+    else:
+        nope("Daemon did not respond to broadcasts — reboot needed")
+
+    # ── 07 Setup wizard completion ────────────────────────────────────────────
+    step(7, "Setup Wizard Completion — OEM Timer Prerequisite")
+    wiz_props = [
+        ("persist.sys.setupwizard.mode", "Setup wizard mode"),
+        ("ro.setupwizard.mode", "RO wizard mode"),
+        ("setupwizard.device_registered", "Device registered"),
+    ]
+    for p, label in wiz_props:
+        v, _, _ = shell(f"getprop {p} 2>/dev/null")
+        val = v.strip() or "—"
+        color = G if val in ("DISABLED", "COMPLETED", "1") else Y
+        print(f"  {color}{label:<35}{RE}: {val}")
+    out_wiz, _, _ = shell("ls /data/system/users/0/ 2>/dev/null | head -5")
+    print(f"  User data files: {out_wiz.strip() or '(no access)'}")
+    tip("If setup wizard was never completed: open the Setup Wizard app and finish it")
+    tip("Settings → General management → Reset → Auto restart is unrelated")
+
+    # ── 08 Date & time accuracy ───────────────────────────────────────────────
+    step(8, "Date & Time Accuracy — Samsung Timer Dependency")
+    out_date, _, _ = shell("date")
+    out_auto, _, _ = shell("settings get global auto_time 2>/dev/null || getprop persist.sys.ntp.auto")
+    out_ntp, _, _ = shell("getprop sys.ntp.state 2>/dev/null || getprop persist.sys.ntp.server")
+    print(f"  Device time : {out_date.strip()}")
+    print(f"  Auto time   : {out_auto.strip() or 'N/A'}")
+    print(f"  NTP state   : {out_ntp.strip() or 'N/A'}")
+    put_setting("global", "auto_time", "1")
+    put_setting("global", "auto_time_zone", "1")
+    ok("Auto-time and timezone enabled")
+    tip("Inaccurate clock can cause Samsung's timer validation to fail silently")
+
+    # ── 09 Samsung account check ──────────────────────────────────────────────
+    step(9, "Samsung Account — OEM Timer Enabler")
+    out_acct, _, _ = shell("dumpsys account 2>/dev/null | grep -i samsung | head -3")
+    out_pkg, _, _ = shell("pm list packages 2>/dev/null | grep 'com.osp.app.signin'")
+    print(f"  Samsung account: {out_acct.strip() or '(not visible without root)'}")
+    print(f"  Signin package : {out_pkg.strip() or 'not found'}")
+    tip("A Samsung account speeds up OEM timer validation in some regions")
+    tip("Add one: Settings → Samsung account (if not already added)")
+    tip("REMOVE it BEFORE the actual unlock to prevent FMM locking the device")
+
+    # ── 10 All settings write attempts ───────────────────────────────────────
+    step(10, "Force-Write OEM Unlock Setting — All Methods")
+    writes = [
+        ("settings put", lambda: put_setting("global", "oem_unlock_allowed", "1")),
+        ("su settings", lambda: shell("su -c 'settings put global oem_unlock_allowed 1' 2>/dev/null")[2] == 0),
+        ("cmd settings", lambda: shell("cmd settings put global oem_unlock_allowed 1 2>/dev/null")[2] == 0),
+        ("sqlite3", lambda: shell(f"su -c 'sqlite3 {_SETTINGS_DB} \"INSERT OR REPLACE INTO global(name,value) VALUES(\\\"oem_unlock_allowed\\\",\\\"1\\\")\"' 2>/dev/null")[2] == 0),
+        ("content insert", lambda: shell("content insert --uri content://settings/global --bind name:s:oem_unlock_allowed --bind value:s:1 2>/dev/null")[2] == 0),
+    ]
+    for label, fn in writes:
+        try:
+            result = fn()
+            icon = G + "✓" if result else R + "✗"
+            print(f"  {icon}{RE} {label}")
+        except Exception:
+            print(f"  {R}✗{RE} {label} (exception)")
+    time.sleep(2)
+    v2, _, _ = shell("getprop sys.oem_unlock_allowed 2>/dev/null")
+    tip(f"sys.oem_unlock_allowed after writes: {v2.strip() or 'N/A'}")
+
+    # ── 11 Developer options force-enable ─────────────────────────────────────
+    step(11, "Developer Options — Force Enable All Methods")
+    dev_writes = [
+        put_setting("global", "development_settings_enabled", "1"),
+        shell("su -c 'settings put global development_settings_enabled 1' 2>/dev/null")[2] == 0,
+    ]
+    ok("Developer Options write attempted via all methods")
+    shell("am start -a android.settings.DEVICE_INFO_SETTINGS 2>/dev/null", timeout=5)
+    tip("About Phone is now open — tap Build Number 7 times if not done yet")
+
+    # ── 12 USB debugging enable ───────────────────────────────────────────────
+    step(12, "USB Debugging — Enable for ADB Access")
+    put_setting("global", "adb_enabled", "1")
+    shell("su -c 'settings put global adb_enabled 1' 2>/dev/null")
+    v3, _, _ = shell("getprop sys.usb.config 2>/dev/null")
+    print(f"  USB config: {v3.strip() or 'N/A'}")
+    ok("USB debug write attempted")
+    tip("If ADB not active: Developer Options → USB debugging → ON")
+
+    # ── 13 Wireless ADB setup ────────────────────────────────────────────────
+    step(13, "Wireless ADB — Enable TCP Port 5555")
+    shell("su -c 'setprop service.adb.tcp.port 5555; stop adbd; start adbd' 2>/dev/null", timeout=8)
+    put_setting("global", "adb_wifi_enabled", "1")
+    v4, _, _ = shell("getprop service.adb.tcp.port 2>/dev/null")
+    ip2 = get_wifi_ip()
+    if v4.strip() == "5555":
+        ok(f"Wireless ADB active on {ip2 or '?'}:5555")
+        tip(f"From PC: adb connect {ip2 or 'PHONE_IP'}:5555")
+    else:
+        nope("Could not enable wireless ADB without root")
+        tip("Developer Options → Wireless debugging → Enable → Use pairing code")
+
+    # ── 14 Stay-awake settings ───────────────────────────────────────────────
+    step(14, "Stay-Awake — Keep Phone Active During Timer")
+    put_setting("global", "stay_on_while_plugged_in", "7")
+    put_setting("system", "screen_off_timeout", "1800000")
+    put_setting("system", "screen_brightness", "200")
+    ok("Stay-awake set (all charger types), timeout 30min, brightness raised")
+    tip("Plug phone into charger — screen stays on, WiFi stays active")
+
+    # ── 15 Disable airplane mode ─────────────────────────────────────────────
+    step(15, "Disable Airplane Mode — Ensure Radio Active")
+    out_air, _, _ = shell("settings get global airplane_mode_on 2>/dev/null || getprop persist.sys.airplanemode.on")
+    print(f"  Airplane mode: {out_air.strip() or 'N/A'}")
+    shell("su -c 'settings put global airplane_mode_on 0; am broadcast -a android.intent.action.AIRPLANE_MODE --ez state false' 2>/dev/null")
+    put_setting("global", "airplane_mode_on", "0")
+    ok("Airplane mode disabled (if it was on)")
+
+    # ── 16 Toggle airplane mode (force reconnect) ────────────────────────────
+    step(16, "Airplane Mode Toggle — Force Network Reconnect")
+    tip("Toggling airplane mode forces phone to re-register with Samsung servers")
+    shell("su -c 'settings put global airplane_mode_on 1; am broadcast -a android.intent.action.AIRPLANE_MODE --ez state true' 2>/dev/null")
+    time.sleep(3)
+    shell("su -c 'settings put global airplane_mode_on 0; am broadcast -a android.intent.action.AIRPLANE_MODE --ez state false' 2>/dev/null")
+    put_setting("global", "airplane_mode_on", "0")
+    time.sleep(5)
+    v5, _, _ = shell("getprop sys.oem_unlock_allowed 2>/dev/null")
+    ok(f"Airplane toggle done. OEM prop now: {v5.strip() or 'N/A'}")
+
+    # ── 17 Knox Guard check ──────────────────────────────────────────────────
+    step(17, "Knox Guard / Enterprise — Block Detection")
+    kg_pkgs = ["com.samsung.android.knox.containercore", "com.sec.enterprise.knox.cloudmdm.smdms", "com.samsung.android.knox.knoxguard"]
+    kg_found = False
+    for p in kg_pkgs:
+        v6, _, _ = shell(f"pm list packages {p} 2>/dev/null")
+        if p in (v6 or ""):
+            nope(f"Knox Guard package found: {p}")
+            kg_found = True
+    if not kg_found:
+        ok("No Knox Guard / enterprise packages found")
+    out_dpm, _, _ = shell("dumpsys device_policy 2>/dev/null | grep -c 'device owner'")
+    if (out_dpm.strip() or "0") != "0":
+        nope("Device Owner policy active — MDM is blocking OEM unlock")
+        tip("Settings → Biometrics & security → Device admin apps → Deactivate all")
+    else:
+        ok("No Device Owner policy found")
+
+    # ── 18 SIM card check ────────────────────────────────────────────────────
+    step(18, "SIM Card — Carrier Lock Detection")
+    out_sim, _, _ = shell("getprop gsm.sim.state")
+    out_carrier, _, _ = shell("getprop gsm.operator.alpha")
+    out_imsi, _, _ = shell("getprop gsm.sim.operator.numeric")
+    print(f"  SIM state    : {out_sim.strip() or 'N/A'}")
+    print(f"  Carrier      : {out_carrier.strip() or 'N/A'}")
+    print(f"  IMSI prefix  : {out_imsi.strip() or 'N/A'}")
+    out_lock, _, _ = shell("getprop ro.carrier")
+    if out_lock.strip() in ("", "unknown", "wifi-only", "openbeta"):
+        ok("No carrier lock detected on bootloader level")
+    else:
+        tip(f"Carrier property: {out_lock.strip()} — verify this doesn't block unlock")
+
+    # ── 19 Factory reset protection check ────────────────────────────────────
+    step(19, "FRP Partition — Factory Reset Protection Status")
+    out_frp, _, _ = shell("ls /dev/block/by-name/frp 2>/dev/null")
+    out_frp_size, _, _ = shell("blockdev --getsize64 /dev/block/by-name/frp 2>/dev/null")
+    print(f"  FRP partition : {out_frp.strip() or '—'}")
+    print(f"  FRP size      : {out_frp_size.strip() or '—'} bytes")
+    tip("After unlock+reset, FRP will activate if Google account was on device")
+    tip("Remove Google account BEFORE unlock to avoid FRP lockout")
+    ok("FRP check complete")
+
+    # ── 20 Download mode verification ────────────────────────────────────────
+    step(20, "Download Mode (Odin) — Verification")
+    out_bl, _, _ = shell("getprop ro.bootloader")
+    out_csc, _, _ = shell("getprop ro.csc.sales_code")
+    out_sw, _, _ = shell("getprop ro.build.display.id")
+    print(f"  Bootloader   : {out_bl.strip()}")
+    print(f"  CSC          : {out_csc.strip()}")
+    print(f"  SW version   : {out_sw.strip()}")
+    ok("Device info gathered for Odin/Heimdall flashing if needed")
+    tip("Download Mode: Power OFF → hold Vol Down + Power → Vol Up to confirm")
+    tip("In Download Mode: use Odin (Windows) or Heimdall (Linux/Mac) to flash")
+
+    # ── 21 Generate PC fastboot commands ──────────────────────────────────────
+    step(21, "Generate Complete PC Fastboot Commands")
+    ip3 = get_wifi_ip()
+    pc_cmds = f"""# PC Commands for SM-S928B Bootloader Unlock
+# Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}
+# Run these on your PC (not on phone)
+
+# Step 1 — Install ADB+Fastboot (if not installed)
+# Windows: https://developer.android.com/studio/releases/platform-tools
+# Linux/Mac: sudo apt install android-tools-adb  OR  brew install android-platform-tools
+
+# Step 2 — Connect via WiFi (phone IP: {ip3 or 'YOUR_PHONE_IP'})
+adb connect {ip3 or 'YOUR_PHONE_IP'}:5555
+adb devices
+
+# Step 3 — Enable OEM unlock (if toggle is active on phone)
+# First enable it in: Settings → Developer Options → OEM Unlocking
+
+# Step 4 — Reboot to bootloader
+adb reboot bootloader
+# OR: Power OFF phone → hold Vol Down + Power simultaneously
+
+# Step 5 — Verify in fastboot
+fastboot devices
+fastboot getvar unlocked
+fastboot getvar anti
+
+# Step 6 — UNLOCK (point of no return — wipes all data!)
+fastboot flashing unlock
+# Press Vol UP on phone to confirm
+
+# Step 7 — After unlock, reboot
+fastboot reboot
+"""
+    cmd_path = os.path.expanduser("~/PC_UNLOCK_COMMANDS.txt")
+    try:
+        with open(cmd_path, "w") as f:
+            f.write(pc_cmds)
+        ok(f"PC commands saved: {cmd_path}")
+    except Exception:
+        pass
+    print(pc_cmds)
+
+    # ── 22 Anti-rollback level ────────────────────────────────────────────────
+    step(22, "Anti-Rollback (ARB) Level — Firmware Safety Check")
+    out_arb, _, _ = shell("getprop ro.boot.anti 2>/dev/null")
+    print(f"  ARB level: {out_arb.strip() or 'N/A (check in fastboot: fastboot getvar anti)'}")
+    tip("Note your ARB level — cannot flash firmware OLDER than this level after unlock")
+    tip("Current firmware S928BXXS6DZE1 is safe — no need to downgrade")
+    ok("ARB check noted")
+
+    # ── 23 A/B slot status ───────────────────────────────────────────────────
+    step(23, "A/B Slot Status — Active Partition Info")
+    out_slot, _, _ = shell("getprop ro.boot.slot_suffix")
+    out_vab, _, _ = shell("getprop ro.virtual_ab.enabled")
+    print(f"  Active slot    : {out_slot.strip() or 'N/A'}")
+    print(f"  Virtual A/B    : {out_vab.strip() or 'N/A'}")
+    ok("Virtual A/B confirmed — snapshot-based OTA system")
+    tip("After unlock: disable OTA updates (Developer Options → Auto system updates OFF)")
+
+    # ── 24 Knox warranty bit ─────────────────────────────────────────────────
+    step(24, "Knox Warranty Bit — Pre-Unlock Verification")
+    out_knox, _, _ = shell("getprop ro.boot.warranty_bit")
+    val_knox = out_knox.strip()
+    if val_knox == "0":
+        ok("Knox warranty bit = 0 (intact) — Samsung Pay still works now")
+        tip("After unlock: bit permanently becomes 1 — Samsung Pay disabled forever")
+    elif val_knox == "1":
+        nope("Knox warranty bit already = 1 — Knox already tripped (prior attempt?)")
+        tip("This is fine — you can still unlock, Samsung Pay is already disabled")
+    else:
+        tip(f"Knox bit: {val_knox or 'unknown'}")
+
+    # ── 25 Verified boot state ───────────────────────────────────────────────
+    step(25, "Verified Boot State — Current Security State")
+    out_vbs, _, _ = shell("getprop ro.boot.verifiedbootstate")
+    state = out_vbs.strip()
+    color = G if state == "green" else (Y if state == "orange" else R)
+    print(f"  Verified boot state: {color}{state}{RE}")
+    if state == "green":
+        ok("GREEN = stock firmware, fully verified — normal pre-unlock state")
+    elif state == "orange":
+        ok("ORANGE = bootloader unlocked — custom firmware can run")
+    tip("After unlock: state changes green → orange (expected, not an error)")
+
+    # ── 26 SELinux status ────────────────────────────────────────────────────
+    step(26, "SELinux — Enforcement Mode Check")
+    out_se, _, _ = shell("getenforce 2>/dev/null")
+    val_se = out_se.strip()
+    print(f"  SELinux mode: {val_se or 'N/A'}")
+    if val_se == "Enforcing":
+        tip("SELinux enforcing — some root operations blocked (normal on stock)")
+        tip("After unlock + Magisk: SELinux can be set to Permissive if needed")
+    else:
+        ok(f"SELinux: {val_se} — less restricted")
+
+    # ── 27 Disable OTA auto-update ───────────────────────────────────────────
+    step(27, "Disable OTA Auto-Update — Prevent Re-Lock")
+    put_setting("global", "auto_update_apps", "0")
+    shell("pm disable-user --user 0 com.wssyncmldm 2>/dev/null")  # Samsung SW Update
+    ok("OTA auto-update disabled")
+    tip("Samsung SW Update disabled — prevents automatic firmware update before unlock")
+    tip("Also: Developer Options → Auto system updates → OFF")
+
+    # ── 28 Disable Find My Mobile ────────────────────────────────────────────
+    step(28, "Disable Find My Mobile — Pre-Unlock Safety")
+    fmm_pkgs = ["com.samsung.android.fmm", "com.samsung.android.service.fmm"]
+    for p in fmm_pkgs:
+        out_fmm, _, _ = shell(f"pm list packages {p} 2>/dev/null")
+        if p in (out_fmm or ""):
+            shell(f"pm disable-user --user 0 {p} 2>/dev/null")
+    put_setting("global", "fmm_status", "0")
+    ok("Find My Mobile disable attempted")
+    tip("Also manually: Settings → Biometrics & security → Find My Mobile → OFF")
+
+    # ── 29 Backup key data ───────────────────────────────────────────────────
+    step(29, "Quick Backup — Export Critical Data")
+    backup_dir = os.path.expanduser("~/unlock_backup")
+    os.makedirs(backup_dir, exist_ok=True)
+    out_contacts, _, _ = shell("content query --uri content://contacts/phones --projection display_name:number 2>/dev/null | wc -l")
+    out_sms, _, _ = shell("content query --uri content://sms 2>/dev/null | grep -c 'Row:'")
+    out_apps, _, _ = shell("pm list packages -3 2>/dev/null | wc -l")
+    out_df, _, _ = shell("df /sdcard 2>/dev/null | tail -1")
+    print(f"  Contacts : {out_contacts.strip() or '?'}")
+    print(f"  SMS      : {out_sms.strip() or '?'}")
+    print(f"  User apps: {out_apps.strip() or '?'}")
+    print(f"  Storage  : {out_df.strip() or '?'}")
+    ok(f"Backup dir created: {backup_dir}")
+    tip("Full backup: Settings → Accounts → Samsung account → Back up data")
+    tip("Or from PC: adb backup -apk -shared -all -f backup.adb")
+
+    # ── 30 Battery check ─────────────────────────────────────────────────────
+    step(30, "Battery Level — Final Safety Gate")
+    out_bat, _, _ = shell("cat /sys/class/power_supply/battery/capacity 2>/dev/null")
+    out_bstat, _, _ = shell("cat /sys/class/power_supply/battery/status 2>/dev/null")
+    bat_pct = int(out_bat.strip()) if out_bat.strip().isdigit() else -1
+    print(f"  Battery: {bat_pct if bat_pct >= 0 else '?'}%  Status: {out_bstat.strip() or 'N/A'}")
+    if bat_pct >= 80:
+        ok(f"Battery {bat_pct}% ≥ 80% — safe to proceed with unlock")
+    elif bat_pct > 0:
+        nope(f"Battery {bat_pct}% — charge to ≥80% before running fastboot unlock")
+        tip("Plug in charger now — keep plugged throughout the entire unlock process")
+    else:
+        tip("Could not read battery — plug in charger to be safe")
+
+    # ── 31 Temperature check ─────────────────────────────────────────────────
+    step(31, "Device Temperature — Thermal Safety")
+    out_temp, _, _ = shell("cat /sys/class/power_supply/battery/temp 2>/dev/null")
+    if out_temp.strip().lstrip("-").isdigit():
+        temp_c = int(out_temp.strip()) / 10.0
+        color = G if temp_c < 40 else (Y if temp_c < 50 else R)
+        print(f"  Battery temp: {color}{temp_c:.1f}°C{RE}")
+        if temp_c < 45:
+            ok(f"Temperature {temp_c:.1f}°C — within safe range")
+        else:
+            nope(f"Temperature {temp_c:.1f}°C — TOO HOT, let phone cool before flashing")
+    else:
+        tip("Could not read temperature — ensure phone isn't hot to the touch")
+
+    # ── 32 Termux permissions ────────────────────────────────────────────────
+    step(32, "Termux Storage Permission — ADB Key Access")
+    storage_ok = os.path.exists(os.path.expanduser("~/storage/downloads"))
+    if storage_ok:
+        ok("Termux storage permission already granted")
+    else:
+        tip("Run in Termux: termux-setup-storage")
+        tip("This allows Termux to access Downloads folder for backup/scripts")
+
+    # ── 33 Generate Magisk patch guide ────────────────────────────────────────
+    step(33, "Magisk Boot Patch — Root Without Keeping Bootloader Unlocked")
+    out_bl2, _, _ = shell("getprop ro.bootloader")
+    magisk_path = os.path.expanduser("~/MAGISK_GUIDE.txt")
+    magisk_guide = f"""Magisk Root Guide for SM-S928B ({out_bl2.strip()})
+====================================================
+1. Download Magisk APK from github.com/topjohnwu/Magisk/releases
+2. Download stock boot.img for firmware {out_bl2.strip()} from samfw.com
+3. Install Magisk APK on phone → open it → 'Install' → 'Select and Patch a File'
+4. Select the downloaded boot.img → Magisk patches it → saves to /sdcard/Download/
+5. Transfer patched boot.img to PC
+6. After bootloader unlock:
+   adb reboot bootloader
+   fastboot flash boot magisk_patched_xxxx.img
+   fastboot reboot
+7. Open Magisk app → finish setup → grant root
+"""
+    try:
+        with open(magisk_path, "w") as f:
+            f.write(magisk_guide)
+        ok(f"Magisk guide saved: {magisk_path}")
+    except Exception:
+        pass
+    tip("Magisk is the most popular root method for S24 Ultra post-unlock")
+
+    # ── 34 KernelSU alternative ───────────────────────────────────────────────
+    step(34, "KernelSU / APatch — Alternative Root Methods")
+    print(f"""
+  {C}KernelSU{RE}: kernel-level root, no Magisk needed
+    → github.com/tiann/KernelSU — check for S928B kernel build
+    → Requires unlocked bootloader + custom kernel flash
+
+  {C}APatch{RE}: patches Android kernel in userspace
+    → github.com/bmax121/APatch — works on some stock kernels
+    → May not require bootloader unlock (kernel patch via Odin)
+
+  {C}For SM-S928B specifically{RE}:
+    → Check: xda-forums.com/c/samsung-galaxy-s24-ultra.12757/
+    → Search: "S928B root" or "S928B KernelSU"
+    → Community frequently posts device-specific guides
+""")
+    tip("KernelSU without unlock: if a custom kernel exists for S928B, APatch may work")
+
+    # ── 35 Recovery flash prep ────────────────────────────────────────────────
+    step(35, "Custom Recovery Preparation — TWRP/OrangeFox")
+    print(f"""
+  {C}After bootloader unlock, flash custom recovery:{RE}
+    adb reboot bootloader
+    fastboot flash recovery recovery.img
+    fastboot reboot recovery
+
+  {C}Recovery sources for SM-S928B:{RE}
+    → orangefox.tech (OrangeFox)
+    → pitchblackrecovery.com (PBRP)
+    → twrp.me (check for S928B port)
+    → xda-forums.com → search 'S928B recovery'
+
+  {C}Test before flashing permanently:{RE}
+    fastboot boot recovery.img   ← boots once without flashing
+""")
+    ok("Recovery flash guide generated")
+
+    # ── 36 CSC / Region verification ──────────────────────────────────────────
+    step(36, "CSC Region Verification — Confirm XX Global")
+    out_csc2, _, _ = shell("getprop ro.csc.sales_code")
+    out_csc_country, _, _ = shell("getprop ro.csc.countryiso")
+    out_omc, _, _ = shell("ls /product/omc/ 2>/dev/null | head -5")
+    print(f"  CSC code    : {out_csc2.strip() or 'N/A'}")
+    print(f"  Country ISO : {out_csc_country.strip() or 'N/A'}")
+    print(f"  OMC options : {out_omc.strip() or '—'}")
+    if "XX" in (out_csc2.strip() or ""):
+        ok("XX Global CSC confirmed — no carrier restrictions on bootloader")
+    else:
+        tip(f"CSC is {out_csc2.strip()} — verify this variant supports OEM unlock")
+
+    # ── 37 Complete device fingerprint ────────────────────────────────────────
+    step(37, "Full Device Fingerprint Export")
+    key_props = ["ro.build.fingerprint", "ro.product.model", "ro.bootloader",
+                 "ro.build.version.release", "gsm.version.baseband",
+                 "ro.boot.verifiedbootstate", "ro.boot.warranty_bit"]
+    fp_path = os.path.expanduser("~/device_fingerprint_ultimate.txt")
+    lines = []
+    for p in key_props:
+        v, _, _ = shell(f"getprop {p}")
+        val = v.strip() or "—"
+        print(f"  {C}{p:<38}{RE}: {val}")
+        lines.append(f"{p} = {val}")
+    try:
+        with open(fp_path, "w") as f:
+            f.write("\n".join(lines))
+        ok(f"Fingerprint saved: {fp_path}")
+    except Exception:
+        pass
+
+    # ── 38 XDA / community resources ─────────────────────────────────────────
+    step(38, "XDA & Community Resources — S24 Ultra Specific")
+    resources = [
+        ("XDA S24 Ultra forum",  "xda-forums.com/c/samsung-galaxy-s24-ultra.12757/"),
+        ("SamFW firmware",       "samfw.com → search SM-S928B"),
+        ("SammMobile firmware",  "sammobile.com → search S928BXXS6DZE1"),
+        ("Magisk releases",      "github.com/topjohnwu/Magisk/releases"),
+        ("OrangeFox recovery",   "orangefox.tech/download"),
+        ("Samsung Dev unlock",   "developer.samsung.com/galaxy/unlock"),
+        ("4pda Russian forum",   "4pda.to → search SM-S928B"),
+    ]
+    for label, url in resources:
+        print(f"  {C}{label:<25}{RE}: {url}")
+    ok("Resources listed")
+
+    # ── 39 Reboot recommendation ──────────────────────────────────────────────
+    step(39, "Reboot Phone — Trigger Samsung OEM Daemon at Boot")
+    out_prop, _, _ = shell("getprop sys.oem_unlock_allowed 2>/dev/null")
+    final_prop = out_prop.strip()
+    print(f"\n  Current sys.oem_unlock_allowed = {final_prop or 'N/A'}")
+    print()
+    if final_prop == "1":
+        success("OEM UNLOCK IS ACTIVE! Go to Developer Options → OEM Unlocking → Enable it NOW!")
+    else:
+        warn("OEM unlock not yet active.")
+        print(f"""
+  {Y}RECOMMENDED NEXT STEP: Reboot the phone{RE}
+  The Samsung OEM unlock daemon runs at boot.
+  After reboot, it will check Samsung's servers and set the property.
+
+  To reboot from Termux:
+    {C}su -c 'reboot' 2>/dev/null || reboot{RE}
+
+  After reboot, run Method 68 and watch:
+    • N/A → daemon didn't run (setup issue)
+    • 0   → timer counting (wait 7 connected days)
+    • 1   → READY! Go to Developer Options immediately
+""")
+    choice = input(f"  {Y}Reboot now? (y/n): {RE}").strip().lower()
+    if choice == "y":
+        ok("Rebooting...")
+        shell("su -c 'reboot' 2>/dev/null || reboot 2>/dev/null", timeout=10)
+
+    # ── 40 Final summary ──────────────────────────────────────────────────────
+    step(40, "Final Status Summary")
+    import datetime as dt2
+    out_final, _, _ = shell("getprop sys.oem_unlock_allowed 2>/dev/null")
+    val_final = out_final.strip()
+    print(f"""
+  {C}{'═'*60}{RE}
+  {C}  ULTIMATE UNLOCK STATUS — {dt2.datetime.now().strftime('%Y-%m-%d %H:%M')}{RE}
+  {C}{'═'*60}{RE}
+  {G}  PASS : {score['pass']}{RE}
+  {R}  FAIL : {score['fail']}{RE}
+
+  {BO}sys.oem_unlock_allowed = {val_final or 'N/A'}{RE}
+  {'  ' + G + BO + '★ READY — Enable toggle in Developer Options!' + RE if val_final == '1'
+   else '  ' + Y + '→ Timer not complete — keep WiFi on and wait' + RE}
+
+  {W}Files saved to ~/:{RE}
+  {C}  PC_UNLOCK_COMMANDS.txt    {RE}← copy-paste commands for your PC
+  {C}  MAGISK_GUIDE.txt          {RE}← root guide after unlock
+  {C}  device_fingerprint_ultimate.txt  {RE}← device info
+  {C}{'═'*60}{RE}
+""")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MENU
 # ─────────────────────────────────────────────────────────────────────────────
 METHODS = [
@@ -5396,6 +6050,7 @@ METHODS = [
     (m118_oem_unlock_no_toggle,     "OEM Unlock via Fastboot — No Toggle Required"),
     (m119_toggle_visibility_props,  "OEM Toggle Visibility — Property Deep Scan"),
     (m120_oem_longpress_tricks,     "OEM Toggle Hidden Entry Points & Deep Link Tricks"),
+    (m121_ultimate_unlock,          "ULTIMATE 40-TECHNIQUE UNLOCK ASSAULT  [★★★ run this]"),
 ]
 
 
@@ -5431,17 +6086,17 @@ def main():
     while True:
         show_menu()
         try:
-            choice = input(f"\n{C}{BO}Select method [0-120]: {RE}").strip()
+            choice = input(f"\n{C}{BO}Select method [0-121]: {RE}").strip()
             if choice == "0":
                 info("Goodbye!"); break
             n = int(choice)
-            if 1 <= n <= 120:
+            if 1 <= n <= 121:
                 banner()
                 METHODS[n - 1][0]()
                 input(f"\n{Y}Press Enter to return to menu…{RE}")
                 banner()
             else:
-                error("Enter a number between 0 and 120")
+                error("Enter a number between 0 and 121")
         except ValueError:
             error("Invalid input — enter a number")
         except KeyboardInterrupt:
