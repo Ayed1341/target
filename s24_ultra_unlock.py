@@ -2954,38 +2954,83 @@ def m67_termux_setup():
 # ─────────────────────────────────────────────────────────────────────────────
 def m68_oem_toggle_watcher():
     header("Method 68: Real-Time OEM Toggle Monitor")
-    serial, _ = get_device()
-    if not serial:
-        error("No device detected"); return
 
-    print(f"{C}Watching oem_unlock_allowed every 5 seconds. Toggle in Developer Options.{RE}")
-    print(f"{Y}Press Ctrl+C to stop.{RE}\n")
+    # ── One-time diagnostic before loop ───────────────────────────────────────
+    print(f"{C}{'─'*62}{RE}")
+    print(f"{C}  Initial diagnostic scan:{RE}")
+    print(f"{C}{'─'*62}{RE}")
 
-    prev_oem = None
+    # Check all known OEM unlock properties (Android 14-16 / OneUI 6-8)
+    oem_props = [
+        "sys.oem_unlock_allowed",
+        "persist.sys.oem_unlock_allowed",
+        "ro.oem_unlock_supported",
+        "ro.boot.oem_unlock_allowed",
+        "ro.config.oem_unlock_allowed",
+        "sys.oem_unlock_requirement_timer",
+        "persist.oem_unlock_allowed",
+        "vendor.oem_unlock_allowed",
+    ]
+    any_prop_set = False
+    for p in oem_props:
+        v, _, _ = shell(f"getprop {p} 2>/dev/null")
+        val = v.strip()
+        if val:
+            color = G if val == "1" else Y
+            print(f"  {color}{p:<42}{RE} = {val}")
+            any_prop_set = True
+        else:
+            print(f"  {W}{p:<42}{RE} = (not set)")
+
+    # Check Samsung OEM service
+    svc, _, _ = shell("getprop init.svc.sec_oem_unlock 2>/dev/null || getprop init.svc.oem_unlock 2>/dev/null")
+    svc_val = svc.strip() or "not found"
+    print(f"\n  Samsung OEM unlock service: {G if svc_val=='running' else Y}{svc_val}{RE}")
+
+    # Setup wizard check via alternative method
+    prov, _, _ = shell("getprop persist.sys.setupwizard.mode 2>/dev/null")
+    prov_val = prov.strip() or "—"
+    print(f"  Setup wizard mode         : {prov_val}")
+
+    if not any_prop_set:
+        print(f"\n  {R}{BO}No OEM unlock properties found at all.{RE}")
+        print(f"  {Y}This means the Samsung OEM unlock daemon has never run.{RE}")
+        print(f"  {Y}Most likely cause: setup wizard not fully completed,{RE}")
+        print(f"  {Y}or the device was reset and timer hasn't started yet.{RE}")
+        print(f"\n  {C}Try rebooting the phone — the daemon runs at boot.{RE}")
+        print(f"  {C}After reboot, leave on WiFi 10 min then check again.{RE}")
+
+    print(f"\n{C}{'─'*62}{RE}")
+    print(f"{C}  Watching every 5s — Ctrl+C to stop{RE}")
+    print(f"{C}{'─'*62}{RE}\n")
+
+    prev_sys = None
     try:
         i = 0
         while True:
-            oem = get_setting("global", "oem_unlock_allowed")
-            oem_sys, _, _ = shell("getprop sys.oem_unlock_allowed")
+            oem_sys, _, _ = shell("getprop sys.oem_unlock_allowed 2>/dev/null")
+            sys_val = oem_sys.strip()
             inet = check_internet()
-            ts   = datetime.now().strftime("%H:%M:%S")
+            ts = datetime.now().strftime("%H:%M:%S")
 
-            changed = (oem != prev_oem)
-            oem_color = G if oem == "1" else R
-            net_color = G if inet else R
+            sys_changed = (sys_val != prev_sys)
+            sys_color = G if sys_val == "1" else (Y if sys_val == "0" else R)
+            net_color  = G if inet else R
 
-            if changed or i % 6 == 0:  # print every 30s or on change
-                print(f"  [{ts}] oem_unlock_allowed={oem_color}{oem or 'N/A'}{RE}  "
-                      f"sys={oem_sys or 'N/A'}  "
-                      f"inet={net_color}{'OK' if inet else 'NO'}{RE}"
-                      f"{' ← CHANGED!' if changed else ''}")
+            if sys_changed or i % 12 == 0:  # print on change or every 60s
+                status = "HIDDEN from Dev Options" if sys_val != "1" else "VISIBLE in Dev Options!"
+                print(f"  [{ts}] sys.oem_unlock_allowed={sys_color}{sys_val or 'N/A'}{RE}"
+                      f"  inet={net_color}{'OK' if inet else 'NO'}{RE}"
+                      f"  → {status}"
+                      f"{f'  {R}{BO}← CHANGED!{RE}' if sys_changed and prev_sys is not None else ''}")
 
-            if changed and oem == "1":
-                print(f"\n{G}{BO}  ★ OEM UNLOCK ALLOWED! Toggle is now ON ★{RE}")
-                print(f"{C}  Proceed with Method 7 → reboot bootloader → fastboot unlock{RE}\n")
-                log("OEM unlock toggle activated")
+            if sys_val == "1" and prev_sys != "1":
+                print(f"\n{G}{BO}  ★★★ OEM UNLOCK TIMER COMPLETE! ★★★{RE}")
+                print(f"{G}  'OEM Unlocking' now APPEARS in Developer Options!{RE}")
+                print(f"{C}  → Settings → Developer Options → OEM Unlocking → Enable{RE}")
+                print(f"{C}  → Then: reboot bootloader → fastboot flashing unlock{RE}\n")
 
-            prev_oem = oem
+            prev_sys = sys_val
             i += 1
             time.sleep(5)
     except KeyboardInterrupt:
