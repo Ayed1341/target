@@ -274,7 +274,7 @@ def banner():
   ███████║███████╗     ██║    ╚██████╔╝███████╗██║   ██║  ██║██║  ██║
   ╚══════╝╚══════╝     ╚═╝     ╚═════╝ ╚══════╝╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝{RE}""")
     print(f"{C}{BO}  Samsung Galaxy S24 Ultra — Advanced Bootloader Unlock Suite{RE}")
-    print(f"{Y}  40 Professional Methods  |  Termux Edition  |  ADB + Fastboot{RE}")
+    print(f"{Y}  120 Professional Methods  |  Termux Edition  |  ADB + Fastboot{RE}")
     print(f"  Mode: {mode_label}")
     print(f"{W}  {'─'*62}{RE}\n")
 
@@ -3396,58 +3396,107 @@ def m77_stay_awake_setting():
 
 
 def m78_seven_day_countdown():
-    header("Samsung 7-Day OEM Unlock Timer — Countdown Calculator")
-    import time, datetime
+    header("Samsung 7-Day OEM Unlock Timer — Countdown & Daemon Diagnostics")
+    import datetime
     out, _, _ = shell("getprop sys.oem_unlock_allowed")
-    if out.strip() == "1":
-        success("OEM unlock already ALLOWED — 7-day timer has already passed!")
+    oem_allowed = out.strip()
+    if oem_allowed == "1":
+        success("OEM unlock already ALLOWED — 7-day timer has passed!")
         return
-    info("The OEM unlock toggle appears greyed-out until the device has been connected")
-    info("to the internet for an accumulated ~168 hours (7 days) since first setup.")
+    info("The OEM unlock toggle requires ~168h cumulative internet connection since first setup.")
     print()
-    # Try to get first boot epoch from setup wizard completion
-    out2, _, _ = shell("getprop ro.build.date.utc")
-    build_utc = out2.strip()
-    out3, _, _ = shell("stat /data/system/users/0/settings_system.xml 2>/dev/null || stat /data/system/packages.xml 2>/dev/null")
-    # Get current unix time
+
+    # ── Current time ─────────────────────────────────────────────────────────
     out4, _, _ = shell("date +%s")
     now_ts = int(out4.strip() or "0")
     now_dt = datetime.datetime.fromtimestamp(now_ts)
+    out2, _, _ = shell("getprop ro.build.date.utc")
+    build_utc = out2.strip()
     info(f"Current time       : {now_dt.strftime('%Y-%m-%d %H:%M:%S')}")
     info(f"Build date UTC     : {build_utc}")
+
+    # ── Try real timer props ──────────────────────────────────────────────────
     print()
-    # Read the oem_unlock_requirement_timer if accessible
-    out5, _, _ = shell("getprop sys.oem_unlock_requirement_timer 2>/dev/null")
-    timer_val = out5.strip()
-    if timer_val:
+    timer_props = [
+        "sys.oem_unlock_requirement_timer",
+        "sys.oem_unlock_allowed",
+        "persist.oem_unlock_allowed",
+        "oem_unlock.timer",
+        "ro.oem_unlock_supported",
+    ]
+    info("Samsung OEM unlock daemon properties:")
+    for p in timer_props:
+        v, _, _ = shell(f"getprop {p} 2>/dev/null")
+        val = v.strip() or "—"
+        color = G if val not in ("—", "0") else W
+        print(f"  {color}{p:<42}{RE}: {val}")
+
+    # ── Check Samsung OEM unlock service ─────────────────────────────────────
+    print()
+    info("Samsung OEM unlock service status:")
+    svc_checks = [
+        ("init.svc.oem_unlock",          "getprop init.svc.oem_unlock 2>/dev/null"),
+        ("init.svc.sec_oem_unlock",      "getprop init.svc.sec_oem_unlock 2>/dev/null"),
+        ("init.svc.oem_unlock_req",      "getprop init.svc.oem_unlock_req 2>/dev/null"),
+        ("OEM unlock process",           "ps -A 2>/dev/null | grep -i oem_unlock | head -2"),
+        ("Knox unlock service",          "ps -A 2>/dev/null | grep -i knox.*unlock | head -2"),
+    ]
+    daemon_running = False
+    for label, cmd in svc_checks:
+        v, _, _ = shell(cmd)
+        val = v.strip() or "—"
+        if val not in ("—", "stopped", ""):
+            success(f"{label}: {val}")
+            daemon_running = True
+        else:
+            print(f"  {W}{label:<35}{RE}: {val}")
+
+    # ── Try to trigger the daemon ─────────────────────────────────────────────
+    print()
+    info("Attempting to trigger Samsung OEM unlock daemon...")
+    triggers = [
+        "am broadcast -a com.samsung.android.server.oem_unlock.action.OEM_UNLOCK_CHECK 2>/dev/null",
+        "am broadcast -a android.intent.action.BOOT_COMPLETED 2>/dev/null",
+        "am startservice com.android.settings/.oem_lock.OemLockService 2>/dev/null",
+        "am broadcast -a com.android.settings.action.OEM_UNLOCK_SETTINGS 2>/dev/null",
+    ]
+    for t in triggers:
+        _, _, rc = shell(t, timeout=5)
+        icon = G + "✓" if rc == 0 else W + "—"
+        print(f"  {icon}{RE} {t[:70]}")
+
+    # ── Heuristic based on build date ─────────────────────────────────────────
+    print()
+    if build_utc:
         try:
-            remaining_sec = int(timer_val)
-            remaining_h = remaining_sec // 3600
-            remaining_m = (remaining_sec % 3600) // 60
-            info(f"Timer remaining    : {remaining_h}h {remaining_m}m")
-            unlock_at = datetime.datetime.fromtimestamp(now_ts + remaining_sec)
-            success(f"OEM unlock available around: {unlock_at.strftime('%Y-%m-%d %H:%M')}")
+            build_ts = int(build_utc)
+            elapsed_h = (now_ts - build_ts) // 3600
+            info(f"Elapsed since build: ~{elapsed_h}h  (need 168h connected)")
+            if elapsed_h >= 168:
+                warn("≥168h since build — timer SHOULD be expired.")
+                print()
+                error("sys.oem_unlock_allowed is still not set despite timer appearing expired.")
+                info("Most likely causes:")
+                print(f"  {Y}1. Timer counts CONNECTED hours only — offline time doesn't count{RE}")
+                print(f"  {Y}2. Phone was factory-reset (resets timer to 0){RE}")
+                print(f"  {Y}3. Samsung setup wizard NOT fully completed (affects timer start){RE}")
+                print(f"  {Y}4. Samsung account NOT added during setup (some regions require it){RE}")
+                print(f"  {Y}5. The Samsung OEM unlock daemon isn't running — try rebooting{RE}")
+                print()
+                info("ACTION: Reboot the phone, ensure WiFi connects on boot, leave for 10 min,")
+                info("        then re-run Method 68 (OEM Toggle Watcher) to see if it activates.")
+                info("        If still N/A after reboot: the timer may have been reset by a factory reset.")
+            else:
+                remaining = 168 - elapsed_h
+                unlock_at = datetime.datetime.fromtimestamp(build_ts + 168 * 3600)
+                warn(f"~{remaining}h remaining — estimated ready: {unlock_at.strftime('%Y-%m-%d %H:%M')}")
+                info("Keep WiFi on continuously. Offline time does NOT count toward the timer.")
         except Exception:
-            warn(f"Timer prop value: {timer_val!r} (could not parse)")
-    else:
-        info("sys.oem_unlock_requirement_timer not exposed — using heuristic:")
-        if build_utc:
-            try:
-                build_ts = int(build_utc)
-                elapsed_h = (now_ts - build_ts) // 3600
-                info(f"Time since build   : ~{elapsed_h}h")
-                if elapsed_h >= 168:
-                    success("≥168h since build date — timer likely expired. If toggle still grey, check internet connectivity history.")
-                else:
-                    remaining = 168 - elapsed_h
-                    unlock_at = datetime.datetime.fromtimestamp(build_ts + 168*3600)
-                    warn(f"~{remaining}h remaining — toggle may unlock around {unlock_at.strftime('%Y-%m-%d %H:%M')}")
-                    info("NOTE: Timer only counts CONNECTED hours. Offline time doesn't count.")
-            except Exception:
-                warn("Could not parse build UTC timestamp")
+            warn("Could not parse build UTC timestamp")
+
     print()
-    info("To speed up the timer: Keep WiFi/mobile data connected continuously.")
-    info("Factory resetting resets the timer to 0.")
+    info("To speed up: keep WiFi connected 24/7. Mobile data also counts.")
+    info("To check if daemon activates: run Method 68 — it watches every 5s.")
 
 
 def m79_usbc_mode_detector():
