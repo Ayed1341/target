@@ -138,11 +138,13 @@ echo     [4]  Live Monitor                   (CPU / GPU / RAM usage + temperatur
 echo     [5]  PC Health Check + Repair        (84 tools to detect and fix problems)
 echo     [6]  Remove Defender/Edge/Copilot + Disable Win Update (PERMANENT)
 echo     [7]  Fix Tamper Protection toggle    (unlock greyed-out Windows Security)
-echo     [8]  Exit
+echo     [8]  Reinstall Default Apps          (recovery - if you removed too much)
+echo     [9]  Exit
 echo.
 echo ----------------------------------------------------------------------------
-choice /C 12345678 /N /M "  Choose an option [1-8]: "
-if errorlevel 8 goto :END
+choice /C 123456789 /N /M "  Choose an option [1-9]: "
+if errorlevel 9 goto :END
+if errorlevel 8 goto :REINSTALL
 if errorlevel 7 goto :FIXTP
 if errorlevel 6 goto :DEBLOAT_MS
 if errorlevel 5 goto :HEALTH
@@ -1319,7 +1321,36 @@ echo   [39] LLMNR disabled.
 reg add "HKLM\SYSTEM\CurrentControlSet\Services\WinHttpAutoProxySvc" /v Start /t REG_DWORD /d 4 /f >nul 2>&1
 echo   [40] WPAD auto-proxy disabled.
 echo.
-echo   40 more tweaks applied.  TOTAL: 257 tweaks.
+echo   40 more tweaks applied.  (257 tweaks so far)
+echo.
+
+:: ===========================================================================
+:: 14B11) BONUS PACK 12: 6 FINAL REAL TWEAKS (the last genuine ones)
+:: ===========================================================================
+echo ============================================================================
+echo   APPLYING 6 FINAL ADVANCED TWEAKS...
+echo ============================================================================
+echo.
+:: 01 Stop downloading device metadata/icons from the internet
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Metadata" /v PreventDeviceMetadataFromNetwork /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [01] Internet device-metadata download disabled.
+:: 02 Stop Windows Update from searching for drivers (keeps your GPU driver stable)
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching" /v SearchOrderConfig /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [02] Windows Update driver search disabled.
+:: 03 Stop Windows from auto-archiving (offloading) unused apps
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Appx" /v AllowAutomaticAppArchiving /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [03] Automatic app archiving disabled.
+:: 04 Stop Edge from auto-creating a desktop shortcut
+reg add "HKLM\SOFTWARE\Policies\Microsoft\EdgeUpdate" /v CreateDesktopShortcutDefault /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [04] Edge desktop-shortcut creation disabled.
+:: 05 Disable Fast User Switching (less background overhead)
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v HideFastUserSwitching /t REG_DWORD /d 1 /f >nul 2>&1
+echo   [05] Fast User Switching disabled.
+:: 06 Disable the Shutdown Event Tracker prompt
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Reliability" /v ShutdownReasonOn /t REG_DWORD /d 0 /f >nul 2>&1
+echo   [06] Shutdown Event Tracker disabled.
+echo.
+echo   6 final tweaks applied.  TOTAL: 263 tweaks.
 echo.
 
 :: ===========================================================================
@@ -1397,7 +1428,7 @@ echo     - Network tuned for low latency (Nagle off, throttling off)
 echo     - Visual effects set to best performance
 echo     - Background apps disabled, memory tuned for %RAM_GB% GB
 echo     - English (US) + Arabic keyboards installed (Alt+Shift to switch)
-echo     - 257 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
+echo     - 263 advanced tweaks: core parking off, MSI-mode, TSC/HPET timer,
 echo       SSD/HDD storage optimization (auto TRIM/defrag, NTFS cache, MFT),
 echo       NTFS/SSD/pagefile tuning, mouse+keyboard latency, svchost grouping,
 echo       DNS 1.1.1.1, QoS/RSC/Winsock, DWM MPO off, Fast Startup off,
@@ -2272,6 +2303,36 @@ echo.
 echo   If the toggle is STILL greyed out after this, your PC is managed by a
 echo   work/school account or third-party security software - in that case
 echo   only the account owner / that software can disable it.
+echo.
+pause
+goto :MENU
+
+:: ===========================================================================
+:: OPTION 8 - REINSTALL DEFAULT APPS (recovery)
+:: ===========================================================================
+:REINSTALL
+cls
+echo ============================================================================
+echo   REINSTALL DEFAULT APPS  -  recovery
+echo ============================================================================
+echo.
+echo   This re-registers every built-in Windows app whose files still exist
+echo   (Calculator, Photos, Snipping Tool, etc.) and resets the Microsoft
+echo   Store. Apps that were fully removed can then be reinstalled from the
+echo   Store. This does not undo performance tweaks - use option 2 for that.
+echo.
+choice /C YN /N /M "  Reinstall the default apps now? [Y/N]: "
+if errorlevel 2 goto :MENU
+echo.
+echo   Re-registering built-in apps, please wait...
+powershell -NoProfile -Command "Get-AppxPackage -AllUsers | ForEach-Object { Add-AppxPackage -DisableDevelopmentMode -Register \"$($_.InstallLocation)\AppXManifest.xml\" -ErrorAction SilentlyContinue }" >nul 2>&1
+echo   Reinstalling provisioned apps for your account...
+powershell -NoProfile -Command "Get-AppxProvisionedPackage -Online | ForEach-Object { try { Add-AppxPackage -Register ($_.InstallLocation + '\AppXManifest.xml') -DisableDevelopmentMode -ErrorAction SilentlyContinue } catch {} }" >nul 2>&1
+echo   Resetting the Microsoft Store...
+wsreset -i >nul 2>&1
+echo.
+echo   Done. Open the Microsoft Store to reinstall anything still missing
+echo   (search the app name and click Install).
 echo.
 pause
 goto :MENU
