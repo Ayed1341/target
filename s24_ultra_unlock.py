@@ -80,78 +80,90 @@ def shell(cmd, timeout=30):
 _SETTINGS_DB = "/data/data/com.android.providers.settings/databases/settings.db"
 
 def get_setting(ns, key):
-    """Read a system setting, trying every available method."""
-    # 1. Direct (works in adb shell / rooted Termux)
-    val, _, rc = shell(f"settings get {ns} {key} 2>/dev/null")
-    if rc == 0 and val and "Failure" not in val and "Error" not in val and "exception" not in val.lower():
-        return val.strip()
-    # 2. Via su (root)
-    val, _, rc = run(f"su -c 'settings get {ns} {key}' 2>/dev/null")
-    if rc == 0 and val and "Failure" not in val and "Error" not in val:
-        return val.strip()
-    # 3. Content provider
-    val, _, rc = shell(f"content query --uri content://settings/{ns} "
-                       f"--where \"name='{key}'\" 2>/dev/null")
-    if rc == 0 and val and "value=" in val:
-        return val.split("value=")[1].strip().split(",")[0].strip()
-    # 4. sqlite3 via root
+    """Read a system setting using every available method."""
+    def _ok(v):
+        return v and v.strip() and "Failure" not in v and "Error" not in v \
+               and "exception" not in v.lower() and v.strip().lower() not in ("null","")
+    # 1. direct settings cmd
+    v, _, rc = shell(f"settings get {ns} {key} 2>/dev/null")
+    if rc == 0 and _ok(v): return v.strip()
+    # 2. via su
+    v, _, rc = run(f"su -c 'settings get {ns} {key}' 2>/dev/null")
+    if rc == 0 and _ok(v): return v.strip()
+    # 3. cmd settings (alternate binder path, often works in Termux)
+    v, _, rc = shell(f"cmd settings get {ns} {key} 2>/dev/null")
+    if rc == 0 and _ok(v): return v.strip()
+    # 4. content provider URI
+    v, _, rc = shell(f"content query --uri content://settings/{ns} "
+                     f"--where \"name='{key}'\" 2>/dev/null")
+    if rc == 0 and v and "value=" in v:
+        return v.split("value=")[1].strip().split(",")[0].strip()
+    # 5. dumpsys settings (often readable without root in Termux)
+    v, _, rc = shell(f"dumpsys settings 2>/dev/null | grep -m1 'name={key}' | "
+                     f"grep -oE 'value=[^ ,]+' | cut -d= -f2")
+    if rc == 0 and _ok(v): return v.strip()
+    # 6. sqlite3 via root
     sq, _, rc = run(f"su -c 'sqlite3 {_SETTINGS_DB} "
                     f"\"SELECT value FROM {ns} WHERE name=\\\"{key}\\\"\"' 2>/dev/null")
-    if rc == 0 and sq.strip():
-        return sq.strip()
+    if rc == 0 and sq.strip(): return sq.strip()
     return None
 
 
 def put_setting(ns, key, value):
-    """Write a system setting, trying every available method. Returns True on success."""
-    _, _, rc = shell(f"settings put {ns} {key} {value} 2>/dev/null")
-    if rc == 0:
-        return True
-    _, _, rc = run(f"su -c 'settings put {ns} {key} {value}' 2>/dev/null")
-    if rc == 0:
-        return True
-    _, _, rc = shell(f"content insert --uri content://settings/{ns} "
-                     f"--bind name:s:{key} --bind value:s:{value} 2>/dev/null")
-    if rc == 0:
-        return True
-    _, _, rc = run(f"su -c 'sqlite3 {_SETTINGS_DB} "
-                   f"\"INSERT OR REPLACE INTO {ns}(name,value) "
-                   f"VALUES(\\\"{key}\\\",\\\"{value}\\\")\"' 2>/dev/null")
-    return rc == 0
+    """Write a system setting using every available method. Returns True on success."""
+    for fn in [
+        lambda: shell(f"settings put {ns} {key} {value} 2>/dev/null"),
+        lambda: run(f"su -c 'settings put {ns} {key} {value}' 2>/dev/null"),
+        lambda: shell(f"cmd settings put {ns} {key} {value} 2>/dev/null"),
+        lambda: shell(f"content insert --uri content://settings/{ns} "
+                      f"--bind name:s:{key} --bind value:s:{value} 2>/dev/null"),
+        lambda: run(f"su -c 'sqlite3 {_SETTINGS_DB} "
+                    f"\"INSERT OR REPLACE INTO {ns}(name,value) "
+                    f"VALUES(\\\"{key}\\\",\\\"{value}\\\")\"' 2>/dev/null"),
+    ]:
+        _, _, rc = fn()
+        if rc == 0:
+            return True
+    return False
 
 
 def check_internet():
     """Check internet connectivity using multiple methods."""
     _, _, rc = shell("ping -c 1 -W 5 8.8.8.8 2>/dev/null")
-    if rc == 0:
-        return True
+    if rc == 0: return True
     if check_tool("curl"):
         out, _, rc2 = run("curl -s --connect-timeout 5 -o /dev/null "
                           "-w '%{http_code}' http://clients1.google.com/generate_204 2>/dev/null")
-        if rc2 == 0 and out.strip() in ("200", "204", "301", "302"):
-            return True
+        if rc2 == 0 and out.strip() in ("200", "204", "301", "302"): return True
     if check_tool("wget"):
         _, _, rc3 = run("wget -q --spider --timeout=5 "
                         "http://clients1.google.com/generate_204 2>/dev/null")
-        if rc3 == 0:
-            return True
-    ip, _, _ = shell("ip addr show wlan0 2>/dev/null | grep 'inet ' | "
-                     "awk '{print $2}' | cut -d/ -f1")
-    if ip and ip.strip() and not ip.strip().startswith("169."):
-        return True
+        if rc3 == 0: return True
+    ip = get_wifi_ip()
+    if ip and not ip.startswith("169."): return True
     return False
 
 
 def get_wifi_ip():
-    """Get device WiFi IP address."""
-    for cmd in [
-        "ip route get 1.1.1.1 2>/dev/null | grep -oE 'src [0-9.]+' | awk '{print $2}'",
+    """Get device WiFi IP — tries every method available in Termux."""
+    cmds = [
+        "ip addr 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | "
+        "grep -v '169.254' | head -1 | awk '{print $2}' | cut -d/ -f1",
         "ip addr show wlan0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1",
+        "ip addr show wlan1 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1",
+        "ifconfig wlan0 2>/dev/null | grep 'inet ' | awk '{print $2}'",
+        "ifconfig 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | "
+        "grep -v '169.254' | head -1 | awk '{print $2}'",
         "getprop dhcp.wlan0.ipaddress",
-    ]:
+        "getprop dhcp.wlan0.address",
+        "getprop net.wlan0.local_ip 2>/dev/null",
+        "ip route show default 2>/dev/null | grep 'dev wlan' | awk '{print $9}'",
+    ]
+    for cmd in cmds:
         ip, _, rc = shell(cmd)
-        if rc == 0 and ip.strip() and ip.strip() not in ("", "0.0.0.0"):
-            return ip.strip()
+        ip = (ip or "").strip().split('\n')[0].strip()
+        if ip and ip not in ("", "0.0.0.0") and not ip.startswith("169."):
+            return ip
     return None
 
 
