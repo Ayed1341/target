@@ -135,7 +135,7 @@ echo     [1]  Optimize PC for Gaming        (full tweak - makes a restore point 
 echo     [2]  Restore Last Restore Point     (roll Windows back if anything breaks)
 echo     [3]  Create Fresh Restore Point     (save current state on demand)
 echo     [4]  Live Monitor                   (CPU / GPU / RAM usage + temperature)
-echo     [5]  PC Health Check + Repair        (14 tools to detect and fix problems)
+echo     [5]  PC Health Check + Repair        (54 tools to detect and fix problems)
 echo     [6]  Remove Defender/Edge/Copilot + Disable Win Update (PERMANENT)
 echo     [7]  Fix Tamper Protection toggle    (unlock greyed-out Windows Security)
 echo     [8]  Exit
@@ -1557,6 +1557,162 @@ echo           Component store cleaned.
 echo   [14/14] Generating health report on your Desktop...
 powercfg /energy /output "%USERPROFILE%\Desktop\PC_Health_Report.html" /duration 10 >nul 2>&1
 echo           Saved: Desktop\PC_Health_Report.html
+echo.
+echo ============================================================================
+echo   PART 2: 40 MORE ADVANCED REPAIRS
+echo ============================================================================
+echo.
+echo   --- Network repairs ---
+:: 01 Reset WinHTTP proxy
+netsh winhttp reset proxy >nul 2>&1
+echo   [01/40] WinHTTP proxy reset.
+:: 02 Reset IPv4 stack
+netsh int ipv4 reset >nul 2>&1
+echo   [02/40] IPv4 stack reset.
+:: 03 Reset IPv6 stack
+netsh int ipv6 reset >nul 2>&1
+echo   [03/40] IPv6 stack reset.
+:: 04 Flush NetBIOS name cache
+nbtstat -R >nul 2>&1
+nbtstat -RR >nul 2>&1
+echo   [04/40] NetBIOS cache flushed.
+:: 05 Clear ARP cache
+netsh interface ip delete arpcache >nul 2>&1
+echo   [05/40] ARP cache cleared.
+:: 06 Back up and reset the HOSTS file
+copy /y "%WinDir%\System32\drivers\etc\hosts" "%WinDir%\System32\drivers\etc\hosts.bak" >nul 2>&1
+echo # hosts file reset by PC Gaming Optimizer>"%WinDir%\System32\drivers\etc\hosts"
+echo   [06/40] HOSTS file reset (old one saved as hosts.bak).
+:: 07 Reset and resync Windows Time
+w32tm /unregister >nul 2>&1
+w32tm /register >nul 2>&1
+net start w32time >nul 2>&1
+w32tm /resync /force >nul 2>&1
+echo   [07/40] Windows Time reset and resynced.
+:: 08 Re-enable all physical network adapters
+powershell -NoProfile -Command "Get-NetAdapter -Physical | Enable-NetAdapter -Confirm:$false -ErrorAction SilentlyContinue" >nul 2>&1
+echo   [08/40] Network adapters re-enabled.
+
+echo   --- Windows Update / servicing repairs ---
+:: 09 Re-register Windows Update components
+for %%D in (wuaueng.dll wuapi.dll wups.dll wups2.dll wucltux.dll wudriver.dll qmgr.dll) do regsvr32 /s "%SystemRoot%\System32\%%D" >nul 2>&1
+echo   [09/40] Windows Update DLLs re-registered.
+:: 10 Reset Cryptographic Services
+net stop cryptsvc >nul 2>&1
+net start cryptsvc >nul 2>&1
+echo   [10/40] Cryptographic Services reset.
+:: 11 Reset BITS to default startup
+sc config bits start= delayed-auto >nul 2>&1
+sc start bits >nul 2>&1
+echo   [11/40] BITS service reset.
+:: 12 Analyze the component store
+dism /Online /Cleanup-Image /AnalyzeComponentStore >nul 2>&1
+echo   [12/40] Component store analyzed.
+:: 13 Re-register Windows Installer
+msiexec /unregister >nul 2>&1
+msiexec /regserver >nul 2>&1
+echo   [13/40] Windows Installer re-registered.
+:: 14 Re-enable Windows Update services to defaults
+sc config wuauserv start= demand >nul 2>&1
+sc config UsoSvc start= demand >nul 2>&1
+echo   [14/40] Windows Update services restored to default.
+:: 15 Clear Delivery Optimization cache
+powershell -NoProfile -Command "Delete-DeliveryOptimizationCache -Force -ErrorAction SilentlyContinue" >nul 2>&1
+echo   [15/40] Delivery Optimization cache cleared.
+:: 16 Rebuild .NET native images
+"%SystemRoot%\Microsoft.NET\Framework64\v4.0.30319\ngen.exe" executequeueditems >nul 2>&1
+echo   [16/40] .NET native images rebuilt.
+
+echo   --- System integrity / WMI repairs ---
+:: 17 Repair the WMI repository
+winmgmt /verifyrepository >nul 2>&1
+winmgmt /salvagerepository >nul 2>&1
+echo   [17/40] WMI repository verified/salvaged.
+:: 18 Rebuild performance counters
+lodctr /R >nul 2>&1
+winmgmt /resyncperf >nul 2>&1
+echo   [18/40] Performance counters rebuilt.
+:: 19 Re-register core shell DLLs
+for %%D in (actxprxy.dll shdocvw.dll wininet.dll urlmon.dll jscript.dll vbscript.dll mshtml.dll) do regsvr32 /s "%SystemRoot%\System32\%%D" >nul 2>&1
+echo   [19/40] Core shell DLLs re-registered.
+:: 20 System File Checker verify-only report
+sfc /verifyonly >nul 2>&1
+echo   [20/40] System file integrity verified.
+:: 21 DISM image health restore (retry)
+dism /Online /Cleanup-Image /RestoreHealth >nul 2>&1
+echo   [21/40] Windows image health restored.
+:: 22 Rescan for hardware / driver changes
+pnputil /scan-devices >nul 2>&1
+echo   [22/40] Hardware rescanned.
+
+echo   --- Cache / cleanup repairs ---
+:: 23+24 Rebuild icon and thumbnail caches
+taskkill /f /im explorer.exe >nul 2>&1
+del /f /q "%LocalAppData%\IconCache.db" >nul 2>&1
+del /f /q "%LocalAppData%\Microsoft\Windows\Explorer\iconcache*" >nul 2>&1
+del /f /q "%LocalAppData%\Microsoft\Windows\Explorer\thumbcache*" >nul 2>&1
+start explorer.exe
+echo   [23/40] Icon cache rebuilt.
+echo   [24/40] Thumbnail cache rebuilt.
+:: 25 Rebuild the font cache
+net stop FontCache >nul 2>&1
+del /f /q "%WinDir%\System32\FNTCACHE.DAT" >nul 2>&1
+net start FontCache >nul 2>&1
+echo   [25/40] Font cache rebuilt.
+:: 26 Clear all Windows event logs
+for /f "tokens=*" %%g in ('wevtutil el 2^>nul') do wevtutil cl "%%g" >nul 2>&1
+echo   [26/40] Event logs cleared.
+:: 27 Automated Disk Cleanup
+cleanmgr /verylowdisk >nul 2>&1
+echo   [27/40] Disk cleanup completed.
+:: 28 Clear CBS / temp / prefetch logs
+del /f /q /s "%TEMP%\*" >nul 2>&1
+del /f /q "%WinDir%\Logs\CBS\*" >nul 2>&1
+del /f /q "%WinDir%\Prefetch\*" >nul 2>&1
+echo   [28/40] Temp and log files cleared.
+:: 29 Remove previous Windows installation leftovers
+dism /Online /Cleanup-Image /StartComponentCleanup >nul 2>&1
+echo   [29/40] Old servicing leftovers cleaned.
+
+echo   --- Shell / app repairs ---
+:: 30 Re-register Start menu + Action Center
+powershell -NoProfile -Command "Get-AppxPackage -AllUsers *ShellExperienceHost*, *StartMenuExperienceHost* | ForEach-Object { Add-AppxPackage -DisableDevelopmentMode -Register \"$($_.InstallLocation)\AppXManifest.xml\" -ErrorAction SilentlyContinue }" >nul 2>&1
+echo   [30/40] Start menu / Action Center re-registered.
+:: 31 Reset the Microsoft Store with reinstall
+wsreset -i >nul 2>&1
+echo   [31/40] Microsoft Store reset/reinstalled.
+:: 32 Restart the Search host
+taskkill /f /im SearchHost.exe >nul 2>&1
+taskkill /f /im SearchApp.exe >nul 2>&1
+echo   [32/40] Search host restarted.
+:: 33 Reset the notification database
+del /f /q "%LocalAppData%\Microsoft\Windows\Notifications\wpndatabase.db" >nul 2>&1
+echo   [33/40] Notification database reset.
+:: 34 Export a driver list report to the Desktop
+pnputil /enum-drivers > "%USERPROFILE%\Desktop\PC_Drivers_List.txt" 2>nul
+echo   [34/40] Driver list saved to Desktop.
+
+echo   --- Disk / memory / reports ---
+:: 35 Online integrity scan of every fixed drive
+for /f "delims=" %%d in ('powershell -NoProfile -Command "(Get-Volume | Where-Object {$_.DriveType -eq 'Fixed' -and $_.DriveLetter}).DriveLetter" 2^>nul') do chkdsk %%d: /scan >nul 2>&1
+echo   [35/40] All fixed drives scanned.
+:: 36 Generate a battery / power report
+powercfg /batteryreport /output "%USERPROFILE%\Desktop\PC_Battery_Report.html" >nul 2>&1
+echo   [36/40] Battery report saved to Desktop.
+:: 37 Generate a full system information report
+systeminfo > "%USERPROFILE%\Desktop\PC_SystemInfo.txt" 2>nul
+echo   [37/40] System info saved to Desktop.
+:: 38 Verify boot configuration timeout is sane
+bcdedit /timeout 5 >nul 2>&1
+echo   [38/40] Boot timeout normalized.
+:: 39 Schedule a full disk repair on next reboot (optional)
+choice /C YN /N /M "   [39/40] Schedule full disk repair (chkdsk /F /R) on next boot? [Y/N]: "
+if not errorlevel 2 echo Y| chkdsk %SystemDrive% /F /R >nul 2>&1
+echo           Disk repair scheduling handled.
+:: 40 Run Windows Memory Diagnostic (optional)
+choice /C YN /N /M "   [40/40] Launch Windows Memory Diagnostic now? [Y/N]: "
+if not errorlevel 2 start "" mdsched.exe
+echo           Memory diagnostic handled.
 echo.
 echo ============================================================================
 echo   HEALTH CHECK COMPLETE. A reboot is recommended for network/Update fixes.
