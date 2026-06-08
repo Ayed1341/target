@@ -127,7 +127,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.play.services)
 
     // ML Kit
-    implementation(libs.mlkit.object.detection)
+    implementation(libs.mlkit.objects)
     implementation(libs.mlkit.image.labeling)
     implementation(libs.mlkit.face.detection)
     implementation(libs.mlkit.pose.detection)
