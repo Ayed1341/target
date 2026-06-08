@@ -11,7 +11,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class AnalyzerRegistry @Inject constructor(
-    handGestureAnalyzer: HandGestureAnalyzer
+    handGestureAnalyzer: HandGestureAnalyzer,
+    languageProcessor: LanguageProcessor
 ) {
     private val analyzers: Map<DetectionMode, FrameAnalyzer> = buildMap {
         put(DetectionMode.OBJECTS, ObjectDetectionAnalyzer())
@@ -19,8 +20,10 @@ class AnalyzerRegistry @Inject constructor(
         put(DetectionMode.FACE, FaceAnalyzer())
         put(DetectionMode.POSE, PoseAnalyzer())
         put(DetectionMode.HANDS, handGestureAnalyzer)
-        put(DetectionMode.TEXT, TextAnalyzer())
+        put(DetectionMode.TEXT, TextAnalyzer(languageProcessor))
         put(DetectionMode.BARCODE, BarcodeAnalyzer())
+        put(DetectionMode.SEGMENTATION, SelfieSegmentationAnalyzer())
+        put(DetectionMode.FACE_MESH, FaceMeshAnalyzer())
     }
 
     fun analyzerFor(mode: DetectionMode): FrameAnalyzer =

@@ -14,7 +14,9 @@ enum class DetectionMode(@StringRes val labelRes: Int) {
     POSE(R.string.mode_pose),
     HANDS(R.string.mode_hands),
     TEXT(R.string.mode_text),
-    BARCODE(R.string.mode_barcode);
+    BARCODE(R.string.mode_barcode),
+    SEGMENTATION(R.string.mode_segmentation),
+    FACE_MESH(R.string.mode_face_mesh);
 
     companion object {
         val default: DetectionMode = OBJECTS

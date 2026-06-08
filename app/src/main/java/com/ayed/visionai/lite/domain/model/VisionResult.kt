@@ -1,5 +1,6 @@
 package com.ayed.visionai.lite.domain.model
 
+import android.graphics.Bitmap
 import androidx.compose.runtime.Immutable
 
 /**
@@ -45,6 +46,13 @@ data class SceneLabel(
     val confidence: Float
 )
 
+/** A foreground (person) mask produced by selfie segmentation. */
+@Immutable
+class SegmentationOverlay(
+    val maskBitmap: Bitmap,
+    val coveragePercent: Int
+)
+
 /** A recognized barcode / QR code. */
 @Immutable
 data class BarcodeResult(
@@ -70,6 +78,8 @@ data class VisionResult(
     val barcodes: List<BarcodeResult> = emptyList(),
     val recognizedText: String? = null,
     val gesture: String? = null,
+    val detectedLanguage: String? = null,
+    val segmentation: SegmentationOverlay? = null,
     val statusMessage: String? = null
 ) {
     val objectCount: Int get() = boxes.size

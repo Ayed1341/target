@@ -31,6 +31,7 @@ import kotlin.math.roundToInt
 @Composable
 fun ResultPanel(
     result: VisionResult,
+    translatedText: String?,
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
@@ -88,6 +89,8 @@ fun ResultPanel(
             DetectionMode.TEXT -> {
                 val text = result.recognizedText?.takeIf { it.isNotBlank() } ?: "—"
                 StatLine(text)
+                result.detectedLanguage?.let { StatLine("Language: $it") }
+                translatedText?.let { StatLine("→ $it") }
             }
 
             DetectionMode.BARCODE -> {
@@ -98,6 +101,17 @@ fun ResultPanel(
                         DetailLine(code.rawValue, label = code.format)
                     }
                 }
+            }
+
+            DetectionMode.SEGMENTATION -> {
+                val coverage = result.segmentation?.coveragePercent ?: 0
+                StatLine("Foreground (person): $coverage%")
+            }
+
+            DetectionMode.FACE_MESH -> {
+                val faces = result.skeletons.size
+                val points = result.skeletons.firstOrNull()?.points?.size ?: 0
+                StatLine("Faces: $faces · mesh points: $points")
             }
         }
     }

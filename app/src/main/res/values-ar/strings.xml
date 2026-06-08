@@ -10,6 +10,8 @@
     <string name="mode_hands">اليدان</string>
     <string name="mode_text">النص</string>
     <string name="mode_barcode">الباركود/QR</string>
+    <string name="mode_segmentation">عزل</string>
+    <string name="mode_face_mesh">شبكة الوجه</string>
 
     <!-- UI -->
     <string name="objects_in_frame">عدد الأجسام: %1$d</string>
@@ -45,4 +47,13 @@
     <string name="category_food">طعام</string>
     <string name="category_vehicle">مركبة</string>
     <string name="category_product">منتج</string>
+
+    <!-- Advanced features -->
+    <string name="save_snapshot">لقطة</string>
+    <string name="snapshot_saved">تم حفظ اللقطة: %1$s</string>
+    <string name="snapshot_failed">تعذّر حفظ اللقطة</string>
+    <string name="speak">نطق</string>
+    <string name="translate">ترجمة</string>
+    <string name="translate_unavailable">تحتاج الترجمة إلى نص عربي أو إنجليزي (وتنزيل النموذج لمرة واحدة).</string>
+    <string name="torch">الإضاءة</string>
 </resources>

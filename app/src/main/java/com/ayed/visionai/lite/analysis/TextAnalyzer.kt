@@ -8,8 +8,10 @@ import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.tasks.await
 
-/** On-device OCR / text recognition (ML Kit). Feature 13. */
-class TextAnalyzer : FrameAnalyzer {
+/** On-device OCR / text recognition (ML Kit) + language identification. */
+class TextAnalyzer(
+    private val languageProcessor: LanguageProcessor
+) : FrameAnalyzer {
 
     override val mode = DetectionMode.TEXT
 
@@ -17,6 +19,8 @@ class TextAnalyzer : FrameAnalyzer {
 
     override suspend fun analyze(frame: AnalysisFrame): VisionResult {
         val text = recognizer.process(frame.inputImage).await()
+        val fullText = text.text.takeIf { it.isNotBlank() }
+        val language = fullText?.let { languageProcessor.identify(it) }
         val boxes = text.textBlocks.mapNotNull { block ->
             val rect = block.boundingBox ?: return@mapNotNull null
             DetectedBox(
@@ -35,7 +39,8 @@ class TextAnalyzer : FrameAnalyzer {
             sourceHeight = frame.uprightHeight,
             isFrontCamera = frame.isFrontCamera,
             boxes = boxes,
-            recognizedText = text.text.takeIf { it.isNotBlank() }
+            recognizedText = fullText,
+            detectedLanguage = language
         )
     }
 

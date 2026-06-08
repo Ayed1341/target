@@ -18,6 +18,10 @@ mlkitFaceDetection = "16.1.7"
 mlkitPoseDetection = "18.0.0-beta5"
 mlkitTextRecognition = "16.0.1"
 mlkitBarcode = "17.3.0"
+mlkitSegmentation = "16.0.0-beta6"
+mlkitFaceMesh = "16.0.0-beta3"
+mlkitLanguageId = "17.0.6"
+mlkitTranslate = "17.0.3"
 mediapipeTasksVision = "0.10.14"
 accompanistPermissions = "0.34.0"
 coil = "2.7.0"
@@ -59,6 +63,10 @@ mlkit-face-detection = { group = "com.google.mlkit", name = "face-detection", ve
 mlkit-pose-detection = { group = "com.google.mlkit", name = "pose-detection", version.ref = "mlkitPoseDetection" }
 mlkit-text-recognition = { group = "com.google.mlkit", name = "text-recognition", version.ref = "mlkitTextRecognition" }
 mlkit-barcode-scanning = { group = "com.google.mlkit", name = "barcode-scanning", version.ref = "mlkitBarcode" }
+mlkit-segmentation-selfie = { group = "com.google.mlkit", name = "segmentation-selfie", version.ref = "mlkitSegmentation" }
+mlkit-face-mesh-detection = { group = "com.google.mlkit", name = "face-mesh-detection", version.ref = "mlkitFaceMesh" }
+mlkit-language-id = { group = "com.google.mlkit", name = "language-id", version.ref = "mlkitLanguageId" }
+mlkit-translate = { group = "com.google.mlkit", name = "translate", version.ref = "mlkitTranslate" }
 
 mediapipe-tasks-vision = { group = "com.google.mediapipe", name = "tasks-vision", version.ref = "mediapipeTasksVision" }
 

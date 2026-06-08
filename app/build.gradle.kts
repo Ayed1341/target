@@ -133,6 +133,10 @@ dependencies {
     implementation(libs.mlkit.pose.detection)
     implementation(libs.mlkit.text.recognition)
     implementation(libs.mlkit.barcode.scanning)
+    implementation(libs.mlkit.segmentation.selfie)
+    implementation(libs.mlkit.face.mesh.detection)
+    implementation(libs.mlkit.language.id)
+    implementation(libs.mlkit.translate)
 
     // MediaPipe (hand tracking + gesture recognition)
     implementation(libs.mediapipe.tasks.vision)

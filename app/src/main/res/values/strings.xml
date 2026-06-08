@@ -10,6 +10,8 @@
     <string name="mode_hands">Hands</string>
     <string name="mode_text">Text</string>
     <string name="mode_barcode">Barcode/QR</string>
+    <string name="mode_segmentation">Segment</string>
+    <string name="mode_face_mesh">Face Mesh</string>
 
     <!-- UI -->
     <string name="objects_in_frame">Objects in frame: %1$d</string>
@@ -45,4 +47,13 @@
     <string name="category_food">Food</string>
     <string name="category_vehicle">Vehicle</string>
     <string name="category_product">Product</string>
+
+    <!-- Advanced features -->
+    <string name="save_snapshot">Snapshot</string>
+    <string name="snapshot_saved">Snapshot saved: %1$s</string>
+    <string name="snapshot_failed">Could not save snapshot</string>
+    <string name="speak">Speak</string>
+    <string name="translate">Translate</string>
+    <string name="translate_unavailable">Translation needs Arabic or English text (and a one-time model download).</string>
+    <string name="torch">Torch</string>
 </resources>

@@ -6,8 +6,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -51,6 +55,25 @@ fun DetectionOverlay(
             return if (front) size.width - px else px
         }
         fun mapY(y: Float): Float = y * scale + dy
+
+        // Selfie segmentation mask (drawn beneath everything else)
+        result.segmentation?.let { seg ->
+            val image = seg.maskBitmap.asImageBitmap()
+            val dstW = (srcW * scale).toInt()
+            val dstH = (srcH * scale).toInt()
+            withTransform({
+                if (front) scale(-1f, 1f)
+            }) {
+                drawImage(
+                    image = image,
+                    srcOffset = IntOffset.Zero,
+                    srcSize = IntSize(seg.maskBitmap.width, seg.maskBitmap.height),
+                    dstOffset = IntOffset(dx.toInt(), dy.toInt()),
+                    dstSize = IntSize(dstW, dstH),
+                    alpha = 0.55f
+                )
+            }
+        }
 
         // Skeletons (pose / hands / face mesh)
         result.skeletons.forEach { skeleton ->

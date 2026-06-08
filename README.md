@@ -46,6 +46,16 @@ Arabic + English.
 > on top of the on-device object detector and image labeler — using only what the
 > pretrained models actually output. No fabricated breed/age/weight/height estimates.
 
+### Advanced features (v1.1)
+
+1. **Pro camera controls** — pinch-to-zoom, tap-to-focus, and torch/flashlight toggle (CameraX `CameraControl`).
+2. **Selfie segmentation** — real-time person/background mask overlay (ML Kit Selfie Segmentation).
+3. **Face mesh** — up to 468 3D facial landmarks (ML Kit Face Mesh).
+4. **Language identification** — detects the language of recognized text (ML Kit Language ID).
+5. **On-device translation** — Arabic ⇄ English translation of OCR text (ML Kit Translate; one-time model download, then offline).
+6. **Text-to-Speech** — reads results aloud in Arabic or English (Android TTS).
+7. **Annotated snapshot to gallery** — saves the current frame with overlay to Pictures (MediaStore).
+
 ---
 
 ## Project structure
