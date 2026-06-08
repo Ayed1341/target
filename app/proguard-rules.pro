@@ -11,3 +11,11 @@
 
 # Keep model classes used for JSON export (reflection-free, but defensive)
 -keep class com.ayed.visionai.lite.domain.model.** { *; }
+
+# AutoValue / javapoet (pulled in transitively by ML Kit & MediaPipe) reference
+# annotation-processing classes that are absent at runtime. They are compile-time
+# only, so silence R8's missing-class errors for them.
+-dontwarn javax.lang.model.**
+-dontwarn javax.annotation.**
+-dontwarn autovalue.shaded.**
+-dontwarn com.google.auto.value.**
