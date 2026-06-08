@@ -1,0 +1,59 @@
+<resources>
+    <string name="app_name">عايد فيجن إيه آي لايت</string>
+    <string name="author">بواسطة عايد عريبي</string>
+
+    <!-- Modes -->
+    <string name="mode_objects">الأجسام</string>
+    <string name="mode_scene">المشهد</string>
+    <string name="mode_face">الوجه</string>
+    <string name="mode_pose">الهيكل</string>
+    <string name="mode_hands">اليدان</string>
+    <string name="mode_text">النص</string>
+    <string name="mode_barcode">الباركود/QR</string>
+    <string name="mode_segmentation">عزل</string>
+    <string name="mode_face_mesh">شبكة الوجه</string>
+
+    <!-- UI -->
+    <string name="objects_in_frame">عدد الأجسام: %1$d</string>
+    <string name="confidence_format">%1$d%%</string>
+    <string name="history">السجل</string>
+    <string name="camera">الكاميرا</string>
+    <string name="capture">التقاط وتحليل</string>
+    <string name="export_json">تصدير JSON</string>
+    <string name="clear_history">مسح السجل</string>
+    <string name="no_history">لا توجد عمليات كشف محفوظة بعد</string>
+    <string name="switch_camera">تبديل الكاميرا</string>
+    <string name="back">رجوع</string>
+    <string name="saved_to_history">تم الحفظ في السجل</string>
+    <string name="exported_to">تم التصدير إلى %1$s</string>
+    <string name="fps_format">%1$d إطار/ث</string>
+
+    <!-- Permission -->
+    <string name="permission_title">مطلوب إذن الكاميرا</string>
+    <string name="permission_rationale">يحتاج التطبيق إلى الكاميرا لتشغيل الرؤية الحاسوبية مباشرة على الجهاز. لا تغادر الصور جهازك.</string>
+    <string name="grant_permission">منح الإذن</string>
+    <string name="open_settings">فتح الإعدادات</string>
+
+    <!-- Hands / MediaPipe -->
+    <string name="hand_model_downloading">جارٍ تجهيز نموذج اليد…</string>
+    <string name="hand_model_unavailable">نموذج اليد غير متوفر (بدون اتصال). اتصل بالإنترنت مرة واحدة لتفعيله.</string>
+    <string name="gesture_label">الإيماءة: %1$s</string>
+
+    <!-- Scene -->
+    <string name="scene_label_format">%1$s · %2$d%%</string>
+
+    <!-- Detail categories -->
+    <string name="category_animal">حيوان</string>
+    <string name="category_food">طعام</string>
+    <string name="category_vehicle">مركبة</string>
+    <string name="category_product">منتج</string>
+
+    <!-- Advanced features -->
+    <string name="save_snapshot">لقطة</string>
+    <string name="snapshot_saved">تم حفظ اللقطة: %1$s</string>
+    <string name="snapshot_failed">تعذّر حفظ اللقطة</string>
+    <string name="speak">نطق</string>
+    <string name="translate">ترجمة</string>
+    <string name="translate_unavailable">تحتاج الترجمة إلى نص عربي أو إنجليزي (وتنزيل النموذج لمرة واحدة).</string>
+    <string name="torch">الإضاءة</string>
+</resources>

@@ -1,0 +1,59 @@
+<resources>
+    <string name="app_name">Ayed Vision AI Lite</string>
+    <string name="author">By Ayed Oraybi</string>
+
+    <!-- Modes -->
+    <string name="mode_objects">Objects</string>
+    <string name="mode_scene">Scene</string>
+    <string name="mode_face">Face</string>
+    <string name="mode_pose">Pose</string>
+    <string name="mode_hands">Hands</string>
+    <string name="mode_text">Text</string>
+    <string name="mode_barcode">Barcode/QR</string>
+    <string name="mode_segmentation">Segment</string>
+    <string name="mode_face_mesh">Face Mesh</string>
+
+    <!-- UI -->
+    <string name="objects_in_frame">Objects in frame: %1$d</string>
+    <string name="confidence_format">%1$d%%</string>
+    <string name="history">History</string>
+    <string name="camera">Camera</string>
+    <string name="capture">Capture &amp; Analyze</string>
+    <string name="export_json">Export JSON</string>
+    <string name="clear_history">Clear history</string>
+    <string name="no_history">No detections saved yet</string>
+    <string name="switch_camera">Switch camera</string>
+    <string name="back">Back</string>
+    <string name="saved_to_history">Saved to history</string>
+    <string name="exported_to">Exported to %1$s</string>
+    <string name="fps_format">%1$d FPS</string>
+
+    <!-- Permission -->
+    <string name="permission_title">Camera access required</string>
+    <string name="permission_rationale">Ayed Vision AI Lite needs the camera to run live on-device computer vision. No images leave your device.</string>
+    <string name="grant_permission">Grant permission</string>
+    <string name="open_settings">Open settings</string>
+
+    <!-- Hands / MediaPipe -->
+    <string name="hand_model_downloading">Preparing hand model…</string>
+    <string name="hand_model_unavailable">Hand model unavailable (offline). Connect to the internet once to enable.</string>
+    <string name="gesture_label">Gesture: %1$s</string>
+
+    <!-- Scene -->
+    <string name="scene_label_format">%1$s · %2$d%%</string>
+
+    <!-- Detail categories -->
+    <string name="category_animal">Animal</string>
+    <string name="category_food">Food</string>
+    <string name="category_vehicle">Vehicle</string>
+    <string name="category_product">Product</string>
+
+    <!-- Advanced features -->
+    <string name="save_snapshot">Snapshot</string>
+    <string name="snapshot_saved">Snapshot saved: %1$s</string>
+    <string name="snapshot_failed">Could not save snapshot</string>
+    <string name="speak">Speak</string>
+    <string name="translate">Translate</string>
+    <string name="translate_unavailable">Translation needs Arabic or English text (and a one-time model download).</string>
+    <string name="torch">Torch</string>
+</resources>
