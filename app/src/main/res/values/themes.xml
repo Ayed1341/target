@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <style name="Theme.AyedVisionAiLite" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@color/brand_dark</item>
+        <item name="android:navigationBarColor">@color/brand_dark</item>
+        <item name="android:windowBackground">@color/brand_dark</item>
+    </style>
+
+    <style name="Theme.AyedVisionAiLite.Splash" parent="Theme.AyedVisionAiLite">
+        <item name="android:windowBackground">@drawable/splash_background</item>
+    </style>
+
+</resources>
