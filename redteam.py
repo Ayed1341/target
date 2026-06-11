@@ -1589,11 +1589,16 @@ class IDORAndXSSSurfaceMapper:
                 description=f"Found {len(unique_idor)} URL patterns using sequential/guessable object IDs.",
                 evidence="\n".join(f"{c['url'][:80]}" for c in unique_idor[:5]),
                 reproduction="\n".join(
-                    f"# Original: {c['url'][:60]}\n# Try neighbor ID: {re.sub(r'(\\d+)', lambda m: str(int(m.group(0))+1), c['url'])[:60]}"
+                    "# Original: {orig}\n# Try neighbor ID: {nbr}".format(
+                        orig=c['url'][:60],
+                        nbr=re.sub(r'(\d+)', lambda m: str(int(m.group(0)) + 1), c['url'])[:60],
+                    )
                     for c in unique_idor[:2]
                 ),
                 poc_curl="\n".join(
-                    f"curl -sk '{re.sub(r'(\\d+)', lambda m: str(int(m.group(0))+1), c['url'])}'"
+                    "curl -sk '{url}'".format(
+                        url=re.sub(r'(\d+)', lambda m: str(int(m.group(0)) + 1), c['url'])
+                    )
                     for c in unique_idor[:2] if re.search(r'\d+', c['url'])
                 ),
                 category="IDOR",
