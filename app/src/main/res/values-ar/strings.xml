@@ -56,4 +56,17 @@
     <string name="translate">ترجمة</string>
     <string name="translate_unavailable">تحتاج الترجمة إلى نص عربي أو إنجليزي (وتنزيل النموذج لمرة واحدة).</string>
     <string name="torch">الإضاءة</string>
+
+    <!-- AI assistant -->
+    <string name="ai_assistant">مساعد الذكاء الاصطناعي</string>
+    <string name="ask_ai">اسأل الذكاء</string>
+    <string name="save">حفظ</string>
+    <string name="cancel">إلغاء</string>
+    <string name="ai_settings_title">إعدادات الذكاء</string>
+    <string name="ai_provider">المزود</string>
+    <string name="ai_api_key">مفتاح API</string>
+    <string name="ai_model">النموذج</string>
+    <string name="ai_base_url">رابط الأساس (متوافق مع OpenAI)</string>
+    <string name="ai_not_configured">أضف مفتاح API في إعدادات الذكاء (أيقونة الترس) لاستخدام \"اسأل الذكاء\".</string>
+    <string name="ai_settings_help">يرسل \"اسأل الذكاء\" الإطار الحالي إلى المزود الذي تختاره. احصل على مفتاح Gemini مجاني من aistudio.google.com/app/apikey. يُحفظ مفتاحك على هذا الجهاز فقط.</string>
 </resources>

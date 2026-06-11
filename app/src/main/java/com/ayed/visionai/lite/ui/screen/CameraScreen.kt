@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.FileDownload
@@ -23,6 +24,7 @@ import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.FilterChip
@@ -50,6 +52,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ayed.visionai.lite.R
 import com.ayed.visionai.lite.domain.model.DetectionMode
+import com.ayed.visionai.lite.ui.component.AiAnswerCard
+import com.ayed.visionai.lite.ui.component.AiSettingsDialog
 import com.ayed.visionai.lite.ui.component.CameraPreview
 import com.ayed.visionai.lite.ui.component.DetectionOverlay
 import com.ayed.visionai.lite.ui.component.ResultPanel
@@ -85,7 +89,10 @@ fun CameraScreen(
     val snapshotTemplate = stringResource(R.string.snapshot_saved)
     val snapshotFailed = stringResource(R.string.snapshot_failed)
     val translateUnavailable = stringResource(R.string.translate_unavailable)
+    val aiNotConfigured = stringResource(R.string.ai_not_configured)
 
+    val aiSettings by viewModel.aiSettings.collectAsStateWithLifecycle()
+    var showSettings by remember { mutableStateOf(false) }
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
 
     LaunchedEffect(message) {
@@ -127,6 +134,13 @@ fun CameraScreen(
                 .padding(horizontal = 12.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            AiAnswerCard(
+                loading = uiState.aiLoading,
+                answer = uiState.aiAnswer,
+                onSpeak = viewModel::speakAiAnswer,
+                onDismiss = viewModel::dismissAiAnswer
+            )
+
             ResultPanel(result = uiState.result, translatedText = uiState.translatedText)
 
             ModeSelector(
@@ -136,6 +150,10 @@ fun CameraScreen(
 
             ActionRow(
                 torchEnabled = uiState.torchEnabled,
+                onAskAi = {
+                    previewView?.bitmap?.let { bmp -> viewModel.askAi(bmp, aiNotConfigured) }
+                },
+                onSettings = { showSettings = true },
                 onCapture = { viewModel.captureAndSave(savedMsg) },
                 onSnapshot = {
                     previewView?.bitmap?.let { bmp ->
@@ -148,6 +166,17 @@ fun CameraScreen(
                 onExport = { viewModel.exportJson(exportTemplate) },
                 onSwitchCamera = viewModel::toggleCamera,
                 onHistory = onOpenHistory
+            )
+        }
+
+        if (showSettings) {
+            AiSettingsDialog(
+                current = aiSettings,
+                onDismiss = { showSettings = false },
+                onSave = {
+                    viewModel.saveAiSettings(it)
+                    showSettings = false
+                }
             )
         }
 
@@ -225,6 +254,8 @@ private fun ModeSelector(
 @Composable
 private fun ActionRow(
     torchEnabled: Boolean,
+    onAskAi: () -> Unit,
+    onSettings: () -> Unit,
     onCapture: () -> Unit,
     onSnapshot: () -> Unit,
     onSpeak: () -> Unit,
@@ -247,6 +278,7 @@ private fun ActionRow(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            ActionButton(Icons.Filled.AutoAwesome, R.string.ask_ai, onAskAi)
             ActionButton(Icons.Filled.History, R.string.history, onHistory)
             ActionButton(Icons.Filled.CameraAlt, R.string.capture, onCapture)
             ActionButton(Icons.Filled.PhotoCamera, R.string.save_snapshot, onSnapshot)
@@ -259,6 +291,7 @@ private fun ActionRow(
             )
             ActionButton(Icons.Filled.Cameraswitch, R.string.switch_camera, onSwitchCamera)
             ActionButton(Icons.Filled.FileDownload, R.string.export_json, onExport)
+            ActionButton(Icons.Filled.Settings, R.string.ai_settings_title, onSettings)
         }
     }
 }

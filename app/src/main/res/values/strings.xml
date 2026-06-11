@@ -56,4 +56,17 @@
     <string name="translate">Translate</string>
     <string name="translate_unavailable">Translation needs Arabic or English text (and a one-time model download).</string>
     <string name="torch">Torch</string>
+
+    <!-- AI assistant -->
+    <string name="ai_assistant">AI Assistant</string>
+    <string name="ask_ai">Ask AI</string>
+    <string name="save">Save</string>
+    <string name="cancel">Cancel</string>
+    <string name="ai_settings_title">AI settings</string>
+    <string name="ai_provider">Provider</string>
+    <string name="ai_api_key">API key</string>
+    <string name="ai_model">Model</string>
+    <string name="ai_base_url">Base URL (OpenAI-compatible)</string>
+    <string name="ai_not_configured">Add your API key in AI settings (gear icon) to use Ask AI.</string>
+    <string name="ai_settings_help">Ask AI sends the current frame to your chosen provider. Get a free Gemini key at aistudio.google.com/app/apikey. Your key is stored only on this device.</string>
 </resources>

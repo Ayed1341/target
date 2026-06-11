@@ -7,6 +7,9 @@ import androidx.camera.core.CameraSelector
 import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ayed.visionai.lite.ai.AiSettings
+import com.ayed.visionai.lite.ai.AiVisionService
+import com.ayed.visionai.lite.ai.SettingsRepository
 import com.ayed.visionai.lite.analysis.AnalyzerRegistry
 import com.ayed.visionai.lite.analysis.LanguageProcessor
 import com.ayed.visionai.lite.analysis.VisionImageAnalyzer
@@ -33,7 +36,9 @@ data class CameraUiState(
     val result: VisionResult = VisionResult.empty(DetectionMode.default),
     val fps: Int = 0,
     val torchEnabled: Boolean = false,
-    val translatedText: String? = null
+    val translatedText: String? = null,
+    val aiLoading: Boolean = false,
+    val aiAnswer: String? = null
 )
 
 @HiltViewModel
@@ -43,8 +48,14 @@ class CameraViewModel @Inject constructor(
     private val languageProcessor: LanguageProcessor,
     private val ttsManager: TtsManager,
     private val snapshotSaver: SnapshotSaver,
+    private val aiVisionService: AiVisionService,
+    private val settingsRepository: SettingsRepository,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
+
+    val aiSettings: StateFlow<AiSettings> = settingsRepository.settings
+
+    fun saveAiSettings(settings: AiSettings) = settingsRepository.save(settings)
 
     private val _uiState = MutableStateFlow(CameraUiState())
     val uiState: StateFlow<CameraUiState> = _uiState.asStateFlow()
@@ -153,6 +164,36 @@ class CameraViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Cloud AI assistant: sends the current frame to the configured multimodal
+     * model and returns a detailed description plus an Arabic translation.
+     */
+    fun askAi(frame: Bitmap, notConfiguredMessage: String) {
+        val settings = settingsRepository.current()
+        if (!settings.isConfigured) {
+            _messages.value = notConfiguredMessage
+            return
+        }
+        _uiState.update { it.copy(aiLoading = true, aiAnswer = null) }
+        viewModelScope.launch {
+            try {
+                val answer = aiVisionService.describe(frame, AI_PROMPT, settings)
+                _uiState.update { it.copy(aiLoading = false, aiAnswer = answer) }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(aiLoading = false) }
+                _messages.value = e.message ?: "AI request failed"
+            }
+        }
+    }
+
+    fun dismissAiAnswer() {
+        _uiState.update { it.copy(aiAnswer = null) }
+    }
+
+    fun speakAiAnswer() {
+        _uiState.value.aiAnswer?.let { ttsManager.speak(it, arabic = false) }
+    }
+
     fun consumeMessage() {
         _messages.value = null
     }
@@ -162,5 +203,15 @@ class CameraViewModel @Inject constructor(
         ttsManager.stop()
         // Analyzers live in the app-scoped AnalyzerRegistry singleton and are reused
         // across configuration changes, so they are intentionally not closed here.
+    }
+
+    private companion object {
+        const val AI_PROMPT =
+            "You are an expert vision assistant analyzing a single live camera frame. " +
+                "1) Describe in detail what you see: the main objects, any people and what " +
+                "they are doing, colors, setting and overall context. " +
+                "2) If there is any readable text, transcribe it. " +
+                "3) Then provide a concise Arabic translation of your description. " +
+                "Use short, clearly separated sections with headings."
     }
 }

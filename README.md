@@ -56,6 +56,20 @@ Arabic + English.
 6. **Text-to-Speech** — reads results aloud in Arabic or English (Android TTS).
 7. **Annotated snapshot to gallery** — saves the current frame with overlay to Pictures (MediaStore).
 
+### AI Assistant (cloud, opt-in)
+
+Tap **Ask AI** to send the current frame to a cloud multimodal model for a detailed
+description **plus an Arabic translation**. Configure it under the gear icon:
+
+- **Google Gemini** (default, has a free tier) — get a free key at
+  `aistudio.google.com/app/apikey`.
+- **OpenAI-compatible** — works with OpenAI (GPT-4o), Groq, OpenRouter or a local
+  server by setting the API key, model and base URL.
+
+Your API key is stored only on the device. Unlike every other feature (which is
+100% on-device), **Ask AI uploads the captured frame** to the provider you choose —
+so it is strictly opt-in and only fires when you tap the button.
+
 ---
 
 ## Project structure

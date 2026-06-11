@@ -144,4 +144,7 @@ dependencies {
     // Permissions + image loading
     implementation(libs.accompanist.permissions)
     implementation(libs.coil.compose)
+
+    // Networking for the optional cloud AI assistant
+    implementation(libs.okhttp)
 }

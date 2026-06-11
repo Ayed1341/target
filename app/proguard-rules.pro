@@ -19,3 +19,10 @@
 -dontwarn javax.annotation.**
 -dontwarn autovalue.shaded.**
 -dontwarn com.google.auto.value.**
+
+# OkHttp (cloud AI assistant) pulls optional TLS providers that aren't present.
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-dontwarn org.conscrypt.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.openjsse.**
