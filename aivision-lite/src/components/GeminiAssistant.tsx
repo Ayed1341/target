@@ -162,11 +162,20 @@ export default function GeminiAssistant({ activeScanResult }: GeminiAssistantPro
       const fullQuestion = textToSend + contextNote;
 
       if (savedKey && savedKey.trim().length > 5) {
-        // Gemini API key provided — call Gemini directly
-        responseText = await askGeminiText(savedKey.trim(), savedModel, systemPrompt, fullQuestion);
+        try {
+          responseText = await askGeminiText(savedKey.trim(), savedModel, systemPrompt, fullQuestion);
+        } catch (geminiErr: any) {
+          const msg = (geminiErr?.message || "").toLowerCase();
+          const isQuotaErr = msg.includes("429") || msg.includes("quota") || msg.includes("resource_exhausted");
+          if (isQuotaErr) {
+            // Gemini quota exhausted — fall back to Pollinations silently
+            responseText = await askPollinationsText(savedModel, systemPrompt, fullQuestion);
+          } else {
+            throw geminiErr;
+          }
+        }
       } else {
         // No API key — use Pollinations.ai (free, no key required)
-        // Works for ALL models: Qwen, Kimi, DeepSeek, Gemini aliases, etc.
         responseText = await askPollinationsText(savedModel, systemPrompt, fullQuestion);
       }
 

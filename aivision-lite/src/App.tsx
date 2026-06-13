@@ -309,10 +309,22 @@ export default function App() {
       let scanResult: DetectedObject;
 
       if (settings.apiKey && settings.apiKey.trim().length > 5) {
-        // Gemini API key provided — call Gemini vision directly
-        console.log("▲ Using direct Gemini API for image scan...");
-        const rawText = await analyzeImageWithGemini(settings.apiKey.trim(), settings.model, base64Data, mimeType, scanPrompt, true);
-        scanResult = parseRawScan(rawText, base64Image);
+        try {
+          console.log("▲ Using direct Gemini API for image scan...");
+          const rawText = await analyzeImageWithGemini(settings.apiKey.trim(), settings.model, base64Data, mimeType, scanPrompt, true);
+          scanResult = parseRawScan(rawText, base64Image);
+        } catch (geminiErr: any) {
+          const msg = (geminiErr?.message || "").toLowerCase();
+          const isQuotaErr = msg.includes("429") || msg.includes("quota") || msg.includes("resource_exhausted");
+          if (isQuotaErr) {
+            // Gemini quota exhausted — fall back to Pollinations vision silently
+            console.log("▲ Gemini quota hit, falling back to Pollinations vision...");
+            const rawText = await analyzeImageWithPollinations(base64Data, mimeType, scanPrompt);
+            scanResult = parseRawScan(rawText, base64Image);
+          } else {
+            throw geminiErr;
+          }
+        }
       } else {
         // No API key — use Pollinations.ai vision (free, GPT-4o, no key required)
         console.log("▲ Using Pollinations.ai (free) for image scan...");
@@ -455,12 +467,15 @@ export default function App() {
                   onChange={(e) => updateSettings({ model: e.target.value })}
                   className="bg-slate-950 border border-slate-800 text-slate-100 rounded-lg p-2 text-xs focus:border-emerald-500/50 outline-none transition"
                 >
-                  <option value="gemini-3.5-flash">Gemini 3.5 Flash (الأساسي - الأسرع للأجهزة والأحدث)</option>
-                  <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (التحليل البصري العالي والمجهري)</option>
-                  <option value="qwen-2.5-72b">Qwen 2.5 Instruct (Alibaba كيوين - طيف ذكي مدمج)</option>
-                  <option value="kimi-chat-v1">Kimi Chat Ultra (Moonshot كيمي - للتقارير والترجمة)</option>
-                  <option value="claude-3-haiku">Claude 3 Haiku (Anthropic كلاود هايكو - استدلال مدمج)</option>
-                  <option value="deepseek-v3">DeepSeek V3 (ديب سيك - ذكاء فائق مدمج)</option>
+                  <option value="gemini-3.5-flash">⚡ Gemini 3.5 Flash — مجاني بالكامل (الأسرع)</option>
+                  <option value="gemini-3.1-pro-preview">🔬 Gemini 3.1 Pro — مجاني بالكامل (تحليل عالي الدقة)</option>
+                  <option value="qwen-2.5-72b">🐉 Qwen 2.5 72B — مجاني (كيوين - Alibaba)</option>
+                  <option value="kimi-chat-v1">🌙 Kimi Chat — مجاني (كيمي - Moonshot)</option>
+                  <option value="claude-3-haiku">🎍 Claude 3 Haiku — مجاني (كلاود - Anthropic)</option>
+                  <option value="deepseek-v3">🔮 DeepSeek V3 — مجاني (ديب سيك)</option>
+                  <option value="llama-3.3-70b">🦙 Llama 3.3 70B — مجاني (ميتا - Meta)</option>
+                  <option value="mistral-nemo">🌊 Mistral Nemo — مجاني (ميسترال)</option>
+                  <option value="searchgpt">🌐 SearchGPT — مجاني + بحث ذكي بالإنترنت</option>
                 </select>
                 <p className="text-[9px] text-slate-500">
                   اختر Pro للتحليل البصري فائق الدقة لمواصفات الأجهزة وتفاصيل الأجهزة المجهرية.

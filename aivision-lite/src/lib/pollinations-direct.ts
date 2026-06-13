@@ -32,6 +32,11 @@ export function resolvePollinationsModel(modelId: string): string {
     "gemini-3.1-pro-preview": "openai-large",
     "gemini-2.5-flash":       "openai",
     "gemini-2.5-pro":         "openai-large",
+    // Additional free models
+    "llama-3.3-70b":          "llama",
+    "mistral-nemo":           "mistral",
+    "searchgpt":              "searchgpt",
+    "unity":                  "unity",
   };
   return MAP[id] || "openai";
 }
