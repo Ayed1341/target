@@ -1,0 +1,6 @@
+{
+  "name": "AI Vision Lite",
+  "description": "High-fidelity AI object analyzer and Vision scanner with a 30-item local database and live Gemini-powered internet fallback.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
