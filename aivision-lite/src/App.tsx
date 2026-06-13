@@ -3,6 +3,7 @@ import { PRESET_SCENARIOS } from "./data/presets";
 import { PresetScenario, DetectedObject } from "./types";
 import { getApiUrl } from "./lib/api";
 import { analyzeImageWithGemini } from "./lib/gemini-direct";
+import { analyzeImageWithPollinations } from "./lib/pollinations-direct";
 import MobileFrame from "./components/MobileFrame";
 import CameraView from "./components/CameraView";
 import AnalysisPanel from "./components/AnalysisPanel";
@@ -272,68 +273,51 @@ export default function App() {
     const savedEmail = localStorage.getItem("gemini_user_email") || "";
     const isAuthed = localStorage.getItem("gemini_secure_authed") === "true";
 
+    const scanPrompt = forensicMode
+      ? `You are an Advanced Digital Forensics Analyzer. Analyze the image and return a SINGLE JSON object with fields: name, category, size, description, confidence (85-99.8), toolsFound (array of 3 strings), hideCameraStatus, extraDetails (array of 4 objects each with key and value), weight, brand, modelNumber, estimatedPrice, buyLink, translationResult (object: originalText, targetLang "ar", translatedText in Arabic). Return ONLY valid compact JSON, no markdown.`
+      : `You are the core analyzer engine of AI Vision. Analyze the provided image. Category clue: ${nameHint || "general object"}. Return a SINGLE JSON object with fields: name, category, size, description, confidence (85-99.8), toolsFound (array of 3 strings), hideCameraStatus, extraDetails (array of 4 objects each with key and value), weight, brand, modelNumber, estimatedPrice, buyLink, translationResult (object: originalText, targetLang "ar", translatedText in Arabic). Return ONLY valid compact JSON, no markdown.`;
+
+    let mimeType = "image/jpeg";
+    let base64Data = base64Image;
+    if (base64Image.startsWith("data:")) {
+      const match = base64Image.match(/data:([^;]+);/);
+      if (match) mimeType = match[1];
+      base64Data = base64Image.split(";base64,")[1];
+    }
+
+    const parseRawScan = (rawText: string, sourceImg: string): DetectedObject => {
+      let parsed: any = {};
+      try {
+        let clean = rawText.trim();
+        if (clean.includes("```json")) clean = clean.split("```json")[1].split("```")[0];
+        else if (clean.includes("```")) clean = clean.split("```")[1].split("```")[0];
+        parsed = JSON.parse(clean.trim());
+      } catch {
+        parsed = { name: "تحليل الصورة", category: "General Equipment", description: rawText, confidence: 85, toolsFound: [], hideCameraStatus: "N/A", extraDetails: [] };
+      }
+      return {
+        ...parsed,
+        id: "scan_" + Date.now(),
+        scannedAt: new Date().toISOString(),
+        source: "gemini_api" as const,
+        imageUrl: sourceImg,
+        boundingBox: parsed.boundingBox || { x: 20, y: 20, w: 60, h: 60 }
+      };
+    };
+
     try {
       let scanResult: DetectedObject;
 
       if (settings.apiKey && settings.apiKey.trim().length > 5) {
-        // Direct Gemini call from the client — works when Cloud Run is unreachable
+        // Gemini API key provided — call Gemini vision directly
         console.log("▲ Using direct Gemini API for image scan...");
-        const prompt = forensicMode
-          ? `Goal: You are an Advanced Digital Forensics Analyzer. Analyze the image and return a SINGLE JSON object with fields: name, category, size, description, confidence (85-99.8), toolsFound (array of 3), hideCameraStatus, extraDetails (array of 4 key-value objects), weight, brand, modelNumber, estimatedPrice, buyLink, translationResult (object with originalText, targetLang "ar", translatedText in Arabic). Return ONLY valid compact JSON.`
-          : `Goal: You are the core analyzer engine of 'AI Vision'. Analyze the provided image. Category clue: ${nameHint || "general object"}. Return a SINGLE JSON object with fields: name, category, size, description, confidence (85-99.8), toolsFound (array of 3), hideCameraStatus, extraDetails (array of 4 key-value objects), weight, brand, modelNumber, estimatedPrice, buyLink, translationResult (object with originalText, targetLang "ar", translatedText in Arabic). Return ONLY valid compact JSON.`;
-
-        let mimeType = "image/jpeg";
-        let base64Data = base64Image;
-        if (base64Image.startsWith("data:")) {
-          const match = base64Image.match(/data:([^;]+);/);
-          if (match) mimeType = match[1];
-          base64Data = base64Image.split(";base64,")[1];
-        }
-
-        const rawText = await analyzeImageWithGemini(settings.apiKey.trim(), settings.model, base64Data, mimeType, prompt, true);
-        let parsed: any = {};
-        try {
-          let clean = rawText.trim();
-          if (clean.includes("```json")) clean = clean.split("```json")[1].split("```")[0];
-          else if (clean.includes("```")) clean = clean.split("```")[1].split("```")[0];
-          parsed = JSON.parse(clean.trim());
-        } catch {
-          parsed = { name: "تحليل الصورة", category: "General Equipment", description: rawText, confidence: 85, toolsFound: [], hideCameraStatus: "N/A", extraDetails: [] };
-        }
-
-        scanResult = {
-          ...parsed,
-          id: "scan_" + Date.now(),
-          scannedAt: new Date().toISOString(),
-          source: "gemini_api" as const,
-          imageUrl: base64Image,
-          boundingBox: parsed.boundingBox || { x: 20, y: 20, w: 60, h: 60 }
-        };
+        const rawText = await analyzeImageWithGemini(settings.apiKey.trim(), settings.model, base64Data, mimeType, scanPrompt, true);
+        scanResult = parseRawScan(rawText, base64Image);
       } else {
-        // Fall back to Cloud Run backend
-        console.log("▲ Dispatching base64 image to server scanner API...");
-        const response = await fetch(getApiUrl("/api/scan"), {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-gemini-key": settings.apiKey,
-            "x-gemini-model": settings.model,
-            "x-gemini-email": savedEmail,
-            "x-gemini-authed": isAuthed ? "true" : "false"
-          },
-          body: JSON.stringify({
-            image: base64Image,
-            categoryHint: nameHint,
-            forensicMode: forensicMode
-          })
-        });
-
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({ message: response.statusText }));
-          throw new Error(errorData.message || response.statusText);
-        }
-
-        scanResult = await response.json();
+        // No API key — use Pollinations.ai vision (free, GPT-4o, no key required)
+        console.log("▲ Using Pollinations.ai (free) for image scan...");
+        const rawText = await analyzeImageWithPollinations(base64Data, mimeType, scanPrompt);
+        scanResult = parseRawScan(rawText, base64Image);
       }
 
       console.log("▲ Scan result parsed:", scanResult);

@@ -3,6 +3,7 @@ import { Bot, Send, Sparkles, Shield, AlertTriangle, MessageSquare, Globe, Arrow
 import { DetectedObject } from "../types";
 import { getApiUrl } from "../lib/api";
 import { askGeminiText } from "../lib/gemini-direct";
+import { askPollinationsText } from "../lib/pollinations-direct";
 
 interface GeminiAssistantProps {
   activeScanResult: DetectedObject | null;
@@ -154,39 +155,19 @@ export default function GeminiAssistant({ activeScanResult }: GeminiAssistantPro
     try {
       let responseText = "";
 
-      // If an API key is set, call Gemini directly from the client — avoids Cloud Run entirely
+      const systemPrompt = `أنت مساعد ذكاء اصطناعي متخصص في الأمن الرقمي وكشف الكاميرات الخفية والترجمة الفنية. أجب باللغة العربية بشكل واضح ودقيق.`;
+      const contextNote = activeScanResult
+        ? `\n\nسياق الفحص الحالي: ${JSON.stringify({ name: activeScanResult.name, category: activeScanResult.category, description: activeScanResult.description })}`
+        : "";
+      const fullQuestion = textToSend + contextNote;
+
       if (savedKey && savedKey.trim().length > 5) {
-        const systemPrompt = `أنت مساعد ذكاء اصطناعي متخصص في الأمن الرقمي وكشف الكاميرات الخفية والترجمة الفنية. أجب باللغة العربية بشكل واضح ودقيق.`;
-        const contextNote = activeScanResult
-          ? `\n\nسياق الفحص الحالي: ${JSON.stringify({ name: activeScanResult.name, category: activeScanResult.category, description: activeScanResult.description })}`
-          : "";
-        responseText = await askGeminiText(savedKey.trim(), savedModel, systemPrompt, textToSend + contextNote);
+        // Gemini API key provided — call Gemini directly
+        responseText = await askGeminiText(savedKey.trim(), savedModel, systemPrompt, fullQuestion);
       } else {
-        // Fall back to the Cloud Run backend (email-auth or server-side key)
-        const response = await fetch(getApiUrl("/api/gemini-ask"), {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-gemini-key": savedKey,
-            "x-gemini-model": savedModel,
-            "x-use-offline": isOffline ? "true" : "false",
-            "x-gemini-email": savedEmail,
-            "x-gemini-authed": isAuthed ? "true" : "false"
-          },
-          body: JSON.stringify({
-            question: textToSend,
-            scanContext: activeScanResult,
-            emailAuthUsed: authMode === "credentials" ? email : undefined
-          })
-        });
-
-        if (!response.ok) {
-          const errData = await response.json().catch(() => ({}));
-          throw new Error(errData.error || "API error: " + response.statusText);
-        }
-
-        const data = await response.json();
-        responseText = data.response || "";
+        // No API key — use Pollinations.ai (free, no key required)
+        // Works for ALL models: Qwen, Kimi, DeepSeek, Gemini aliases, etc.
+        responseText = await askPollinationsText(savedModel, systemPrompt, fullQuestion);
       }
 
       const geminiMsg: ChatMessage = {
