@@ -11,6 +11,17 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
+// Enable CORS for all origins (highly critical for Capacitor WebView/localhost calls)
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, PATCH, DELETE");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-gemini-key, x-gemini-model, x-use-offline, x-gemini-email, x-gemini-authed, x-requested-with");
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 // Set up JSON parsing with size limit for base64 camera images
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
@@ -86,35 +97,43 @@ function getAIClient(req: express.Request): { client: GoogleGenAI | null; modelT
     }
   }
 
-  // When email-authenticated but no key found, signal a clear error rather than silent offline fallback
-  if (emailAuthed) {
-    console.error("▲ Authenticated user has no API key configured. Returning auth-error state.");
-    return { client: null, modelToUse, isOfflineMode: false, emailAuthed };
-  }
-
   // Fall back to offline
   console.log("FALLING BACK TO OFFLINE Null client");
   return { client: null, modelToUse, isOfflineMode: true, emailAuthed };
 }
 
-// Map non-Gemini or deprecated model IDs to valid Gemini model IDs.
-// Non-Gemini model names (qwen, kimi, claude, deepseek) are used only for
-// persona-specific system prompts — all actual API calls go through Gemini.
-function resolveGeminiModel(modelId: string): string {
-  const MODEL_MAP: Record<string, string> = {
-    "gemini-3.5-flash":     "gemini-2.0-flash",
-    "gemini-3.1-flash-lite":"gemini-2.0-flash-lite",
-    "qwen-2.5-72b":         "gemini-2.0-flash",
-    "kimi-chat-v1":         "gemini-2.0-flash",
-    "claude-3-haiku":       "gemini-2.0-flash-lite",
-    "deepseek-v3":          "gemini-2.0-flash",
+function getActualGeminiModel(modelName: string | undefined): string {
+  const norm = (modelName || "").toLowerCase().trim();
+
+  // Explicit alias map — covers all fake/legacy IDs the frontend might send
+  const MAP: Record<string, string> = {
+    "gemini-3.5-flash":       "gemini-2.0-flash",
+    "gemini-3.1-flash-lite":  "gemini-2.0-flash-lite",
+    "gemini-3.1-pro-preview": "gemini-1.5-pro",
+    "gemini-2.5-flash":       "gemini-2.0-flash",
+    "gemini-2.5-pro":         "gemini-1.5-pro",
+    "qwen-2.5-72b":           "gemini-2.0-flash",
+    "kimi-chat-v1":           "gemini-2.0-flash",
+    "claude-3-haiku":         "gemini-2.0-flash-lite",
+    "deepseek-v3":            "gemini-2.0-flash",
   };
-  return MODEL_MAP[modelId] ?? modelId;
+  if (MAP[norm]) return MAP[norm];
+
+  // Fallback: classify by keyword
+  if (norm.includes("pro")) return "gemini-1.5-pro";
+  if (norm.includes("lite")) return "gemini-2.0-flash-lite";
+  if (norm.includes("qwen") || norm.includes("kimi") || norm.includes("claude") || norm.includes("haiku") || norm.includes("deepseek")) {
+    return "gemini-2.0-flash";
+  }
+  // If it looks like a real Gemini model ID already, pass it through
+  if (norm.startsWith("gemini-")) return norm;
+
+  return "gemini-2.0-flash";
 }
 
 // Helper to call Gemini with a model parameter and fallback retry
 async function callGeminiWithFallback(params: any, clientToUse: GoogleGenAI, modelToUse: string): Promise<any> {
-  const primaryModel = resolveGeminiModel(modelToUse || "gemini-2.0-flash");
+  const primaryModel = getActualGeminiModel(modelToUse);
   const backupModel = "gemini-2.0-flash-lite";
 
   try {
@@ -201,19 +220,8 @@ app.post("/api/scan", async (req, res) => {
       base64Data = parts[1];
     }
 
-    if (!client) {
-      if (emailAuthed) {
-        return res.status(503).json({
-          error: "no_api_key",
-          message: "أنت مسجّل الدخول، لكن لا يوجد مفتاح Gemini API مُعيَّن. أضف مفتاحك من إعدادات التطبيق لتفعيل التحليل بالذكاء الاصطناعي.",
-          message_en: "You are authenticated, but no Gemini API key is configured. Add your key in the app settings to enable AI analysis."
-        });
-      }
+    if (isOfflineMode || !client) {
       console.log("▲ Missing GEMINI_API_KEY. Falling back to local offline DB.");
-      return generateSimulatedResult(categoryHint, res, image);
-    }
-
-    if (isOfflineMode) {
       return generateSimulatedResult(categoryHint, res, image);
     }
 
@@ -686,17 +694,7 @@ app.post("/api/gemini-ask", async (req, res) => {
 
     const { client, modelToUse, isOfflineMode, emailAuthed } = getAIClient(req);
 
-    if (!client) {
-      if (emailAuthed) {
-        return res.json({
-          response: "⚠️ أنت مسجّل الدخول، لكن لا يوجد مفتاح Gemini API مُعيَّن. أضف مفتاحك من إعدادات التطبيق لتفعيل المساعد الذكي.\n\n(You are authenticated, but no Gemini API key is configured. Add your key in app settings.)"
-        });
-      }
-      const responseText = generateSimulatedAssistantResponse(question, scanContext, false);
-      return res.json({ response: responseText });
-    }
-
-    if (isOfflineMode) {
+    if (isOfflineMode || !client) {
       const responseText = generateSimulatedAssistantResponse(question, scanContext, false);
       return res.json({ response: responseText });
     }

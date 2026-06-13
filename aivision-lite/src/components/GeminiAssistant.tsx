@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { Bot, Send, Sparkles, Shield, AlertTriangle, MessageSquare, Globe, ArrowDownRight, RefreshCw, Key, UserCheck, LogOut, Check } from "lucide-react";
 import { DetectedObject } from "../types";
 import { getApiUrl } from "../lib/api";
+import { askGeminiText } from "../lib/gemini-direct";
 
 interface GeminiAssistantProps {
   activeScanResult: DetectedObject | null;
@@ -38,6 +39,7 @@ export default function GeminiAssistant({ activeScanResult }: GeminiAssistantPro
   });
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [showTestScenarios, setShowTestScenarios] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   // Auto scroll
@@ -142,39 +144,54 @@ export default function GeminiAssistant({ activeScanResult }: GeminiAssistantPro
     setIsLoading(true);
 
     const savedKey = localStorage.getItem("aiv_gemini_key") || "";
-    const savedModel = localStorage.getItem("aiv_gemini_model") || "gemini-2.5-flash";
+    const savedModel = localStorage.getItem("aiv_gemini_model") || "gemini-2.0-flash";
     const isOffline = localStorage.getItem("aiv_offline_mode") === "true";
-    
+
     // Credentials session state
     const savedEmail = localStorage.getItem("gemini_user_email") || "";
     const isAuthed = localStorage.getItem("gemini_secure_authed") === "true";
 
     try {
-      const response = await fetch(getApiUrl("/api/gemini-ask"), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-gemini-key": savedKey,
-          "x-gemini-model": savedModel,
-          "x-use-offline": isOffline ? "true" : "false",
-          "x-gemini-email": savedEmail,
-          "x-gemini-authed": isAuthed ? "true" : "false"
-        },
-        body: JSON.stringify({
-          question: textToSend,
-          scanContext: activeScanResult,
-          emailAuthUsed: authMode === "credentials" ? email : undefined
-        })
-      });
+      let responseText = "";
 
-      if (!response.ok) {
-        throw new Error("API error: " + response.statusText);
+      // If an API key is set, call Gemini directly from the client — avoids Cloud Run entirely
+      if (savedKey && savedKey.trim().length > 5) {
+        const systemPrompt = `أنت مساعد ذكاء اصطناعي متخصص في الأمن الرقمي وكشف الكاميرات الخفية والترجمة الفنية. أجب باللغة العربية بشكل واضح ودقيق.`;
+        const contextNote = activeScanResult
+          ? `\n\nسياق الفحص الحالي: ${JSON.stringify({ name: activeScanResult.name, category: activeScanResult.category, description: activeScanResult.description })}`
+          : "";
+        responseText = await askGeminiText(savedKey.trim(), savedModel, systemPrompt, textToSend + contextNote);
+      } else {
+        // Fall back to the Cloud Run backend (email-auth or server-side key)
+        const response = await fetch(getApiUrl("/api/gemini-ask"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-gemini-key": savedKey,
+            "x-gemini-model": savedModel,
+            "x-use-offline": isOffline ? "true" : "false",
+            "x-gemini-email": savedEmail,
+            "x-gemini-authed": isAuthed ? "true" : "false"
+          },
+          body: JSON.stringify({
+            question: textToSend,
+            scanContext: activeScanResult,
+            emailAuthUsed: authMode === "credentials" ? email : undefined
+          })
+        });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData.error || "API error: " + response.statusText);
+        }
+
+        const data = await response.json();
+        responseText = data.response || "";
       }
 
-      const data = await response.json();
       const geminiMsg: ChatMessage = {
         sender: "gemini",
-        text: data.response || "عذراً، لم أستطع تكوين استجابة دقيقة في الوقت الحالي.",
+        text: responseText || "عذراً، لم أستطع تكوين استجابة دقيقة في الوقت الحالي.",
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
 
@@ -183,7 +200,7 @@ export default function GeminiAssistant({ activeScanResult }: GeminiAssistantPro
       console.error("Gemini assistant error:", err);
       const errMsg: ChatMessage = {
         sender: "gemini",
-        text: `حدث خطأ أثناء إجراء التحليل: ${err.message}. تم تحويل وضع المساعد للتشغيل الذكي المستقل كمعيار بديل لحماية جلسة العمل. يرجى مراجعة تفعيل مفتاح Gemini المعتمد.`,
+        text: `حدث خطأ في الاتصال: ${err.message}. يرجى التحقق من مفتاح Gemini API في الإعدادات أو الاتصال بالإنترنت.`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
       setMessages((prev) => [...prev, errMsg]);
@@ -402,6 +419,90 @@ export default function GeminiAssistant({ activeScanResult }: GeminiAssistantPro
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* 10 Advanced AI Testing Scenarios */}
+          <div className="flex flex-col gap-2 border-t border-slate-800/85 pt-3">
+            <button
+              type="button"
+              onClick={() => setShowTestScenarios(!showTestScenarios)}
+              disabled={isLoading}
+              className="text-[11px] font-extrabold text-cyan-400 font-mono tracking-wider uppercase flex items-center justify-between bg-slate-950 px-3 py-2.5 rounded-xl border border-slate-850 hover:bg-slate-850 transition-all cursor-pointer"
+            >
+              <span className="flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
+                <span>🔬 تحدي الذكاء الاصطناعي الحقيقي: 10 اختبارات متقدمة</span>
+              </span>
+              <span className="text-[9px] bg-cyan-950/80 text-cyan-400 border border-cyan-800/40 px-2 py-0.5 rounded-lg font-black font-mono">
+                {showTestScenarios ? "إغلاق الاختبارات ▲" : "استعراض الأفكار الـ 10 ▼"}
+              </span>
+            </button>
+            
+            {showTestScenarios && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1 max-h-60 overflow-y-auto bg-slate-950/70 p-3 rounded-xl border border-slate-900 scrollbar-thin">
+                {[
+                  {
+                    title: "🕵️‍♂️ كشف خداع المظهر المضلل (كوب مخفي)",
+                    prompt: "أمامك مجسم يشبه كوب قهوة سيراميك لكن يوجد به ثقب دقيق عند المقبض ومؤشر حراري دافئ من الأسفل. حلل هذا السيناريو جنائياً: هل هناك ترجيح لوجود بطارية وباعث تذبذب، وكيف تكشفه طيفياً؟"
+                  },
+                  {
+                    title: "⚡ سحب تيار الشاحن المريب (كهروهندسة)",
+                    prompt: "شاحن جداري USB يسحب تياراً منخفضاً جداً (0.02A) حتى بدون وجود كابل متصل به. اشرح هندسياً ما الذي يبرر سحب التيار هذا في شريحة تتبع مغناطيسي وما الخطوات الأمنية التالية للتحقق؟"
+                  },
+                  {
+                    title: "📡 فحص التداخل بالراوتر (إخفاء بالزعانف)",
+                    prompt: "أعطني مواصفات فيزيائية حقيقية (أبعاد، وزن، معدل استرطاب، مستشعرات استقطاب) لجهاز راوتر Netgear Nighthawk AX12 وقدر فرصة إخفاء كاميرا تجسس داخل زعانفه الهوائية."
+                  },
+                  {
+                    title: "📊 تشوه ظل الكشف الجنائي (سقوط فوتوني)",
+                    prompt: "إذا كانت الساق اليمنى لدمية طفل قطنية تُلقي ظلاً مائلاً بزاوية 45 درجة بينما يسقط الضوء عمودياً من الأعلى تماماً، ما هو التحليل الجنائي للتشوه البصري واحتمالية تعديل الدمية لإخفاء كاميرا التلصص؟"
+                  },
+                  {
+                    title: "🧠 مقارنة الموديلات (Gemini vs Qwen)",
+                    prompt: "قارن بين كفاءة وحجم معالجة موديل Qwen 2.5 72B و Gemini 3.5 Flash في تتبع بصمات الـ RF (التردد الراديوي) وباقات البث اللاسلكي الخفية للأجهزة الأمنية."
+                  },
+                  {
+                    title: "🚫 خطة تشويش مادية (GSM مكافحة)",
+                    prompt: "صمم خطة تشويش مادية وصوتية ومغناطيسية يدوية لحماية الغرفة من جهاز تنصت دقيق يعتمد على شريحة GSM يلتقط الأصوات على مدى 8 أمتار ويرسلها للخارج."
+                  },
+                  {
+                    title: "🚨 فحص تذبذب مستشعر PIR (راداري)",
+                    prompt: "مستشعر حركة الجدران PIR يرسل إشعاعات نبضية دورية على بروتوكول Zigbee دون أن يكون هناك أي حركة بالغرفة. كيف تفصل طيفياً وتحديدياً بين الاستجابة الرادارية الخبيثة والاستجابة البيئية الطبيعية؟"
+                  },
+                  {
+                    title: "🌐 ترجمة اصطلاحية طيفية (تحدي لغوي)",
+                    prompt: "ترجم النص الطبي-التقني التالي بدقة صياغة المخابرات الأمنية والمصطلحات الدقيقة: 'Visual spectrum occlusion scan detected anomalous micro-aperture diffraction at 940nm spectrum.'"
+                  },
+                  {
+                    title: "🔍 معامل انتقال الضوء (مرآة التجسس)",
+                    prompt: "كيف يمكن لشريحة كاميرا تجسس مدمجة خلف زجاج مستقطب مرآتي (ساعة عاكسة) أن تقلل جودة الصورة بسبب معامل انتقال الضوء البالغ 35% فقط، وكيف يعوض معالج الكاميرا ذلك برمجياً؟"
+                  },
+                  {
+                    title: "🌡️ تمييز حراري بيولوجي (حيوان vs راوتر)",
+                    prompt: "حلل الفروقات الحرارية الدقيقة بين شبكة كهرومغناطيسية دافئة مدمجة بجهاز راوتر منزلي حيوي، وبين الانبعاث الحراري البيولوجي الطبيعي لقط متمدد يبلغ متوسط حرارته 38.5 درجة."
+                  }
+                ].map((scen, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => {
+                      setInput(scen.prompt);
+                      handleSendMessage(scen.prompt);
+                    }}
+                    disabled={isLoading}
+                    className="p-3 bg-slate-950 border border-slate-850 hover:border-cyan-500/40 hover:bg-slate-900/40 rounded-xl cursor-pointer transition flex flex-col gap-1 text-right select-none active:scale-98 disabled:opacity-50"
+                  >
+                    <span className="text-[10px] font-bold text-cyan-400 font-mono flex items-center gap-1 justify-end w-full">
+                      <span>{scen.title}</span>
+                      <span className="text-[8px] bg-slate-900 px-1.5 py-0.2 rounded border border-slate-800 font-black text-slate-500">#{idx + 1}</span>
+                    </span>
+                    <p className="text-[10.5px] text-slate-400 leading-relaxed line-clamp-2 w-full text-right">
+                      {scen.prompt}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Input Box Actions */}
