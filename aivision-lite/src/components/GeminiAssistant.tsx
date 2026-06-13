@@ -181,7 +181,9 @@ export default function GeminiAssistant({ activeScanResult }: GeminiAssistantPro
       console.error("Gemini assistant error:", err);
       const errMsg: ChatMessage = {
         sender: "gemini",
-        text: `حدث خطأ في الاتصال: ${err.message}. يرجى التحقق من مفتاح Gemini API في الإعدادات أو الاتصال بالإنترنت.`,
+        text: err.message?.includes("مشغولة") || err.message?.includes("خطأ في الاتصال")
+          ? err.message
+          : `فشل الاتصال بالذكاء الاصطناعي: ${err.message}`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
       setMessages((prev) => [...prev, errMsg]);

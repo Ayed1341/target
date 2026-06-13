@@ -1,19 +1,29 @@
 /**
  * Pollinations.ai client — completely free, no API key required.
- * Used as the primary path for all "free models" (Qwen, Kimi, DeepSeek, etc.)
- * and as fallback when no Gemini key is configured.
+ * Handles rate limiting (429) via automatic retry with backoff,
+ * and serializes concurrent requests to stay within the 1-request-per-IP limit.
  */
 
 const POLLINATIONS_TEXT = "https://text.pollinations.ai";
+
+// Serialize all Pollinations calls — the service allows only 1 concurrent request per IP.
+// Queuing on the client avoids 429 entirely.
+let _queue: Promise<unknown> = Promise.resolve();
+
+function enqueue<T>(fn: () => Promise<T>): Promise<T> {
+  const next = _queue.then(() => fn()).catch(() => fn()); // catch so queue never stalls
+  _queue = next.catch(() => {});
+  return next as Promise<T>;
+}
 
 // Maps app model IDs to real Pollinations model names
 export function resolvePollinationsModel(modelId: string): string {
   const id = (modelId || "").toLowerCase().trim();
   const MAP: Record<string, string> = {
-    "qwen-2.5-72b":           "qwen-coder",   // actual Qwen 2.5 Coder 32B
-    "deepseek-v3":            "mistral",        // Mistral Nemo
-    "kimi-chat-v1":           "openai",         // GPT-4o mini (closest free)
-    "claude-3-haiku":         "openai",         // GPT-4o mini (closest free)
+    "qwen-2.5-72b":           "qwen-coder",
+    "deepseek-v3":            "mistral",
+    "kimi-chat-v1":           "openai",
+    "claude-3-haiku":         "openai",
     "gemini-2.0-flash":       "openai",
     "gemini-2.0-flash-lite":  "openai",
     "gemini-1.5-pro":         "openai-large",
@@ -26,11 +36,15 @@ export function resolvePollinationsModel(modelId: string): string {
   return MAP[id] || "openai";
 }
 
-async function callPollinations(
+async function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function callPollinationsOnce(
   model: string,
   messages: { role: string; content: any }[],
-): Promise<string> {
-  const resp = await fetch(`${POLLINATIONS_TEXT}/`, {
+): Promise<Response> {
+  return fetch(`${POLLINATIONS_TEXT}/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -40,29 +54,47 @@ async function callPollinations(
       stream: false,
     }),
   });
+}
 
-  if (!resp.ok) {
-    const err = await resp.text().catch(() => resp.statusText);
-    // Retry with openai model on failure
-    if (model !== "openai") {
-      const r2 = await fetch(`${POLLINATIONS_TEXT}/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages, model: "openai", seed: 42, stream: false }),
-      });
-      if (r2.ok) {
-        const t2 = await r2.text();
-        return extractText(t2);
+async function callPollinations(
+  model: string,
+  messages: { role: string; content: any }[],
+): Promise<string> {
+  // Retry up to 4 times with increasing delay on 429 or transient errors
+  const delays = [2000, 4000, 6000, 8000];
+  let lastErr = "";
+
+  for (let i = 0; i <= delays.length; i++) {
+    const resp = await callPollinationsOnce(model, messages);
+
+    if (resp.ok) return extractText(await resp.text());
+
+    const errText = await resp.text().catch(() => resp.statusText);
+
+    if (resp.status === 429) {
+      // Rate limited — wait, then retry
+      if (i < delays.length) {
+        await sleep(delays[i]);
+        continue;
       }
+      lastErr = "الخدمة المجانية مشغولة حالياً، حاول مرة أخرى بعد لحظات.";
+      break;
     }
-    throw new Error(`Pollinations API error ${resp.status}: ${err}`);
+
+    // Non-429 failure: try with fallback "openai" model once
+    if (model !== "openai") {
+      const r2 = await callPollinationsOnce("openai", messages);
+      if (r2.ok) return extractText(await r2.text());
+    }
+
+    lastErr = `خطأ في الاتصال بالخدمة المجانية (${resp.status}).`;
+    break;
   }
 
-  return extractText(await resp.text());
+  throw new Error(lastErr || "فشل الاتصال بالخدمة المجانية.");
 }
 
 function extractText(raw: string): string {
-  // Handle both plain-text and OpenAI-format JSON responses
   try {
     const json = JSON.parse(raw);
     if (json?.choices?.[0]?.message?.content) return json.choices[0].message.content;
@@ -72,7 +104,7 @@ function extractText(raw: string): string {
   return raw;
 }
 
-/** Ask a text question with an optional system prompt. No API key needed. */
+/** Ask a text question. Queued to prevent concurrent 429s. No API key needed. */
 export async function askPollinationsText(
   modelId: string,
   systemPrompt: string,
@@ -82,10 +114,10 @@ export async function askPollinationsText(
   const messages: { role: string; content: any }[] = [];
   if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
   messages.push({ role: "user", content: userMessage });
-  return callPollinations(model, messages);
+  return enqueue(() => callPollinations(model, messages));
 }
 
-/** Analyze an image with Pollinations vision (openai-large = GPT-4o, supports images). */
+/** Analyze an image. Uses openai-large (GPT-4o) which supports vision. */
 export async function analyzeImageWithPollinations(
   base64Data: string,
   mimeType: string,
@@ -100,6 +132,5 @@ export async function analyzeImageWithPollinations(
       ],
     },
   ];
-  // openai-large (GPT-4o) supports vision
-  return callPollinations("openai-large", messages);
+  return enqueue(() => callPollinations("openai-large", messages));
 }
