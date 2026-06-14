@@ -1177,7 +1177,7 @@ export default function CameraView({
             if (!lockTarget || tgt.frames > lockTarget.frames) lockTarget = tgt;
           }
 
-          targets.forEach((tgt) => {
+          targets.forEach((tgt: TrackTarget) => {
             ctx.save();
 
             const speed = Math.sqrt(tgt.vx * tgt.vx + tgt.vy * tgt.vy);
