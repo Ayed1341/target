@@ -3,64 +3,26 @@ import { Camera, ImageUp, Sparkles, AlertTriangle, Eye, ShieldCheck, HelpCircle 
 import { PresetScenario } from "../types";
 import { PRESET_SCENARIOS } from "../data/presets";
 
-// Auto-detect and resolve detailed camera/device physical specifications based on platform/UA
-export function detectCameraSpecifications() {
-  if (typeof window === "undefined" || typeof navigator === "undefined") {
-    return {
-      brand: "Standard High-Aperture Web Core",
-      sensor: "Focal UHD Web-Sensor CMOS 1/2.7\"",
-      res: "4K UHD Multi-Sample Pixel Grid",
-      status: "مستشعر عام نشط: معالجة تقريب مجهري للعدسة 4K",
-      peakZoom: "100x Hybrid Digital Enlargement Core"
-    };
-  }
-  const ua = navigator.userAgent.toLowerCase();
-  
-  // Custom smart override simulation for user desktop/mobile agent testing
-  if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ipod")) {
-    const isPro = ua.includes("iphone15") || ua.includes("iphone16") || ua.includes("pro") || ua.includes("max");
-    return {
-      brand: "Apple iPhone iOS ISP Engine",
-      sensor: isPro ? "Sony Quad-Pixel IMX904 Active CMOS" : "Active Hexa-Optic AP Sensor",
-      res: isPro ? "48 Megapixel Digital Enhanced" : "12 Megapixel Custom Wide-Aperture",
-      status: "مستشعر آيفون مفعّل: تصفيف حوسبي بدقة 4K فائقة",
-      peakZoom: "100x Smart Telephoto Matrix Active"
-    };
-  }
-  if (ua.includes("samsung") || ua.includes("sm-") || ua.includes("galaxy")) {
-    return {
-      brand: "Samsung Galaxy ISOCELL Hardware",
-      sensor: "Samsung HP2 Super-Res Dual PD High-Gain",
-      res: "200 Megapixel Ultra-Resolution Mode",
-      status: "مستشعر سامسونج Ultra مفعّل: دمج بيكسلات متقدم 4K Nanopixel",
-      peakZoom: "100x Space Zoom Optically Stabilized"
-    };
-  }
-  if (ua.includes("pixel") || ua.includes("google")) {
-    return {
-      brand: "Google Pixel Tensor-ISP Core",
-      sensor: "Samsung GNV Ultra-Dynamic 1/1.31\" Focus",
-      res: "50 Megapixel Real-PD HDR Engine",
-      status: "مستشعر جوجل بيكسل مفعّل: معالجة ذكاء اصطناعي 4K Super-Res",
-      peakZoom: "100x Cognitive Multi-Frame Zoom Active"
-    };
-  }
-  if (ua.includes("huawei") || ua.includes("xiaomi") || ua.includes("oneplus") || ua.includes("android")) {
-    return {
-      brand: "Android Premium Optical Matrix",
-      sensor: "Sony IMX890 Focal Sensor Hardware",
-      res: "50 Megapixel Dual-Aperture Super-Shift",
-      status: "مستشعر أندرويد نشط: معالجة بصريات 4K فائقة الوضوح",
-      peakZoom: "100x Extended Digital/Optical Blend"
-    };
-  }
-  return {
-    brand: "Standard High-Aperture Web Core",
-    sensor: "Focal UHD Web-Sensor CMOS 1/2.7\"",
-    res: "4K UHD Multi-Sample Pixel Grid",
-    status: "مستشعر عام نشط: معالجة تقريب مجهري للعدسة 4K",
-    peakZoom: "100x Hybrid Digital Enlargement Core"
-  };
+// Auto-detect real camera specifications via MediaDevices API
+export async function detectCameraSpecifications(stream?: MediaStream | null) {
+  const result = { brand: "Unknown Camera", sensor: "Unknown Sensor", res: "Unknown Resolution", status: "كاميرا مجهولة", peakZoom: "Unknown Zoom" };
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d => d.kind === "videoinput");
+    if (cams.length > 0) result.brand = cams[0].label || `Camera ${cams[0].deviceId.slice(0,8)}`;
+    if (stream) {
+      const track = stream.getVideoTracks()[0];
+      if (track) {
+        const settings = track.getSettings();
+        if (settings.width && settings.height) result.res = `${settings.width}×${settings.height}`;
+        const caps = (track as any).getCapabilities?.();
+        if (caps?.zoom) result.peakZoom = `${caps.zoom.max?.toFixed(1) || "?"}x optical`;
+        result.sensor = track.label || "Video Track";
+        result.status = `${result.brand} — ${result.res}`;
+      }
+    }
+  } catch {}
+  return result;
 }
 
 // Define safe physical orbital movement paths for each premium target preset
@@ -145,6 +107,20 @@ export default function CameraView({
   // NVG heading ref for azimuth compass
   const nvgHeadingRef = useRef<number>(0);
 
+  // NVG EMA refs for adaptive gain smoothing (Improvement 3)
+  const nvgEmaMinRef = useRef<number>(0);
+  const nvgEmaMaxRef = useRef<number>(255);
+
+  // NVG real heading refs (Improvement 11)
+  const nvgRealHeadingRef = useRef<number | null>(null);
+  const nvgUseRealHeadingRef = useRef<boolean>(false);
+
+  // Camera specs ref (Improvement 1)
+  const cameraSpecsRef = useRef({ brand: "Unknown Camera", sensor: "Unknown Sensor", res: "Unknown Resolution", status: "كاميرا مجهولة", peakZoom: "Unknown Zoom" });
+
+  // Selected blob ref for live click tracking (Improvement 7)
+  const selectedBlobIdRef = useRef<number>(-1);
+
   useEffect(() => {
     // initialize offscreen motion canvas
     const mCan = document.createElement("canvas");
@@ -216,6 +192,38 @@ export default function CameraView({
       }
     };
   }, [useLiveCamera]);
+
+  // Update camera specs when live camera changes (Improvement 1)
+  useEffect(() => {
+    if (useLiveCamera) {
+      const updateSpecs = async () => {
+        const stream = videoRef.current?.srcObject instanceof MediaStream ? videoRef.current.srcObject as MediaStream : null;
+        const specs = await detectCameraSpecifications(stream);
+        cameraSpecsRef.current = specs;
+      };
+      const timer = setTimeout(updateSpecs, 1500); // wait for stream to initialize
+      return () => clearTimeout(timer);
+    }
+  }, [useLiveCamera]);
+
+  // DeviceOrientation handler for NVG real compass heading (Improvement 11)
+  useEffect(() => {
+    const handler = (e: DeviceOrientationEvent) => {
+      if (e.alpha !== null) {
+        nvgRealHeadingRef.current = e.alpha;
+        nvgUseRealHeadingRef.current = true;
+      }
+    };
+    if (typeof DeviceOrientationEvent !== 'undefined') {
+      window.addEventListener('deviceorientation', handler);
+    }
+    return () => window.removeEventListener('deviceorientation', handler);
+  }, []);
+
+  // Clear preset trails when preset changes (Improvement 15)
+  useEffect(() => {
+    presetTrailRef.current.clear();
+  }, [selectedPreset]);
 
   // Render simulation sketch on static canvas base on selected preset details
   useEffect(() => {

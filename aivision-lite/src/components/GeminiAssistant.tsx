@@ -17,6 +17,7 @@ interface ChatMessage {
   timestamp: string;
   failed?: boolean;
   streaming?: boolean;
+  provider?: string;
 }
 
 // ── Improvement #16: model display names ──────────────────────────────────────
@@ -36,18 +37,25 @@ const MODEL_DISPLAY: Record<string, { name: string; badge: string }> = {
 
 // ── Improvement #10: relative time ───────────────────────────────────────────
 function relativeTime(ts: number): string {
-  const diffMs = Date.now() - ts;
-  const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return "الآن";
-  if (diffMin === 1) return "منذ دقيقة";
-  if (diffMin < 60) return `منذ ${diffMin} دقيقة`;
-  const diffH = Math.floor(diffMin / 60);
-  return `منذ ${diffH} ساعة`;
+  const diff = Date.now() - ts;
+  if (diff < 60000) return "الآن";
+  if (diff < 3600000) return `منذ ${Math.floor(diff / 60000)} دقيقة`;
+  if (diff < 86400000) return `منذ ${Math.floor(diff / 3600000)} ساعة`;
+  return `منذ ${Math.floor(diff / 86400000)} يوم`;
 }
 
 // ── Improvement #2: response cache ───────────────────────────────────────────
+function djb2Hash(str: string): string {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash) ^ str.charCodeAt(i);
+    hash = hash >>> 0;
+  }
+  return hash.toString(36);
+}
+
 function getCacheKey(model: string, question: string): string {
-  return "aiv_cache_" + btoa(encodeURIComponent(model + ":" + question)).slice(0, 32);
+  return "aiv_cache_" + djb2Hash(model + ":" + question);
 }
 
 function readCache(key: string): string | null {
@@ -125,8 +133,8 @@ export default function GeminiAssistant({ activeScanResult }: GeminiAssistantPro
       id: Date.now().toString(),
       sender: "gemini",
       text: isAuthed
-        ? "تمت طباعة جلسة جيمني الآمنة للبريد الإلكتروني بنجاح! قاعدة البيانات الموسعة لجيمني للتحقق من الكاميرات الخفية وتخمين وتوصيل مواصفات الأجهزة مع الترجمة الفورية الكاملة فعالة الآن بنسبة 100% كخيار ثان معزز."
-        : "أهلاً بك في وحدة كاشف ومساعد جيمني الذكي المطور (Gemini Discovery Assistant)! أنا مستشارك الأمني التكنولوجي المدمج بالتطبيق. يمكنني فحص أي جهاز بحثاً عن الكاميرات الخفية، كتابة مواصفات الطول والوزن والسعر التقريبي لأي منتج محلياً أو عالمياً، والمساعدة بوضع الترجمة اللغوية الفورية بـ 40 لغات متعددة ومتقاطعة. كيف أخدمك اليوم؟",
+        ? "تم التحقق بنجاح! موديلات الذكاء الاصطناعي المجانية عبر Pollinations.ai نشطة الآن. اختر أي موديل وابدأ المحادثة."
+        : "أهلاً! أنا مساعدك الذكي المدعوم بنماذج مجانية عبر Pollinations.ai (بدون مفتاح API). يمكنك سؤالي عن أي شيء، وسأجيبك بالعربية أو الإنجليزية. يمكنك أيضاً إدخال مفتاح Gemini API للحصول على أداء أفضل.",
       ts: Date.now(),
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     };
@@ -158,11 +166,13 @@ export default function GeminiAssistant({ activeScanResult }: GeminiAssistantPro
 
   // ── Improvement #16: watch model changes ─────────────────────────────────
   useEffect(() => {
-    const interval = setInterval(() => {
-      const m = localStorage.getItem("aiv_gemini_model") || "gemini-2.0-flash";
-      setCurrentModel(prev => (prev !== m ? m : prev));
-    }, 1500);
-    return () => clearInterval(interval);
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "aiv_gemini_model" && e.newValue) {
+        setCurrentModel(e.newValue);
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, []);
 
   // ── Improvement #10: tick relative times every 30s ───────────────────────
@@ -256,6 +266,14 @@ export default function GeminiAssistant({ activeScanResult }: GeminiAssistantPro
   const handleSendMessage = useCallback(async (textToSend: string) => {
     if (!textToSend.trim() || isLoading) return;
 
+    if (!navigator.onLine) {
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(), sender: "gemini", text: "لا يوجد اتصال بالإنترنت. يرجى التحقق من الشبكة والمحاولة مرة أخرى.", ts: Date.now(), timestamp: new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}), failed: true
+      }]);
+      setIsLoading(false);
+      return;
+    }
+
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
       sender: "user",
@@ -281,7 +299,7 @@ export default function GeminiAssistant({ activeScanResult }: GeminiAssistantPro
     let contextNote = "";
     if (activeScanResult) {
       const sr = activeScanResult;
-      contextNote = `\n\nCurrently analyzing: ${sr.name} (${sr.category}). Confidence: ${sr.confidence ?? "N/A"}%. Details: ${sr.description ?? ""}. Safety: ${sr.hideCameraStatus ?? "N/A"}`;
+      contextNote = `\n\nCurrently analyzing: ${sr.name} (${sr.category}). Confidence: ${sr.confidence ?? "N/A"}%. Details: ${sr.description ?? ""}. Safety: ${sr.hideCameraStatus ?? "N/A"}${sr.estimatedPrice ? `. Estimated Price: ${sr.estimatedPrice}` : ""}${sr.brand ? `. Brand: ${sr.brand}` : ""}${sr.modelNumber ? `. Model: ${sr.modelNumber}` : ""}`;
     }
 
     // ── Improvement #3: conversation history context ─────────────────────────
@@ -315,11 +333,13 @@ export default function GeminiAssistant({ activeScanResult }: GeminiAssistantPro
 
     try {
       let responseText = "";
+      let responseProvider = "Pollinations";
 
       // ── Improvement #11: model cascade on failure ────────────────────────
       if (savedKey && savedKey.trim().length > 5) {
         try {
           responseText = await askGeminiText(savedKey.trim(), savedModel, systemPrompt, fullQuestion);
+          responseProvider = "Gemini";
         } catch (geminiErr: any) {
           const msg = (geminiErr?.message || "").toLowerCase();
           const isQuotaErr = msg.includes("429") || msg.includes("quota") || msg.includes("resource_exhausted");
@@ -339,7 +359,7 @@ export default function GeminiAssistant({ activeScanResult }: GeminiAssistantPro
       writeCache(cacheKey, finalText);
 
       // ── Improvement #1: streaming simulation ────────────────────────────
-      await streamResponse(finalText, true);
+      await streamResponse(finalText, true, responseProvider);
 
     } catch (err: any) {
       console.error("Gemini assistant error:", err);
