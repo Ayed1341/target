@@ -61,55 +61,61 @@ export function useRouterConnection() {
   const connect = useCallback(async (credentials: RouterCredentials): Promise<boolean> => {
     setPartial({ isLoading: true, error: null });
 
-    const api = createRouterAPI(credentials);
-    const authResult = await api.authenticate();
+    try {
+      const api = createRouterAPI(credentials);
+      const authResult = await api.authenticate();
 
-    if (!authResult.success) {
-      setPartial({ isLoading: false, error: authResult.error || "فشل الاتصال" });
+      if (!authResult.success) {
+        setPartial({ isLoading: false, error: authResult.error || "فشل الاتصال - تحقق من العنوان وكلمة المرور" });
+        return false;
+      }
+
+      apiRef.current = api;
+
+      // Fetch initial data in parallel
+      const [signalData, devices, bands, deviceInfo] = await Promise.allSettled([
+        api.getSignalMetrics(),
+        api.getConnectedDevices(),
+        api.getSupportedBands(),
+        api.getDeviceInfo(),
+      ]);
+
+      const signal = signalData.status === "fulfilled" ? signalData.value : null;
+      const devs = devices.status === "fulfilled" ? devices.value : [];
+      const bds = bands.status === "fulfilled" ? bands.value : [];
+      const info = deviceInfo.status === "fulfilled" ? deviceInfo.value : {};
+
+      const histEntry: SignalHistoryEntry | null = signal
+        ? {
+            time: new Date().toLocaleTimeString("ar-EG"),
+            rsrp: signal.rsrp,
+            rsrq: signal.rsrq,
+            sinr: signal.sinr,
+            band: signal.band,
+          }
+        : null;
+
+      setPartial({
+        isConnected: true,
+        isLoading: false,
+        signalData: signal,
+        connectedDevices: devs,
+        supportedBands: bds,
+        deviceInfo: info,
+        signalHistory: histEntry ? [histEntry] : [],
+        lastUpdate: new Date(),
+        authMethod: authResult.authMethod || "unknown",
+        error: null,
+      });
+
+      // Start polling
+      startPolling();
+      return true;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "حدث خطأ غير متوقع أثناء الاتصال";
+      setPartial({ isLoading: false, error: msg });
       return false;
     }
-
-    apiRef.current = api;
-
-    // Fetch initial data in parallel
-    const [signalData, devices, bands, deviceInfo] = await Promise.allSettled([
-      api.getSignalMetrics(),
-      api.getConnectedDevices(),
-      api.getSupportedBands(),
-      api.getDeviceInfo(),
-    ]);
-
-    const signal = signalData.status === "fulfilled" ? signalData.value : null;
-    const devs = devices.status === "fulfilled" ? devices.value : [];
-    const bds = bands.status === "fulfilled" ? bands.value : [];
-    const info = deviceInfo.status === "fulfilled" ? deviceInfo.value : {};
-
-    const histEntry: SignalHistoryEntry | null = signal
-      ? {
-          time: new Date().toLocaleTimeString("ar-EG"),
-          rsrp: signal.rsrp,
-          rsrq: signal.rsrq,
-          sinr: signal.sinr,
-          band: signal.band,
-        }
-      : null;
-
-    setPartial({
-      isConnected: true,
-      isLoading: false,
-      signalData: signal,
-      connectedDevices: devs,
-      supportedBands: bds,
-      deviceInfo: info,
-      signalHistory: histEntry ? [histEntry] : [],
-      lastUpdate: new Date(),
-      authMethod: authResult.authMethod || "unknown",
-      error: null,
-    });
-
-    // Start polling
-    startPolling();
-    return true;
   }, []);
 
   const startPolling = useCallback(() => {

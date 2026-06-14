@@ -63,28 +63,28 @@ class RequestMutex {
 }
 
 // ─── IDEA 3: Fetch with Timeout & Exponential Backoff Retry ─────────────────
+// Uses Promise.race instead of AbortController to support CapacitorHttp-patched fetch
 async function fetchWithTimeout(
   url: string,
   options: RequestInit = {},
-  timeoutMs = 6000
+  timeoutMs = 10000
 ): Promise<Response> {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    clearTimeout(id);
-    return response;
-  } catch (e) {
-    clearTimeout(id);
-    throw e;
-  }
+  return new Promise<Response>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Request timeout after ${timeoutMs}ms: ${url}`)),
+      timeoutMs
+    );
+    fetch(url, options)
+      .then((r) => { clearTimeout(timer); resolve(r); })
+      .catch((e) => { clearTimeout(timer); reject(e); });
+  });
 }
 
 async function fetchWithRetry(
   url: string,
   options: RequestInit = {},
-  retries = 3,
-  timeoutMs = 6000
+  retries = 2,
+  timeoutMs = 10000
 ): Promise<Response> {
   let lastError: Error = new Error("Unknown error");
   for (let attempt = 0; attempt < retries; attempt++) {
