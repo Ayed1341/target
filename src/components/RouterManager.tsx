@@ -1326,6 +1326,115 @@ curl "http://${routerIp}/goform/goform_get_cmd_process?isRecognized=1&cmd=realti
             </Card>
           </div>
         )}
+
+        {activeTab === "settings" && (
+          <div className="flex flex-col gap-4 p-4">
+            <div className="text-xs font-bold text-slate-400 uppercase tracking-widest">إعدادات الاتصال المحفوظة</div>
+            <Card>
+              <div className="flex flex-col gap-3">
+                <div className="text-[11px] font-bold text-slate-300 mb-1">بيانات الراوتر</div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase">عنوان IP</label>
+                    <input
+                      type="text"
+                      value={routerIp}
+                      onChange={(e) => setRouterIp(e.target.value)}
+                      className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                      placeholder="192.168.8.1"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase">اسم المستخدم</label>
+                    <input
+                      type="text"
+                      value={routerUser}
+                      onChange={(e) => setRouterUser(e.target.value)}
+                      className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                      placeholder="admin"
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase">كلمة المرور</label>
+                  <div className="relative">
+                    <input
+                      type={showPass ? "text" : "password"}
+                      value={routerPass}
+                      onChange={(e) => setRouterPass(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500 pr-8"
+                      placeholder="••••••••"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPass((v) => !v)}
+                      className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+                    >
+                      <Key className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase">نوع الراوتر</label>
+                  <select
+                    value={routerBrand}
+                    onChange={(e) => setRouterBrand(e.target.value as "huawei" | "zte")}
+                    className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="huawei">Huawei HiLink</option>
+                    <option value="zte">ZTE</option>
+                  </select>
+                </div>
+                <button
+                  onClick={() => {
+                    localStorage.setItem("rm_ip", routerIp);
+                    localStorage.setItem("rm_user", routerUser);
+                    localStorage.setItem("rm_pass", routerPass);
+                    localStorage.setItem("rm_brand", routerBrand);
+                    addLog("✅ تم حفظ بيانات الاتصال بنجاح");
+                  }}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-lg transition-all text-sm flex items-center justify-center gap-2"
+                >
+                  <CheckCircle className="w-4 h-4" />
+                  حفظ الإعدادات
+                </button>
+                <button
+                  onClick={() => {
+                    localStorage.removeItem("rm_ip");
+                    localStorage.removeItem("rm_user");
+                    localStorage.removeItem("rm_pass");
+                    localStorage.removeItem("rm_brand");
+                    setRouterIp("192.168.8.1");
+                    setRouterUser("admin");
+                    setRouterPass("");
+                    setRouterBrand("huawei");
+                    addLog("🗑️ تم مسح البيانات المحفوظة");
+                  }}
+                  className="w-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 font-bold py-2 px-4 rounded-lg transition-all text-sm"
+                >
+                  مسح البيانات المحفوظة
+                </button>
+              </div>
+            </Card>
+
+            <div className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-2">إدارة الترددات</div>
+            <Card>
+              <div className="flex flex-col gap-3">
+                <div className="text-[11px] text-slate-300">
+                  الترددات المقفولة حالياً: <span className="text-emerald-400 font-bold">{lockedBands.size > 0 ? [...lockedBands].join(", ") : "لا يوجد قفل"}</span>
+                </div>
+                <button
+                  onClick={handleUnlockAllBands}
+                  disabled={!conn.isConnected}
+                  className="w-full bg-orange-600/20 hover:bg-orange-600/40 border border-orange-600/40 disabled:opacity-40 text-orange-400 font-bold py-2.5 px-4 rounded-lg transition-all text-sm flex items-center justify-center gap-2"
+                >
+                  <Lock className="w-4 h-4" />
+                  إلغاء قفل جميع الترددات (فتح الكل)
+                </button>
+              </div>
+            </Card>
+          </div>
+        )}
       </div>
 
       {/* ── Footer ── */}
