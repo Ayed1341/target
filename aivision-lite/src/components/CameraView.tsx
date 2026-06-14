@@ -970,14 +970,14 @@ export default function CameraView({
           
           ctx.strokeStyle = targetColor;
           ctx.lineWidth = isCurrent ? 2.5 : 1.5;
-          
+
           // Drawing neat brackets for targets
           const bracketLen = 8;
           const x = pos.x;
           const y = pos.y;
           const w = pos.w;
           const h = pos.h;
-          
+
           // Top-Left
           ctx.beginPath();
           ctx.moveTo(x, y + bracketLen); ctx.lineTo(x, y); ctx.lineTo(x + bracketLen, y);
@@ -994,11 +994,11 @@ export default function CameraView({
           ctx.beginPath();
           ctx.moveTo(x + w, y + h - bracketLen); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w - bracketLen, y + h);
           ctx.stroke();
-          
+
           // Outer fill
           ctx.fillStyle = isCurrent ? "rgba(239, 68, 68, 0.08)" : "rgba(16, 185, 129, 0.02)";
           ctx.fillRect(x, y, w, h);
-          
+
           // Target focus point
           const tx = x + w / 2;
           const ty = y + h / 2;
@@ -1006,27 +1006,91 @@ export default function CameraView({
           ctx.beginPath();
           ctx.arc(tx, ty, 2, 0, Math.PI * 2);
           ctx.fill();
-          
+
           if (isCurrent) {
             ctx.strokeStyle = "rgba(239, 68, 68, 0.6)";
             ctx.beginPath();
             ctx.arc(tx, ty, 14 + (Date.now() % 400) / 30, 0, Math.PI * 2);
             ctx.stroke();
           }
-          
+
+          // Preset simulation: trail dots (last 5 positions)
+          const prevTrailArr = presetTrailRef.current.get(presetId) || [];
+          prevTrailArr.push({ x: tx, y: ty });
+          if (prevTrailArr.length > 5) prevTrailArr.shift();
+          presetTrailRef.current.set(presetId, prevTrailArr);
+          for (let tri = 0; tri < prevTrailArr.length; tri++) {
+            const tAlpha = (tri + 1) / prevTrailArr.length * 0.6;
+            ctx.globalAlpha = tAlpha;
+            ctx.fillStyle = targetColor;
+            ctx.beginPath();
+            ctx.arc(prevTrailArr[tri].x, prevTrailArr[tri].y, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1;
+
+          // Preset simulation: velocity arrow (angular orbital direction)
+          const angle2 = (time / 2000) + (index * Math.PI / 3.5);
+          const vdx = Math.cos(angle2) * 12;
+          const vdy = -Math.sin(angle2 * 1.3) * 10;
+          ctx.strokeStyle = targetColor;
+          ctx.lineWidth = 1;
+          ctx.globalAlpha = 0.8;
+          ctx.beginPath();
+          ctx.moveTo(tx, ty);
+          ctx.lineTo(tx + vdx, ty + vdy);
+          ctx.stroke();
+          // Arrowhead
+          const vAng = Math.atan2(vdy, vdx);
+          ctx.fillStyle = targetColor;
+          ctx.beginPath();
+          ctx.moveTo(tx + vdx, ty + vdy);
+          ctx.lineTo(tx + vdx - 5 * Math.cos(vAng - 0.5), ty + vdy - 5 * Math.sin(vAng - 0.5));
+          ctx.lineTo(tx + vdx - 5 * Math.cos(vAng + 0.5), ty + vdy - 5 * Math.sin(vAng + 0.5));
+          ctx.closePath();
+          ctx.fill();
+          ctx.globalAlpha = 1;
+
+          // Preset simulation: range line from centroid to frame center with distance label
+          const fcx = canvas.width / 2;
+          const fcy = canvas.height / 2;
+          const rangeDist = Math.round(Math.sqrt((tx - fcx) ** 2 + (ty - fcy) ** 2));
+          ctx.setLineDash([2, 4]);
+          ctx.strokeStyle = "rgba(148,163,184,0.3)";
+          ctx.lineWidth = 0.8;
+          ctx.beginPath();
+          ctx.moveTo(tx, ty);
+          ctx.lineTo(fcx, fcy);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          const midRx = (tx + fcx) / 2;
+          const midRy = (ty + fcy) / 2;
+          ctx.fillStyle = "rgba(148,163,184,0.9)";
+          ctx.font = "7px monospace";
+          ctx.fillText(`${rangeDist}px`, midRx + 2, midRy - 2);
+
+          // Preset simulation: threat badge based on proximity to center
+          const threatClose = rangeDist < 80;
+          const threatBadgeColor = threatClose ? "#ef4444" : (rangeDist < 160 ? "#f59e0b" : "#22c55e");
+          const threatBadgeLabel = threatClose ? "HIGH" : (rangeDist < 160 ? "MED" : "LOW");
+          ctx.fillStyle = "rgba(0,0,0,0.65)";
+          ctx.fillRect(x - 1, y - 14, 38, 12);
+          ctx.fillStyle = threatBadgeColor;
+          ctx.font = "bold 8px monospace";
+          ctx.fillText(`RISK:${threatBadgeLabel}`, x + 1, y - 5);
+
           // Metadata badge tags next to the target
           ctx.fillStyle = "#ffffff";
           ctx.font = "bold 8px system-ui, sans-serif";
-          
-          const cleanName = foundPreset.name.split(" (")[0];
-          ctx.fillText(`[🎯 ${isCurrent ? "LOCKED" : `TRK-0${index + 1}`}]`, x + w + 5, y + 8);
-          
+
+          ctx.fillText(`[${isCurrent ? "LOCKED" : `TRK-0${index + 1}`}]`, x + w + 5, y + 8);
+
           ctx.fillStyle = isCurrent ? "#f87171" : "#34d399";
           ctx.font = "7px monospace";
           ctx.fillText(`CONF: ${foundPreset.confidence}%`, x + w + 5, y + 17);
           ctx.fillText(`SIZE: ${foundPreset.size}`, x + w + 5, y + 25);
           ctx.fillText(`RECON: ${foundPreset.category.split(" & ")[0].toUpperCase()}`, x + w + 5, y + 33);
-          
+
           if (isCurrent) {
             ctx.strokeStyle = "rgba(239, 68, 68, 0.4)";
             ctx.setLineDash([3, 3]);
@@ -1084,7 +1148,7 @@ export default function CameraView({
             if (hCtx) {
               heatCanvasRef.current.width = cW;
               heatCanvasRef.current.height = cH;
-              targets.forEach((tgt) => {
+              targets.forEach((tgt: TrackTarget) => {
                 hCtx.fillStyle = "rgba(255,50,0,0.02)";
                 hCtx.beginPath();
                 hCtx.arc(tgt.cx, tgt.cy, Math.max(tgt.w, tgt.h) * 0.5, 0, Math.PI * 2);
@@ -1280,36 +1344,60 @@ export default function CameraView({
         }
         const lumRange = Math.max(1, sceneMax - sceneMin);
 
-        // Pass 2: Apply 8-zone Ironbow palette with adaptive stretch
+        // Pass 2: Apply palette with adaptive stretch (Feature 1 — Palette switcher)
+        const currentPalette = thermalPaletteRef.current;
+        // Also capture raw luma for frame-delta (Feature 4)
+        const rawLumas = new Float32Array(TW * TH);
         for (let i = 0; i < data.length; i += 4) {
-          const lum = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
+          rawLumas[i >> 2] = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
+        }
+        for (let i = 0; i < data.length; i += 4) {
+          const lum = rawLumas[i >> 2];
           const norm = Math.min(1, Math.max(0, (lum - sceneMin) / lumRange));
-
           let red = 0, green = 0, blue = 0;
-          if (norm < 0.125) {
-            const t = norm / 0.125;
-            red = Math.floor(t * 30); green = 0; blue = Math.floor(20 + t * 100);
-          } else if (norm < 0.25) {
-            const t = (norm - 0.125) / 0.125;
-            red = Math.floor(30 + t * 40); green = Math.floor(t * 15); blue = Math.floor(120 + t * 80);
-          } else if (norm < 0.375) {
-            const t = (norm - 0.25) / 0.125;
-            red = Math.floor(70 - t * 30); green = Math.floor(15 + t * 105); blue = Math.floor(200 + t * 30);
-          } else if (norm < 0.5) {
-            const t = (norm - 0.375) / 0.125;
-            red = Math.floor(40 + t * 60); green = Math.floor(120 + t * 90); blue = Math.floor(230 - t * 150);
-          } else if (norm < 0.625) {
-            const t = (norm - 0.5) / 0.125;
-            red = Math.floor(100 + t * 125); green = Math.floor(210 + t * 30); blue = Math.floor(80 - t * 70);
-          } else if (norm < 0.75) {
-            const t = (norm - 0.625) / 0.125;
-            red = Math.floor(225 + t * 30); green = Math.floor(240 - t * 120); blue = Math.floor(10 - t * 10);
-          } else if (norm < 0.875) {
-            const t = (norm - 0.75) / 0.125;
-            red = 255; green = Math.floor(120 - t * 100); blue = Math.floor(t * 30);
+          if (currentPalette === "rainbow") {
+            // hue=norm*270 in HSL, S=100%, L=50%
+            const hue = norm * 270;
+            const c = 1, x2 = 1 - Math.abs(((hue / 60) % 2) - 1);
+            const hi = Math.floor(hue / 60) % 6;
+            const [r1, g1, b1] = hi === 0 ? [c, x2, 0] : hi === 1 ? [x2, c, 0] : hi === 2 ? [0, c, x2] : hi === 3 ? [0, x2, c] : hi === 4 ? [x2, 0, c] : [c, 0, x2];
+            red = Math.round(r1 * 255); green = Math.round(g1 * 255); blue = Math.round(b1 * 255);
+          } else if (currentPalette === "arctic") {
+            // inverse: cold=white, hot=dark blue/purple
+            const inv = 1 - norm;
+            red = Math.round(inv * 255);
+            green = Math.round(inv * 200);
+            blue = Math.round(255 - norm * 100);
+          } else if (currentPalette === "whiteHot") {
+            const g3 = Math.round(norm * 255);
+            red = g3; green = g3; blue = g3;
           } else {
-            const t = (norm - 0.875) / 0.125;
-            red = 255; green = Math.floor(20 + t * 235); blue = Math.floor(30 + t * 225);
+            // ironbow (default)
+            if (norm < 0.125) {
+              const t = norm / 0.125;
+              red = Math.floor(t * 30); green = 0; blue = Math.floor(20 + t * 100);
+            } else if (norm < 0.25) {
+              const t = (norm - 0.125) / 0.125;
+              red = Math.floor(30 + t * 40); green = Math.floor(t * 15); blue = Math.floor(120 + t * 80);
+            } else if (norm < 0.375) {
+              const t = (norm - 0.25) / 0.125;
+              red = Math.floor(70 - t * 30); green = Math.floor(15 + t * 105); blue = Math.floor(200 + t * 30);
+            } else if (norm < 0.5) {
+              const t = (norm - 0.375) / 0.125;
+              red = Math.floor(40 + t * 60); green = Math.floor(120 + t * 90); blue = Math.floor(230 - t * 150);
+            } else if (norm < 0.625) {
+              const t = (norm - 0.5) / 0.125;
+              red = Math.floor(100 + t * 125); green = Math.floor(210 + t * 30); blue = Math.floor(80 - t * 70);
+            } else if (norm < 0.75) {
+              const t = (norm - 0.625) / 0.125;
+              red = Math.floor(225 + t * 30); green = Math.floor(240 - t * 120); blue = Math.floor(10 - t * 10);
+            } else if (norm < 0.875) {
+              const t = (norm - 0.75) / 0.125;
+              red = 255; green = Math.floor(120 - t * 100); blue = Math.floor(t * 30);
+            } else {
+              const t = (norm - 0.875) / 0.125;
+              red = 255; green = Math.floor(20 + t * 235); blue = Math.floor(30 + t * 225);
+            }
           }
           data[i] = red; data[i+1] = green; data[i+2] = blue;
         }
@@ -1447,6 +1535,141 @@ export default function CameraView({
           ctx.strokeStyle = "rgba(255,255,255,0.3)"; ctx.lineWidth = 0.5;
           ctx.beginPath(); ctx.moveTo(barX2 - 2, ly); ctx.lineTo(barX2, ly); ctx.stroke();
         });
+
+        // Feature 1 — Palette switcher HUD button on canvas (bottom-left corner)
+        {
+          ctx.fillStyle = "rgba(0,0,0,0.75)";
+          ctx.fillRect(4, TH - 42, 80, 18);
+          ctx.strokeStyle = "rgba(249,115,22,0.7)";
+          ctx.lineWidth = 0.8;
+          ctx.strokeRect(4, TH - 42, 80, 18);
+          ctx.fillStyle = "#fb923c";
+          ctx.font = "bold 7px monospace";
+          ctx.fillText(`PALETTE: ${currentPalette.toUpperCase()}`, 8, TH - 29);
+        }
+
+        // Feature 2 — 9-zone temperature grid over the full frame
+        {
+          const cellW2 = TW / 3;
+          const cellH2 = TH / 3;
+          let hotCellIdx2 = 0;
+          let hotCellLuma2 = -1;
+          const cellLumas2: number[] = [];
+          for (let rr = 0; rr < 3; rr++) {
+            for (let cc = 0; cc < 3; cc++) {
+              let sumL2 = 0, cntL2 = 0;
+              const x2s = Math.floor(cc * cellW2), y2s = Math.floor(rr * cellH2);
+              const x2e = Math.floor((cc + 1) * cellW2), y2e = Math.floor((rr + 1) * cellH2);
+              for (let yy = y2s; yy < y2e; yy += 4) {
+                for (let xx = x2s; xx < x2e; xx += 4) {
+                  const ii = (yy * TW + xx) * 4;
+                  if (ii < data.length) { sumL2 += rawLumas[ii >> 2]; cntL2++; }
+                }
+              }
+              const avgL2 = cntL2 > 0 ? sumL2 / cntL2 : 128;
+              cellLumas2.push(avgL2);
+              if (avgL2 > hotCellLuma2) { hotCellLuma2 = avgL2; hotCellIdx2 = rr * 3 + cc; }
+            }
+          }
+          for (let rr = 0; rr < 3; rr++) {
+            for (let cc = 0; cc < 3; cc++) {
+              const ci2 = rr * 3 + cc;
+              const cx2s = cc * cellW2, cy2s = rr * cellH2;
+              const cellTemp2 = (14 + (cellLumas2[ci2] / 255) * 31).toFixed(1);
+              ctx.strokeStyle = ci2 === hotCellIdx2 ? "rgba(251,146,60,0.7)" : "rgba(255,255,255,0.1)";
+              ctx.lineWidth = ci2 === hotCellIdx2 ? 1.5 : 0.5;
+              ctx.strokeRect(cx2s, cy2s, cellW2, cellH2);
+              ctx.fillStyle = "rgba(0,0,0,0.5)";
+              ctx.fillRect(cx2s + cellW2/2 - 14, cy2s + cellH2/2 - 7, 28, 12);
+              ctx.fillStyle = ci2 === hotCellIdx2 ? "#fb923c" : "#e2e8f0";
+              ctx.font = "7px monospace";
+              ctx.textAlign = "center";
+              ctx.fillText(`${cellTemp2}°C`, cx2s + cellW2 / 2, cy2s + cellH2 / 2 + 3);
+              ctx.textAlign = "left";
+            }
+          }
+        }
+
+        // Feature 3 — Bio-heat detection circle (norm in 0.55-0.72 range = body temp 35-38.5°C)
+        {
+          let bioSumX = 0, bioSumY = 0, bioCnt = 0;
+          for (let by3 = 0; by3 < TH; by3 += 4) {
+            for (let bx3 = 0; bx3 < TW; bx3 += 4) {
+              const ii3 = (by3 * TW + bx3) * 4;
+              const lum3 = rawLumas[ii3 >> 2];
+              const norm3 = Math.min(1, Math.max(0, (lum3 - sceneMin) / lumRange));
+              if (norm3 >= 0.55 && norm3 <= 0.72) {
+                bioSumX += bx3; bioSumY += by3; bioCnt++;
+              }
+            }
+          }
+          if (bioCnt > 40) {
+            const bioCx = bioSumX / bioCnt;
+            const bioCy = bioSumY / bioCnt;
+            const bioPulse = Math.abs(Math.sin(Date.now() / 600)) * 8;
+            ctx.save();
+            ctx.strokeStyle = "#22c55e";
+            ctx.lineWidth = 1.5;
+            ctx.globalAlpha = 0.7 + Math.sin(Date.now() / 500) * 0.2;
+            ctx.beginPath(); ctx.arc(bioCx, bioCy, 24 + bioPulse, 0, Math.PI * 2); ctx.stroke();
+            ctx.beginPath(); ctx.arc(bioCx, bioCy, 16, 0, Math.PI * 2); ctx.stroke();
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = "rgba(0,0,0,0.7)";
+            ctx.fillRect(bioCx - 58, bioCy - 38, 116, 14);
+            ctx.fillStyle = "#22c55e";
+            ctx.font = "bold 8px monospace";
+            ctx.textAlign = "center";
+            ctx.fillText("BIO HEAT SIGNATURE DETECTED", bioCx, bioCy - 28);
+            ctx.textAlign = "left";
+            ctx.restore();
+          }
+        }
+
+        // Feature 4 — Frame delta temperature drift
+        {
+          const tNowThermal = Date.now();
+          const prevLuma = prevThermalLumaRef.current;
+          if (prevLuma && prevLuma.length === rawLumas.length) {
+            const dtSec = Math.max(0.016, (tNowThermal - prevThermalTimeRef.current) / 1000);
+            let deltaSum = 0;
+            for (let di = 0; di < rawLumas.length; di += 8) { deltaSum += rawLumas[di] - prevLuma[di]; }
+            const deltaMeanLuma = deltaSum / (rawLumas.length / 8);
+            const deltaTempPerSec = (deltaMeanLuma / 255) * 31 / dtSec;
+            const sign4 = deltaTempPerSec >= 0 ? "+" : "";
+            ctx.fillStyle = "rgba(0,0,0,0.65)";
+            ctx.fillRect(4, TH - 58, 120, 14);
+            ctx.fillStyle = "#fde047";
+            ctx.font = "bold 7px monospace";
+            ctx.fillText(`ΔTEMP: ${sign4}${deltaTempPerSec.toFixed(1)}°C/s`, 8, TH - 47);
+          }
+          prevThermalLumaRef.current = new Float32Array(rawLumas);
+          prevThermalTimeRef.current = tNowThermal;
+        }
+
+        // Feature 5 — Cold-spot marker (min luma pixel in full frame)
+        {
+          let minL5 = Infinity, coldX5 = 0, coldY5 = 0;
+          for (let cy5 = 0; cy5 < TH; cy5 += 3) {
+            for (let cx5 = 0; cx5 < TW; cx5 += 3) {
+              const ii5 = (cy5 * TW + cx5) * 4;
+              const l5 = rawLumas[ii5 >> 2];
+              if (l5 < minL5) { minL5 = l5; coldX5 = cx5; coldY5 = cy5; }
+            }
+          }
+          ctx.save();
+          ctx.strokeStyle = "#60a5fa";
+          ctx.lineWidth = 1.2;
+          const d5 = 6;
+          ctx.beginPath();
+          ctx.moveTo(coldX5 - d5, coldY5); ctx.lineTo(coldX5, coldY5 - d5);
+          ctx.lineTo(coldX5 + d5, coldY5); ctx.lineTo(coldX5, coldY5 + d5);
+          ctx.closePath();
+          ctx.stroke();
+          ctx.fillStyle = "#93c5fd";
+          ctx.font = "bold 7px monospace";
+          ctx.fillText("COLD", coldX5 + d5 + 2, coldY5 + 3);
+          ctx.restore();
+        }
 
         ctx.restore();
 
@@ -1600,6 +1823,151 @@ export default function CameraView({
         const ss = String(new Date().getSeconds()).padStart(2, "0");
         ctx.fillText(`${hh}:${mm}:${ss}Z  ◆  OPFOR-SCAN  ◆  IR-SIG: ${blinkOn ? "DETECTED" : "SCANNING..."}  ◆  TUBE: OK`, 10, H - 8);
         ctx.restore();
+
+        // Pass 10 — Sobel edge enhancement
+        {
+          const edgeData = ctx.getImageData(0, 0, W, H);
+          const ed = edgeData.data;
+          const edgeOut = new Uint8ClampedArray(ed.length);
+          for (let epy = 1; epy < H - 1; epy++) {
+            for (let epx = 1; epx < W - 1; epx++) {
+              const idx00 = ((epy - 1) * W + (epx - 1)) * 4;
+              const idx01 = ((epy - 1) * W + epx) * 4;
+              const idx02 = ((epy - 1) * W + (epx + 1)) * 4;
+              const idx10 = (epy * W + (epx - 1)) * 4;
+              const idx12 = (epy * W + (epx + 1)) * 4;
+              const idx20 = ((epy + 1) * W + (epx - 1)) * 4;
+              const idx21 = ((epy + 1) * W + epx) * 4;
+              const idx22 = ((epy + 1) * W + (epx + 1)) * 4;
+              const g00 = ed[idx00] * 0.299 + ed[idx00+1] * 0.587 + ed[idx00+2] * 0.114;
+              const g01 = ed[idx01] * 0.299 + ed[idx01+1] * 0.587 + ed[idx01+2] * 0.114;
+              const g02 = ed[idx02] * 0.299 + ed[idx02+1] * 0.587 + ed[idx02+2] * 0.114;
+              const g10 = ed[idx10] * 0.299 + ed[idx10+1] * 0.587 + ed[idx10+2] * 0.114;
+              const g12 = ed[idx12] * 0.299 + ed[idx12+1] * 0.587 + ed[idx12+2] * 0.114;
+              const g20 = ed[idx20] * 0.299 + ed[idx20+1] * 0.587 + ed[idx20+2] * 0.114;
+              const g21 = ed[idx21] * 0.299 + ed[idx21+1] * 0.587 + ed[idx21+2] * 0.114;
+              const g22 = ed[idx22] * 0.299 + ed[idx22+1] * 0.587 + ed[idx22+2] * 0.114;
+              const gx = -g00 - 2 * g10 - g20 + g02 + 2 * g12 + g22;
+              const gy = -g00 - 2 * g01 - g02 + g20 + 2 * g21 + g22;
+              const mag = Math.min(255, Math.sqrt(gx * gx + gy * gy));
+              const pi = (epy * W + epx) * 4;
+              edgeOut[pi] = 0;
+              edgeOut[pi+1] = Math.round(mag);
+              edgeOut[pi+2] = 0;
+              edgeOut[pi+3] = mag > 20 ? 255 : 0;
+            }
+          }
+          const edgeCanvas = document.createElement("canvas");
+          edgeCanvas.width = W; edgeCanvas.height = H;
+          const eCtx = edgeCanvas.getContext("2d");
+          if (eCtx) {
+            const edgeImgData = eCtx.createImageData(W, H);
+            edgeImgData.data.set(edgeOut);
+            eCtx.putImageData(edgeImgData, 0, 0);
+            ctx.save();
+            ctx.globalCompositeOperation = "screen";
+            ctx.globalAlpha = 0.4;
+            ctx.drawImage(edgeCanvas, 0, 0);
+            ctx.restore();
+          }
+        }
+
+        // Pass 11 — Temporal grain (deterministic, time-varying)
+        {
+          const grainCanvas = document.createElement("canvas");
+          grainCanvas.width = W; grainCanvas.height = H;
+          const gCtx = grainCanvas.getContext("2d");
+          if (gCtx) {
+            const gImg = gCtx.createImageData(W, H);
+            const gd = gImg.data;
+            const tGrain = Date.now();
+            for (let gpy = 0; gpy < H; gpy++) {
+              for (let gpx = 0; gpx < W; gpx++) {
+                const grainVal = Math.round(127 + 127 * Math.sin(tGrain * 0.07 + gpx * 0.03 + gpy * 0.07));
+                const gi = (gpy * W + gpx) * 4;
+                gd[gi] = grainVal; gd[gi+1] = grainVal; gd[gi+2] = grainVal; gd[gi+3] = 255;
+              }
+            }
+            gCtx.putImageData(gImg, 0, 0);
+            ctx.save();
+            ctx.globalCompositeOperation = "overlay";
+            ctx.globalAlpha = 0.12;
+            ctx.drawImage(grainCanvas, 0, 0);
+            ctx.restore();
+          }
+        }
+
+        // Pass 12 — IR range estimator bar (right edge, military NVG stadia)
+        {
+          ctx.save();
+          const barX12 = W - 36;
+          const barTop = 35;
+          const barBot = H - 30;
+          const barH12 = barBot - barTop;
+          ctx.fillStyle = "rgba(0,0,0,0.45)";
+          ctx.fillRect(barX12 - 2, barTop, 30, barH12);
+          ctx.strokeStyle = "rgba(34,255,70,0.6)";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(barX12 - 2, barTop, 30, barH12);
+          ctx.fillStyle = "rgba(34,255,70,0.8)";
+          ctx.font = "6px monospace";
+          const distLabels12: Array<[string, number]> = [["50m", 0.08], ["100m", 0.28], ["200m", 0.56], ["400m", 0.88]];
+          distLabels12.forEach(([dlabel, frac]) => {
+            const dy = barTop + frac * barH12;
+            ctx.beginPath(); ctx.moveTo(barX12 - 2, dy); ctx.lineTo(barX12 + 8, dy); ctx.stroke();
+            ctx.fillText(dlabel, barX12 + 10, dy + 3);
+          });
+          ctx.fillStyle = "rgba(34,255,70,0.6)";
+          ctx.font = "bold 6px monospace";
+          ctx.fillText("RNG", barX12, barTop - 5);
+          ctx.restore();
+        }
+
+        // Pass 13 — Azimuth compass strip (top edge, 20px tall)
+        {
+          ctx.save();
+          ctx.fillStyle = "rgba(0,0,0,0.6)";
+          ctx.fillRect(0, 0, W, 20);
+          const tCompass = Date.now();
+          const heading13 = Math.sin(tCompass / 8000) * 15;
+          nvgHeadingRef.current = heading13;
+          ctx.strokeStyle = "rgba(34,255,70,0.55)";
+          ctx.lineWidth = 0.8;
+          ctx.fillStyle = "rgba(34,255,70,0.85)";
+          ctx.font = "bold 7px monospace";
+          const compassLabels: Array<[string, number]> = [
+            ["N", 0], ["NE", 45], ["E", 90], ["SE", 135],
+            ["S", 180], ["SW", 225], ["W", 270], ["NW", 315]
+          ];
+          compassLabels.forEach(([clabel, deg]) => {
+            const offsetDeg = deg - heading13;
+            const norm13 = ((offsetDeg % 360) + 360) % 360;
+            const frac13 = norm13 / 360;
+            const cx13 = frac13 * W;
+            if (cx13 >= 0 && cx13 <= W) {
+              ctx.beginPath(); ctx.moveTo(cx13, 12); ctx.lineTo(cx13, 20); ctx.stroke();
+              ctx.textAlign = "center";
+              ctx.fillText(clabel, cx13, 10);
+            }
+          });
+          // minor degree ticks
+          ctx.strokeStyle = "rgba(34,255,70,0.25)";
+          for (let deg10 = 0; deg10 < 360; deg10 += 10) {
+            const offsetDeg10 = deg10 - heading13;
+            const norm10 = ((offsetDeg10 % 360) + 360) % 360;
+            const frac10 = norm10 / 360;
+            const cx10 = frac10 * W;
+            if (cx10 >= 0 && cx10 <= W) {
+              ctx.beginPath(); ctx.moveTo(cx10, 16); ctx.lineTo(cx10, 20); ctx.stroke();
+            }
+          }
+          ctx.textAlign = "left";
+          // Center marker
+          ctx.strokeStyle = "rgba(34,255,70,0.9)";
+          ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.moveTo(W/2, 12); ctx.lineTo(W/2, 20); ctx.stroke();
+          ctx.restore();
+        }
       }
 
     // Continuous loop of animation for targets tracking at 60 FPS
@@ -1616,15 +1984,25 @@ export default function CameraView({
 
   // Click/press handler mapped coordinates on canvas to select active target
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!trackMotion) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    
-    // Map mouse position to 640x480 canvas coordinates
+
+    // Map mouse position to canvas coordinates
     const clickX = ((e.clientX - rect.left) / rect.width) * canvas.width;
     const clickY = ((e.clientY - rect.top) / rect.height) * canvas.height;
-    
+
+    // Feature 1 — Thermal palette toggle button hit test (bottom-left corner, 84px wide x 18px tall at TH-42)
+    if (filterMode === "thermal") {
+      const btnX = 4, btnY = canvas.height - 42, btnW = 80, btnH = 18;
+      if (clickX >= btnX && clickX <= btnX + btnW && clickY >= btnY && clickY <= btnY + btnH) {
+        const palettes: Array<"ironbow" | "rainbow" | "arctic" | "whiteHot"> = ["ironbow", "rainbow", "arctic", "whiteHot"];
+        const idx = palettes.indexOf(thermalPaletteRef.current);
+        thermalPaletteRef.current = palettes[(idx + 1) % palettes.length];
+        return;
+      }
+    }
+
     const trackingPresets = [
       "spy_usb_charger",
       "spy_smoke_detector",
