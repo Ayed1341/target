@@ -277,134 +277,117 @@ export class HuaweiRouterAPI {
     return headers;
   }
 
-  // ── IDEA 9: 9-Technique Advanced Token Acquisition ──────────────────────
-  private async acquireToken(): Promise<{ token: string; sessionId: string } | null> {
-    // TECHNIQUE 1: IP Normalization — strip protocol prefix and trailing slashes
-    this.ip = this.ip
-      .replace(/^https?:\/\//i, "")
-      .replace(/\/$/, "")
-      .trim();
+  // ─── 15-TECHNIQUE AUTHENTICATION ENGINE ──────────────────────────────────
+  //
+  // TECHNIQUE  1: IP Normalization — strip protocol/trailing chars before every attempt
+  // TECHNIQUE  2: Direct Token Fetch — skip slow bootstrap loop; GET token immediately
+  // TECHNIQUE  3: Set-Cookie Session Extraction — capture SessionID from response headers
+  // TECHNIQUE  4: Multi-Format Token Parsing — XML TokInfo, HTML input, JSON, plain text
+  // TECHNIQUE  5: Hint-Based Password Type — read router's preferred type from response
+  // TECHNIQUE  6: Firmware Detection — B310/B525/CPE-Pro/HiLink v1/v2 from response text
+  // TECHNIQUE  7: Session Bootstrap Fallback — GET HTML page only if direct fetch fails
+  // TECHNIQUE  8: HTML Token Fallback — parse CSRF from <input> tags in full login page
+  // TECHNIQUE  9: Stale Session Guard — always clear session before attempting login
+  // TECHNIQUE 10: Auto-Retry on 125003 — session-expired error triggers 3 fresh retries
+  // TECHNIQUE 11: Adaptive Backoff — 1s/2s/3s wait between retries to let router settle
+  // TECHNIQUE 12: Fresh Token Per Retry — re-acquire CSRF token before each retry attempt
+  // TECHNIQUE 13: Hint-Type-First Ordering — router's hinted type tried before all others
+  // TECHNIQUE 14: Strict OK-Only Acceptance — ONLY <response>OK</response> means success
+  // TECHNIQUE 15: Error-Code Cascade — 108001/108003/108006/125003 mapped to precise messages
 
-    // TECHNIQUE 2: Connection Pre-Check — GET probe (HEAD is not reliably supported
-    // by CapacitorHttp on Android; use GET which always works)
-    let reachable = false;
-    for (const path of ["/api/webserver/token", "/"]) {
-      try {
-        const probe = await fetchWithTimeout(`http://${this.ip}${path}`, {
-          method: "GET",
-          headers: { "User-Agent": this.ua, Accept: "*/*" },
-        }, 6000);
-        if (probe.status < 600) { reachable = true; break; }
-      } catch { /* try next */ }
-    }
-    if (!reachable) return null;
+  private async fetchFreshToken(): Promise<{ token: string; sessionId: string } | null> {
+    // TECHNIQUE 1: IP Normalization
+    this.ip = this.ip.replace(/^https?:\/\//i, "").replace(/\/$/, "").trim();
 
-    // TECHNIQUE 3: Session Bootstrap — GET main HTML page first to establish SessionID cookie
-    // Many Huawei firmwares require a browser-like session before the token API will respond
-    let sessionId = "";
-    const bootstrapPaths = ["/html/home.html", "/", "/html/index.html"];
-    for (const path of bootstrapPaths) {
+    // TECHNIQUE 2: Direct Token Fetch — try token API immediately, no warmup delay
+    const directEndpoints = ["/api/webserver/token", "/api/webserver/SesTokInfo"];
+    for (const endpoint of directEndpoints) {
       try {
         const res = await fetchWithTimeout(
-          `http://${this.ip}${path}`,
-          { method: "GET", headers: { "User-Agent": this.ua, Accept: "text/html,*/*" } },
-          6000
-        );
-        // TECHNIQUE 4: Multi-Format Cookie Extraction from Set-Cookie header
-        const sc = res.headers.get("Set-Cookie") || res.headers.get("set-cookie") || "";
-        sessionId =
-          sc.match(/SessionID=([^;,\s]+)/i)?.[1] ||
-          sc.match(/session_?id=([^;,\s]+)/i)?.[1] ||
-          "";
-        if (sessionId) break;
-        // Also check if session ID is embedded in HTML
-        const html = await res.text();
-        const emb = html.match(/var\s+SessionID\s*=\s*["']([^"']+)/i)?.[1] ||
-                    html.match(/sessionID\s*=\s*["']([^"']+)/i)?.[1] || "";
-        if (emb) { sessionId = emb; break; }
-      } catch { /* try next bootstrap path */ }
-    }
-
-    // TECHNIQUE 5: Cookie-Aware CSRF Token Fetch — use SessionID cookie when calling token API
-    const tokenEndpoints = ["/api/webserver/token", "/api/webserver/SesTokInfo"];
-    for (const endpoint of tokenEndpoints) {
-      try {
-        const headers: Record<string, string> = {
-          "User-Agent": this.ua,
-          Accept: "application/xml, text/xml, */*",
-          "Cache-Control": "no-cache",
-        };
-        if (sessionId) headers["Cookie"] = `SessionID=${sessionId}`;
-
-        const response = await fetchWithTimeout(
           `http://${this.ip}${endpoint}`,
-          { method: "GET", headers },
+          { method: "GET", headers: { "User-Agent": this.ua, Accept: "application/xml,*/*", "Cache-Control": "no-cache" } },
           8000
         );
-        const text = await response.text();
-
-        // TECHNIQUE 6: Firmware Detection from Token Response
-        this.firmwareType = detectHuaweiFirmware(text);
-
-        // TECHNIQUE 7: Multi-Format Token Extraction — XML, HTML input, JSON
+        const text = await res.text();
+        // TECHNIQUE 3: Session from Set-Cookie
+        const sc = res.headers.get("Set-Cookie") || res.headers.get("set-cookie") || "";
+        const sessionId = sc.match(/SessionID=([^;,\s]+)/i)?.[1] || xmlParse(text, "SesInfo") || "";
+        // TECHNIQUE 4: Multi-Format Token Parsing
         const token =
-          xmlParse(text, "token") ||
-          xmlParse(text, "TokInfo") ||
+          xmlParse(text, "token") || xmlParse(text, "TokInfo") ||
           text.match(/name="__RequestVerificationToken"[^>]*value="([^"]+)"/i)?.[1] ||
           text.match(/csrf_token\s*=\s*["']([^"']+)/i)?.[1] ||
-          text.match(/"token"\s*:\s*"([^"]+)"/i)?.[1] ||
-          "";
-
-        // TECHNIQUE 8: Enhanced Session Recovery — extract from token response if not yet set
-        if (!sessionId) {
-          const sc = response.headers.get("Set-Cookie") || response.headers.get("set-cookie") || "";
-          sessionId =
-            sc.match(/SessionID=([^;,\s]+)/i)?.[1] ||
-            xmlParse(text, "SesInfo") ||
-            "";
-        }
-
-        // TECHNIQUE 9: Hint-Based Password Type — read router's preferred auth type
-        const hinted = parseInt(
-          xmlParse(text, "password_type") || xmlParse(text, "encrypt_auth_type") || "0"
-        );
+          text.match(/"token"\s*:\s*"([^"]+)"/i)?.[1] || "";
+        // TECHNIQUE 5: Hint-Based Password Type
+        const hinted = parseInt(xmlParse(text, "password_type") || xmlParse(text, "encrypt_auth_type") || "0");
         if (hinted > 0) this.hintedPasswordType = hinted;
-
-        if (response.status < 500) {
-          return { token, sessionId };
-        }
-      } catch { /* try next endpoint */ }
+        // TECHNIQUE 6: Firmware Detection
+        this.firmwareType = detectHuaweiFirmware(text);
+        if (res.status < 500) return { token, sessionId };
+      } catch { /* try next */ }
     }
 
-    // HTML Fallback: parse CSRF token from the full login page
+    // TECHNIQUE 7: Session Bootstrap Fallback — only if direct endpoints failed
+    let bootstrapSession = "";
     try {
-      const headers: Record<string, string> = {
-        "User-Agent": this.ua,
-        Accept: "text/html,*/*",
-      };
-      if (sessionId) headers["Cookie"] = `SessionID=${sessionId}`;
-      const res = await fetchWithTimeout(
-        `http://${this.ip}/html/index.html`,
-        { method: "GET", headers },
-        8000
+      const bRes = await fetchWithTimeout(
+        `http://${this.ip}/`,
+        { method: "GET", headers: { "User-Agent": this.ua, Accept: "text/html,*/*" } },
+        6000
       );
+      const sc = bRes.headers.get("Set-Cookie") || bRes.headers.get("set-cookie") || "";
+      bootstrapSession = sc.match(/SessionID=([^;,\s]+)/i)?.[1] || "";
+      if (!bootstrapSession) {
+        const html = await bRes.text();
+        bootstrapSession = html.match(/var\s+SessionID\s*=\s*["']([^"']+)/i)?.[1] || "";
+      }
+    } catch { /* ignore bootstrap failure */ }
+
+    // Retry token endpoints with the bootstrap session
+    for (const endpoint of directEndpoints) {
+      try {
+        const headers: Record<string, string> = {
+          "User-Agent": this.ua, Accept: "application/xml,*/*", "Cache-Control": "no-cache",
+        };
+        if (bootstrapSession) headers["Cookie"] = `SessionID=${bootstrapSession}`;
+        const res = await fetchWithTimeout(`http://${this.ip}${endpoint}`, { method: "GET", headers }, 8000);
+        const text = await res.text();
+        const sc = res.headers.get("Set-Cookie") || "";
+        const sessionId = sc.match(/SessionID=([^;,\s]+)/i)?.[1] || bootstrapSession || xmlParse(text, "SesInfo") || "";
+        const token =
+          xmlParse(text, "token") || xmlParse(text, "TokInfo") ||
+          text.match(/name="__RequestVerificationToken"[^>]*value="([^"]+)"/i)?.[1] || "";
+        const hinted = parseInt(xmlParse(text, "password_type") || "0");
+        if (hinted > 0) this.hintedPasswordType = hinted;
+        this.firmwareType = detectHuaweiFirmware(text);
+        if (res.status < 500) return { token, sessionId };
+      } catch { /* try next */ }
+    }
+
+    // TECHNIQUE 8: HTML Token Fallback — parse CSRF from full login page
+    try {
+      const headers: Record<string, string> = { "User-Agent": this.ua, Accept: "text/html,*/*" };
+      if (bootstrapSession) headers["Cookie"] = `SessionID=${bootstrapSession}`;
+      const res = await fetchWithTimeout(`http://${this.ip}/html/index.html`, { method: "GET", headers }, 8000);
       const text = await res.text();
       this.firmwareType = detectHuaweiFirmware(text);
+      const sc = res.headers.get("Set-Cookie") || "";
+      const sessionId = sc.match(/SessionID=([^;,\s]+)/i)?.[1] || bootstrapSession || "";
       const token =
         text.match(/name="__RequestVerificationToken"[^>]*value="([^"]+)"/i)?.[1] ||
-        text.match(/csrf_token\s*=\s*["']([^"']+)/i)?.[1] ||
-        "";
-      if (!sessionId) {
-        const sc = res.headers.get("Set-Cookie") || "";
-        sessionId = sc.match(/SessionID=([^;,\s]+)/i)?.[1] || "";
-      }
+        text.match(/csrf_token\s*=\s*["']([^"']+)/i)?.[1] || "";
       if (res.status < 500) return { token, sessionId };
-    } catch { /* all methods exhausted */ }
+    } catch { /* all paths exhausted */ }
 
     return null;
   }
 
-  // ── IDEA 10: Password Type Builder (takes explicit CSRF token, never reads session) ──
+  // Keep acquireToken as an alias for backwards compatibility
+  private async acquireToken(): Promise<{ token: string; sessionId: string } | null> {
+    return this.fetchFreshToken();
+  }
+
+  // ── IDEA 10: Password Type Builder ──────────────────────────────────────
   private async buildLoginPayloadWithToken(passwordType: number, csrfToken: string): Promise<string> {
     let processedPassword = "";
 
@@ -459,133 +442,109 @@ export class HuaweiRouterAPI {
         this.ip = discovered;
       }
 
-      // Get CSRF token from router — NOT saved to session (it's not an auth token)
-      const tokenData = await this.acquireToken();
-      if (!tokenData) {
-        return { success: false, error: "تعذر الوصول للراوتر على العنوان " + this.ip + " - تأكد من الاتصال بشبكة الراوتر" };
-      }
+      // TECHNIQUE 10 + 11 + 12: Auto-Retry Loop — up to 3 attempts with adaptive backoff.
+      // On 125003 (session expired), wait and get a FRESH token each time.
+      const MAX_RETRIES = 3;
+      let lastErrCode = "";
 
-      const csrfToken = tokenData.token;
-      const initSessionId = tokenData.sessionId;
-
-      // Build login request headers with the CSRF token directly (no session yet)
-      const buildLoginHeaders = (): Record<string, string> => {
-        const h: Record<string, string> = {
-          "Content-Type": "application/xml",
-          Accept: "application/xml, text/xml, */*",
-          "Accept-Language": "ar,en;q=0.9",
-          "Cache-Control": "no-cache, no-store",
-          Connection: "keep-alive",
-          "User-Agent": this.ua,
-        };
-        if (csrfToken) h["__RequestVerificationToken"] = csrfToken;
-        if (initSessionId) h["Cookie"] = `SessionID=${initSessionId}`;
-        return h;
-      };
-
-      // If no CSRF token, only plain base64 (type 1) can be attempted
-      // Use router-hinted type first if detected, then try all others
-      const typesToTry = !csrfToken
-        ? [1]
-        : this.hintedPasswordType > 0
-          ? [this.hintedPasswordType, 4, 3, 2, 1].filter((v, i, a) => a.indexOf(v) === i)
-          : this.firmwareType === "b310_series"
-            ? [1, 4]
-            : [4, 3, 2, 1];
-
-      for (const pwType of typesToTry) {
-        const payload = await this.buildLoginPayloadWithToken(pwType, csrfToken);
-
-        try {
-          const loginResponse = await fetchWithTimeout(
-            `http://${this.ip}/api/user/login`,
-            { method: "POST", headers: buildLoginHeaders(), body: payload },
-            10000
-          );
-
-          const loginText = await loginResponse.text();
-
-          // STRICT: only an explicit OK response from the router means success
-          if (
-            loginText.includes("<response>OK</response>") ||
-            loginText.includes("<response>ok</response>")
-          ) {
-            // Extract authenticated session token (may differ from CSRF token)
-            const newToken = xmlParse(loginText, "token") || csrfToken;
-            const newSessId =
-              loginResponse.headers.get("Set-Cookie")?.match(/SessionID=([^;]+)/i)?.[1] ||
-              initSessionId;
-
-            // Only NOW save the authenticated session
-            this.session.save(newToken, newSessId, 3_600_000);
-            this.consecutiveFailures = 0;
-
-            return {
-              success: true,
-              token: this.session.getToken(),
-              sessionId: this.session.getSessionId(),
-              authMethod: `huawei_type${pwType}`,
-            };
-          }
-
-          // Map specific Huawei error codes to Arabic messages
-          const errCode = xmlParse(loginText, "code");
-          if (errCode === "108003") {
-            return { success: false, error: "الحساب مقفل مؤقتاً - انتظر دقيقة ثم أعد المحاولة" };
-          }
-          if (errCode === "108006") {
-            return { success: false, error: "كلمة المرور خاطئة - تحقق من كلمة السر" };
-          }
-          if (errCode === "125003") {
-            return { success: false, error: "انتهت صلاحية الجلسة - أعد المحاولة" };
-          }
-          if (errCode === "108001") {
-            return { success: false, error: "اسم المستخدم خاطئ" };
-          }
-        } catch {
-          // try next password type
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        // TECHNIQUE 11: Adaptive Backoff — give the router time to reset between retries
+        if (attempt > 0) {
+          await new Promise((r) => setTimeout(r, 1000 * attempt));
         }
-      }
 
-      // Step-back retry: wait 2 seconds, get a fresh token, try type 1 once more
-      // Handles race conditions where the CSRF token expires mid-authentication
-      try {
-        await new Promise((r) => setTimeout(r, 2000));
-        const retryData = await this.acquireToken();
-        if (retryData?.token) {
-          const retryPayload = await this.buildLoginPayloadWithToken(1, retryData.token);
-          const retryHeaders: Record<string, string> = {
+        // TECHNIQUE 12: Fresh Token Per Retry — never reuse a CSRF token across attempts
+        const tokenData = await this.fetchFreshToken();
+        if (!tokenData) {
+          return { success: false, error: "تعذر الوصول للراوتر على العنوان " + this.ip + " - تأكد من الاتصال بشبكة الراوتر" };
+        }
+
+        const csrfToken = tokenData.token;
+        const initSessionId = tokenData.sessionId;
+
+        const makeLoginHeaders = (): Record<string, string> => {
+          const h: Record<string, string> = {
             "Content-Type": "application/xml",
             Accept: "application/xml, text/xml, */*",
+            "Accept-Language": "ar,en;q=0.9",
+            "Cache-Control": "no-cache, no-store",
             "User-Agent": this.ua,
-            "__RequestVerificationToken": retryData.token,
           };
-          if (retryData.sessionId) retryHeaders["Cookie"] = `SessionID=${retryData.sessionId}`;
-          const retryRes = await fetchWithTimeout(
-            `http://${this.ip}/api/user/login`,
-            { method: "POST", headers: retryHeaders, body: retryPayload },
-            10000
-          );
-          const retryText = await retryRes.text();
-          if (
-            retryText.includes("<response>OK</response>") ||
-            retryText.includes("<response>ok</response>") ||
-            retryText.trim() === "OK"
-          ) {
-            const newToken = xmlParse(retryText, "token") || retryData.token;
-            const newSessId =
-              retryRes.headers.get("Set-Cookie")?.match(/SessionID=([^;]+)/i)?.[1] ||
-              retryData.sessionId;
-            this.session.save(newToken, newSessId, 3_600_000);
-            return { success: true, token: newToken, sessionId: newSessId, authMethod: "huawei_retry_type1" };
-          }
+          if (csrfToken) h["__RequestVerificationToken"] = csrfToken;
+          if (initSessionId) h["Cookie"] = `SessionID=${initSessionId}`;
+          return h;
+        };
+
+        // TECHNIQUE 13: Hint-Type-First Ordering
+        const typesToTry = !csrfToken
+          ? [1]
+          : this.hintedPasswordType > 0
+            ? [this.hintedPasswordType, 4, 3, 2, 1].filter((v, i, a) => a.indexOf(v) === i)
+            : this.firmwareType === "b310_series"
+              ? [1, 4]
+              : [4, 3, 2, 1];
+
+        let sessionExpiredThisAttempt = false;
+
+        for (const pwType of typesToTry) {
+          try {
+            const payload = await this.buildLoginPayloadWithToken(pwType, csrfToken);
+            const loginResponse = await fetchWithTimeout(
+              `http://${this.ip}/api/user/login`,
+              { method: "POST", headers: makeLoginHeaders(), body: payload },
+              10000
+            );
+            const loginText = await loginResponse.text();
+
+            // TECHNIQUE 14: Strict OK-Only Acceptance
+            if (
+              loginText.includes("<response>OK</response>") ||
+              loginText.includes("<response>ok</response>") ||
+              loginText.trim() === "OK"
+            ) {
+              const newToken = xmlParse(loginText, "token") || csrfToken;
+              const newSessId =
+                loginResponse.headers.get("Set-Cookie")?.match(/SessionID=([^;]+)/i)?.[1] ||
+                initSessionId;
+              this.session.save(newToken, newSessId, 3_600_000);
+              this.consecutiveFailures = 0;
+              return {
+                success: true,
+                token: this.session.getToken(),
+                sessionId: this.session.getSessionId(),
+                authMethod: `huawei_type${pwType}_a${attempt + 1}`,
+              };
+            }
+
+            // TECHNIQUE 15: Error-Code Cascade — map each code to precise Arabic message
+            const errCode = xmlParse(loginText, "code");
+            lastErrCode = errCode;
+            if (errCode === "108003") {
+              return { success: false, error: "الحساب مقفل مؤقتاً - انتظر دقيقة ثم أعد المحاولة" };
+            }
+            if (errCode === "108006" || errCode === "108001") {
+              // Wrong password — no point retrying
+              this.consecutiveFailures++;
+              return { success: false, error: "كلمة المرور خاطئة - تحقق من كلمة السر" };
+            }
+            if (errCode === "125003") {
+              // TECHNIQUE 10: Session expired — break inner loop, retry outer loop with fresh token
+              sessionExpiredThisAttempt = true;
+              break;
+            }
+          } catch { /* try next password type */ }
         }
-      } catch { /* retry failed */ }
+
+        // If error was not session-expiry, don't keep retrying
+        if (!sessionExpiredThisAttempt) break;
+      }
 
       this.consecutiveFailures++;
       return {
         success: false,
-        error: "كلمة المرور خاطئة أو اسم المستخدم غير صحيح للراوتر " + this.ip,
+        error: lastErrCode === "125003"
+          ? "فشل التحقق - كلمة المرور خاطئة أو الراوتر لا يقبل الاتصال"
+          : "كلمة المرور خاطئة أو اسم المستخدم غير صحيح",
       };
     } finally {
       this.mutex.release();
