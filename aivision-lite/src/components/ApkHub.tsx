@@ -1,32 +1,10 @@
 import React, { useState } from "react";
-import { Download, Smartphone, CheckCircle, ShieldAlert, ArrowDownToLine, Info, Terminal, Settings } from "lucide-react";
+import { Smartphone, CheckCircle, ShieldAlert, ArrowDownToLine, Info, Terminal } from "lucide-react";
 
 export default function ApkHub() {
   const [showInstructions, setShowInstructions] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
-  const [successMsg, setSuccessMsg] = useState("");
-
-  const handleSimulateApkDownload = () => {
-    if (downloadProgress !== null) return;
-    setSuccessMsg("");
-    setDownloadProgress(0);
-    
-    const interval = setInterval(() => {
-      setDownloadProgress((prev) => {
-        if (prev === null) return null;
-        if (prev >= 100) {
-          clearInterval(interval);
-          setSuccessMsg("تم تجهيز ملف حزمة التطبيق APK وتوجيه التحميل بنجاح!");
-          
-          // Trigger actual client ZIP trigger of the source code as well so they have the code
-          setTimeout(() => {
-            setDownloadProgress(null);
-          }, 3000);
-          return 100;
-        }
-        return prev + 10;
-      });
-    }, 150);
+  const handleDownloadApk = () => {
+    window.open("https://github.com/Ayed1341/target/releases/tag/apk-latest", "_blank");
   };
 
   return (
@@ -58,11 +36,11 @@ export default function ApkHub() {
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3" dir="rtl">
         <button
           id="btn-trigger-apk-dl"
-          onClick={handleSimulateApkDownload}
+          onClick={handleDownloadApk}
           className="w-full bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black py-2.5 px-4 rounded-xl text-xs transition duration-200 flex items-center justify-center gap-2 shadow shadow-cyan-500/20 active:scale-95"
         >
           <ArrowDownToLine className="w-4 h-4" />
-          <span>تنزيل تطبيق أندرويد APK مجهز</span>
+          <span>تنزيل تطبيق أندرويد APK (GitHub Releases)</span>
         </button>
 
         <button
@@ -75,34 +53,10 @@ export default function ApkHub() {
         </button>
       </div>
 
-      {/* Progress Bar simulation */}
-      {downloadProgress !== null && (
-        <div className="bg-slate-950 p-3 rounded-xl border border-slate-850" dir="rtl">
-          <div className="flex justify-between text-[10px] font-mono mb-1.5">
-            <span className="text-cyan-400 font-bold">جاري تجميع حزمة المعالجة المستقلة...</span>
-            <span className="text-slate-400">{downloadProgress}%</span>
-          </div>
-          <div className="w-full bg-slate-900 h-2 rounded-full overflow-hidden">
-            <div 
-              className="bg-gradient-to-r from-cyan-500 to-emerald-400 h-full transition-all duration-150"
-              style={{ width: `${downloadProgress}%` }}
-            ></div>
-          </div>
-        </div>
-      )}
-
-      {/* Success messaging */}
-      {successMsg && (
-        <div className="bg-emerald-950/20 border border-emerald-500/30 p-3 rounded-xl flex items-start gap-2 text-xs text-emerald-300" dir="rtl">
-          <CheckCircle className="w-4 h-4 text-emerald-400 mt-0.5 flex-shrink-0" />
-          <div>
-            <p className="font-bold">{successMsg}</p>
-            <p className="text-[10px] text-slate-400 mt-0.5">
-              يمكنك أيضاً استخدام أيقونة التنزيل من القائمة العلوية لتصدير سورس كود المشروع (ZIP) وفتحه ببرنامج <strong>Android Studio</strong> أو لضغطه بواسطة Capacitor.js بخطوة واحدة.
-            </p>
-          </div>
-        </div>
-      )}
+      <div className="bg-emerald-950/10 border border-emerald-500/20 p-3 rounded-xl flex items-start gap-2 text-[10px] text-emerald-300" dir="rtl">
+        <CheckCircle className="w-4 h-4 text-emerald-400 mt-0.5 flex-shrink-0" />
+        <p>آخر إصدار APK جاهز للتنزيل المباشر من GitHub Releases. يدعم Android 14, 15, 16 مع جميع موديلات الذكاء الاصطناعي المجانية مدمجة.</p>
+      </div>
 
       {/* Expandable detailed manual instructions in Arabic */}
       {showInstructions && (

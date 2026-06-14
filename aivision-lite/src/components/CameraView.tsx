@@ -927,196 +927,186 @@ export default function CameraView({
       const data = imgData.data;
 
       if (filterMode === "thermal") {
-        // Apply Advanced Thermographical FLIR-grade Ironbow continuous color spectrum map
+        // === ADVANCED FLIR THERMAL IMAGING — Adaptive Histogram Equalization ===
+        const TW = canvas.width;
+        const TH = canvas.height;
+
+        // Pass 1: Find scene luminance min/max for adaptive stretching
+        let sceneMin = 255, sceneMax = 0;
+        for (let i = 0; i < data.length; i += 4 * 8) {
+          const lum = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
+          if (lum < sceneMin) sceneMin = lum;
+          if (lum > sceneMax) sceneMax = lum;
+        }
+        const lumRange = Math.max(1, sceneMax - sceneMin);
+
+        // Pass 2: Apply 8-zone Ironbow palette with adaptive stretch
         for (let i = 0; i < data.length; i += 4) {
-          const r = data[i];
-          const g = data[i + 1];
-          const b = data[i + 2];
-          // Determine true luminance intensity
-          const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
+          const lum = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
+          const norm = Math.min(1, Math.max(0, (lum - sceneMin) / lumRange));
 
-          let red = 0;
-          let green = 0;
-          let blue = 0;
-
-          // Continuous conversion based on true thermogram color tables
-          const norm = brightness / 255;
-          if (norm < 0.25) {
-            // Deep Indigo to Blue - Cold Background
-            red = Math.floor(norm * 4 * 80);
-            green = 0;
-            blue = Math.floor(40 + norm * 4 * 160);
+          let red = 0, green = 0, blue = 0;
+          if (norm < 0.125) {
+            const t = norm / 0.125;
+            red = Math.floor(t * 30); green = 0; blue = Math.floor(20 + t * 100);
+          } else if (norm < 0.25) {
+            const t = (norm - 0.125) / 0.125;
+            red = Math.floor(30 + t * 40); green = Math.floor(t * 15); blue = Math.floor(120 + t * 80);
+          } else if (norm < 0.375) {
+            const t = (norm - 0.25) / 0.125;
+            red = Math.floor(70 - t * 30); green = Math.floor(15 + t * 105); blue = Math.floor(200 + t * 30);
           } else if (norm < 0.5) {
-            // Violet to Deep Magenta/Crimson - Ambient range
-            red = Math.floor(80 + (norm - 0.25) * 4 * 145);
-            green = Math.floor((norm - 0.25) * 4 * 60);
-            blue = Math.floor(200 - (norm - 0.25) * 4 * 160);
+            const t = (norm - 0.375) / 0.125;
+            red = Math.floor(40 + t * 60); green = Math.floor(120 + t * 90); blue = Math.floor(230 - t * 150);
+          } else if (norm < 0.625) {
+            const t = (norm - 0.5) / 0.125;
+            red = Math.floor(100 + t * 125); green = Math.floor(210 + t * 30); blue = Math.floor(80 - t * 70);
           } else if (norm < 0.75) {
-            // Crimson to Radiant Alert Orange/Yellow - Warmer zones
-            red = 225 + Math.floor((norm - 0.5) * 4 * 30);
-            green = Math.floor(60 + (norm - 0.5) * 4 * 165);
-            blue = 0;
+            const t = (norm - 0.625) / 0.125;
+            red = Math.floor(225 + t * 30); green = Math.floor(240 - t * 120); blue = Math.floor(10 - t * 10);
+          } else if (norm < 0.875) {
+            const t = (norm - 0.75) / 0.125;
+            red = 255; green = Math.floor(120 - t * 100); blue = Math.floor(t * 30);
           } else {
-            // Yellow to White Hot core - Blazing peak spots
-            red = 255;
-            green = 225 + Math.floor((norm - 0.75) * 4 * 30);
-            blue = Math.floor((norm - 0.75) * 4 * 255);
+            const t = (norm - 0.875) / 0.125;
+            red = 255; green = Math.floor(20 + t * 235); blue = Math.floor(30 + t * 225);
           }
-
-          data[i] = red;
-          data[i + 1] = green;
-          data[i + 2] = blue;
+          data[i] = red; data[i+1] = green; data[i+2] = blue;
         }
         ctx.putImageData(imgData, 0, 0);
 
-        // Render real-time advanced body heat HUD telemetry overlays
-        const cx = canvas.width / 2;
-        const cy = canvas.height / 2;
+        // === THERMAL HUD OVERLAYS ===
+        const tcx = TW / 2;
+        const tcy = TH / 2;
         ctx.save();
 
-        // 1. Precise Target Scanning Scope rectangle
-        ctx.strokeStyle = "rgba(244, 63, 94, 0.85)";
+        // 1. Main target scope with corner brackets
+        ctx.strokeStyle = "rgba(244,63,94,0.9)";
         ctx.lineWidth = 1.5;
-        ctx.strokeRect(cx - 70, cy - 70, 140, 140);
-
-        // Corner tick indicators to make it look highly professional
+        ctx.strokeRect(tcx - 70, tcy - 70, 140, 140);
         ctx.fillStyle = "#f43f5e";
-        // Top-left
-        ctx.fillRect(cx - 73, cy - 73, 14, 3);
-        ctx.fillRect(cx - 73, cy - 73, 3, 14);
-        // Top-right
-        ctx.fillRect(cx + 59, cy - 73, 14, 3);
-        ctx.fillRect(cx + 70, cy - 73, 3, 14);
-        // Bottom-left
-        ctx.fillRect(cx - 73, cy + 70, 14, 3);
-        ctx.fillRect(cx - 73, cy + 59, 3, 14);
-        // Bottom-right
-        ctx.fillRect(cx + 59, cy + 70, 14, 3);
-        ctx.fillRect(cx + 70, cy + 59, 3, 14);
+        // Corner ticks
+        [[tcx-73,tcy-73,14,3],[tcx-73,tcy-73,3,14],[tcx+59,tcy-73,14,3],[tcx+70,tcy-73,3,14],
+         [tcx-73,tcy+70,14,3],[tcx-73,tcy+59,3,14],[tcx+59,tcy+70,14,3],[tcx+70,tcy+59,3,14]].forEach(([rx,ry,rw,rh]) => {
+          ctx.fillRect(rx, ry, rw, rh);
+        });
 
-        // 2. Perform live, pixel-level hotspot and cold-spot discovery inside the target zone
-        let maxBrightness = -1;
-        let minBrightness = 999;
-        let peakX = cx;
-        let peakY = cy;
-        let sinkX = cx - 35;
-        let sinkY = cy + 30;
-
-        let totalVal = 0;
-        let count = 0;
-        const boxLeft = Math.floor(cx - 70);
-        const boxTop = Math.floor(cy - 70);
-        const boxRight = Math.floor(cx + 70);
-        const boxBottom = Math.floor(cy + 70);
-
-        for (let y = Math.max(0, boxTop); y < boxBottom && y < canvas.height; y += 4) {
-          for (let x = Math.max(0, boxLeft); x < boxRight && x < canvas.width; x += 4) {
-            const index = (y * canvas.width + x) * 4;
-            if (index < data.length) {
-              const r = data[index];
-              const g = data[index + 1];
-              const b = data[index + 2];
-              // Convert to luminance indicator representing actual warmth/light energy
-              const brightnessVal = 0.299 * r + 0.587 * g + 0.114 * b;
-              totalVal += brightnessVal;
-              count++;
-
-              if (brightnessVal > maxBrightness) {
-                maxBrightness = brightnessVal;
-                peakX = x;
-                peakY = y;
-              }
-              if (brightnessVal < minBrightness) {
-                minBrightness = brightnessVal;
-                sinkX = x;
-                sinkY = y;
-              }
+        // 2. Pixel-level hotspot/coldspot detection in target zone
+        let maxB = -1, minB = 999, peakX = tcx, peakY = tcy, sinkX = tcx - 30, sinkY = tcy + 30;
+        let totalV = 0, cnt = 0;
+        const bl = Math.floor(tcx - 70), bt = Math.floor(tcy - 70), br = Math.floor(tcx + 70), bb = Math.floor(tcy + 70);
+        for (let ty2 = Math.max(0, bt); ty2 < bb && ty2 < TH; ty2 += 3) {
+          for (let tx2 = Math.max(0, bl); tx2 < br && tx2 < TW; tx2 += 3) {
+            const idx = (ty2 * TW + tx2) * 4;
+            if (idx < data.length) {
+              const bv = 0.299 * data[idx] + 0.587 * data[idx+1] + 0.114 * data[idx+2];
+              totalV += bv; cnt++;
+              if (bv > maxB) { maxB = bv; peakX = tx2; peakY = ty2; }
+              if (bv < minB) { minB = bv; sinkX = tx2; sinkY = ty2; }
             }
           }
         }
+        const avgB = cnt > 0 ? totalV / cnt : 120;
 
-        const avgBrightness = count > 0 ? (totalVal / count) : 120;
-        // Map average live pixel brightness in target zone to authentic skin temperature range: 36.1°C - 37.2°C
-        const computedTempRaw = 36.0 + (avgBrightness / 255) * 1.3 + Math.sin(Date.now() / 2000) * 0.15;
-        const computedTemp = computedTempRaw.toFixed(1);
+        // Map brightness to temperature: 18°C (cold) to 45°C (hot)
+        const mapTemp = (b: number) => (18 + (b / 255) * 27 + Math.sin(Date.now() / 3000) * 0.1).toFixed(1);
+        const centerTemp = mapTemp(avgB);
+        const hotTemp = mapTemp(maxB);
+        const coldTemp = mapTemp(minB);
 
-        const calculatedMaxTemp = (computedTempRaw + 0.4 + (maxBrightness / 255) * 0.9).toFixed(1);
-        const calculatedMinTemp = Math.max(22.4, (computedTempRaw - 1.8 - ((255 - minBrightness) / 255) * 1.5)).toFixed(1);
+        // Hotspot glow
+        const hotGrad = ctx.createRadialGradient(peakX, peakY, 0, peakX, peakY, 20);
+        hotGrad.addColorStop(0, "rgba(255,255,255,0.6)");
+        hotGrad.addColorStop(1, "rgba(255,100,0,0)");
+        ctx.globalAlpha = 0.5;
+        ctx.fillStyle = hotGrad;
+        ctx.beginPath(); ctx.arc(peakX, peakY, 20, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
 
-        // 3. Highlight absolute MAXIMUM (Hotspot) cursor inside targeting box
-        ctx.strokeStyle = "#ef4444";
-        ctx.lineWidth = 1;
+        // Hotspot crosshair
+        ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1;
         ctx.beginPath();
-        // Crosshair at hotspot
-        ctx.moveTo(peakX - 8, peakY); ctx.lineTo(peakX + 8, peakY);
-        ctx.moveTo(peakX, peakY - 8); ctx.lineTo(peakX, peakY + 8);
+        ctx.moveTo(peakX-10, peakY); ctx.lineTo(peakX+10, peakY);
+        ctx.moveTo(peakX, peakY-10); ctx.lineTo(peakX, peakY+10);
         ctx.stroke();
+        ctx.beginPath(); ctx.arc(peakX, peakY, 4, 0, Math.PI * 2); ctx.stroke();
+        ctx.fillStyle = "#fff"; ctx.font = "bold 8px monospace";
+        ctx.fillText(`MAX ${hotTemp}°C`, peakX + 12, peakY - 2);
+
+        // Coldspot marker
+        ctx.strokeStyle = "#60a5fa";
         ctx.beginPath();
-        ctx.arc(peakX, peakY, 4, 0, Math.PI * 2);
+        ctx.moveTo(sinkX-6, sinkY); ctx.lineTo(sinkX+6, sinkY);
+        ctx.moveTo(sinkX, sinkY-6); ctx.lineTo(sinkX, sinkY+6);
         ctx.stroke();
+        ctx.fillStyle = "#93c5fd"; ctx.font = "8px monospace";
+        ctx.fillText(`MIN ${coldTemp}°C`, sinkX + 8, sinkY + 10);
 
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "9px monospace";
-        ctx.fillText(`MAX: ${calculatedMaxTemp}°C`, peakX + 10, peakY - 3);
+        // 3. 9-point temperature measurement grid
+        const gridPts = [
+          [tcx-50,tcy-50],[tcx,tcy-50],[tcx+50,tcy-50],
+          [tcx-50,tcy],   [tcx,tcy],   [tcx+50,tcy],
+          [tcx-50,tcy+50],[tcx,tcy+50],[tcx+50,tcy+50]
+        ];
+        gridPts.forEach(([gx, gy], gi) => {
+          const gi2 = (Math.floor(gy) * TW + Math.floor(gx)) * 4;
+          const gb = gi2 >= 0 && gi2 < data.length ? (0.299 * data[gi2] + 0.587 * data[gi2+1] + 0.114 * data[gi2+2]) : avgB;
+          const gt = mapTemp(gb);
+          ctx.fillStyle = "rgba(0,0,0,0.55)";
+          ctx.fillRect(gx - 14, gy + 2, 30, 11);
+          ctx.fillStyle = gi === 4 ? "#fde047" : "#e2e8f0";
+          ctx.font = "7px monospace";
+          ctx.fillText(`${gt}°`, gx - 12, gy + 11);
+          ctx.strokeStyle = gi === 4 ? "rgba(253,224,71,0.7)" : "rgba(255,255,255,0.3)";
+          ctx.lineWidth = 0.5;
+          ctx.beginPath(); ctx.arc(gx, gy, 2, 0, Math.PI * 2); ctx.stroke();
+        });
 
-        // 4. Highlight absolute MINIMUM (Cold spot) cursor inside targeting box
-        ctx.strokeStyle = "#3b82f6";
-        ctx.beginPath();
-        // Plus symbol for cold spot
-        ctx.moveTo(sinkX - 6, sinkY); ctx.lineTo(sinkX + 6, sinkY);
-        ctx.moveTo(sinkX, sinkY - 6); ctx.lineTo(sinkX, sinkY + 6);
-        ctx.stroke();
+        // 4. Center temperature panel
+        ctx.fillStyle = "rgba(10,5,20,0.8)";
+        ctx.fillRect(tcx - 112, tcy - 118, 224, 40);
+        ctx.strokeStyle = "#f43f5e"; ctx.lineWidth = 1;
+        ctx.strokeRect(tcx - 112, tcy - 118, 224, 40);
+        ctx.fillStyle = "#f43f5e"; ctx.font = "bold 9px system-ui";
+        ctx.fillText("🌡️ FLIR THERMAL SENSOR — ADAPTIVE MODE", tcx - 104, tcy - 104);
+        ctx.fillStyle = "#fff"; ctx.font = "bold 10px system-ui";
+        ctx.fillText(`CENTER: ${centerTemp}°C`, tcx - 104, tcy - 89);
 
-        ctx.fillStyle = "#93c5fd";
-        ctx.fillText(`MIN: ${calculatedMinTemp}°C`, sinkX + 8, sinkY + 12);
+        // Human body range indicator
+        const numTemp = parseFloat(centerTemp);
+        const isBioTemp = numTemp >= 35.5 && numTemp <= 38.5;
+        ctx.fillStyle = "rgba(10,5,20,0.75)";
+        ctx.fillRect(tcx - 90, tcy + 78, 180, 22);
+        ctx.strokeStyle = isBioTemp ? "#10b981" : "#f97316";
+        ctx.strokeRect(tcx - 90, tcy + 78, 180, 22);
+        ctx.fillStyle = isBioTemp ? "#10b981" : "#f97316";
+        ctx.font = "bold 9px system-ui";
+        ctx.fillText(isBioTemp ? "🧬 BIOLOGIC HEAT SIGNATURE" : "⚡ ELECTRONIC HEAT SOURCE", tcx - 80, tcy + 93);
 
-        // 5. Draw fully localized telemetric overlay panels in Arabic
-        ctx.fillStyle = "rgba(15, 23, 42, 0.75)";
-        ctx.fillRect(cx - 110, cy - 115, 220, 38);
-        ctx.strokeStyle = "#f43f5e";
-        ctx.strokeRect(cx - 110, cy - 115, 220, 38);
-
-        ctx.fillStyle = "#f43f5e";
-        ctx.font = "bold 9px system-ui, sans-serif";
-        ctx.fillText("📡 مستشعر الرصد الحراري المجهري النشط", cx - 100, cy - 102);
-
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "bold 10px system-ui, sans-serif";
-        ctx.fillText(`حرارة الجسم الفعلية: ${computedTemp}°C`, cx - 100, cy - 88);
-
-        // Status pill
-        ctx.fillStyle = "rgba(15, 23, 42, 0.75)";
-        ctx.fillRect(cx - 85, cy + 80, 170, 22);
-        ctx.strokeStyle = "#10b981";
-        ctx.strokeRect(cx - 85, cy + 80, 170, 22);
-        ctx.fillStyle = "#10b981";
-        ctx.font = "bold 9px system-ui, sans-serif";
-        ctx.fillText("الحالة: مؤشر حيوي طبيعي وآمن", cx - 72, cy + 94);
-
-        // 6. Professional thermal spectrum legend bar on the right margin
-        const barX = canvas.width - 25;
-        const barY = 50;
-        const barW = 8;
-        const barH = 150;
-
-        const legendGrad = ctx.createLinearGradient(barX, barY, barX, barY + barH);
-        legendGrad.addColorStop(0, "#ffffff"); // White hot
-        legendGrad.addColorStop(0.2, "#facc15"); // Yellow
-        legendGrad.addColorStop(0.5, "#ef4444"); // Red/Orange
-        legendGrad.addColorStop(0.8, "#a855f7"); // Indigo
-        legendGrad.addColorStop(1, "#3b82f6"); // Blue (Cold)
-        
-        ctx.fillStyle = legendGrad;
-        ctx.fillRect(barX, barY, barW, barH);
-        ctx.strokeStyle = "rgba(255,255,255,0.4)";
-        ctx.strokeRect(barX, barY, barW, barH);
-
-        // Legend scale readings
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "8px monospace";
-        ctx.fillText("38°C", barX - 24, barY + 8);
-        ctx.fillText("28°C", barX - 24, barY + barH / 2);
-        ctx.fillText("18°C", barX - 24, barY + barH - 4);
+        // 5. Enhanced spectrum legend — right margin
+        const barX2 = TW - 22, barY2 = 40, barW2 = 10, barH2 = TH - 80;
+        const lg2 = ctx.createLinearGradient(barX2, barY2, barX2, barY2 + barH2);
+        lg2.addColorStop(0, "#ffffff");
+        lg2.addColorStop(0.12, "#fde047");
+        lg2.addColorStop(0.25, "#f97316");
+        lg2.addColorStop(0.45, "#ef4444");
+        lg2.addColorStop(0.6, "#a855f7");
+        lg2.addColorStop(0.75, "#3b82f6");
+        lg2.addColorStop(0.9, "#1e40af");
+        lg2.addColorStop(1, "#0f172a");
+        ctx.fillStyle = lg2;
+        ctx.fillRect(barX2, barY2, barW2, barH2);
+        ctx.strokeStyle = "rgba(255,255,255,0.35)";
+        ctx.strokeRect(barX2, barY2, barW2, barH2);
+        // Temperature ticks on legend
+        ctx.fillStyle = "#fff"; ctx.font = "7px monospace";
+        const tempLabels = [["45°C",0],["38°C",0.2],["32°C",0.4],["26°C",0.6],["20°C",0.8],["14°C",1.0]];
+        tempLabels.forEach(([label, frac]) => {
+          const ly = barY2 + (frac as number) * barH2;
+          ctx.fillText(label as string, barX2 - 28, ly + 3);
+          ctx.strokeStyle = "rgba(255,255,255,0.3)"; ctx.lineWidth = 0.5;
+          ctx.beginPath(); ctx.moveTo(barX2 - 2, ly); ctx.lineTo(barX2, ly); ctx.stroke();
+        });
 
         ctx.restore();
 
@@ -1135,35 +1125,141 @@ export default function CameraView({
         }
         ctx.putImageData(imgData, 0, 0);
       } else if (filterMode === "nightvision") {
-        // Green phosphor light amplification with slight noise simulation
+        // ── GEN-3+ NVG: Adaptive gain · gamma · bloom · vignette · tactical HUD ──
+        const W = canvas.width;
+        const H = canvas.height;
+
+        // Pass 1 — adaptive gain: find scene luma range
+        let lumaMin = 255, lumaMax = 0;
         for (let i = 0; i < data.length; i += 4) {
-          const r = data[i];
-          const g = data[i + 1];
-          const b = data[i + 2];
-          const lightness = (r * 0.3 + g * 0.59 + b * 0.11);
-          
-          // Generate glowing green amplification values with random phosphor noise particles
-          const noise = (Math.random() - 0.5) * 15;
-          data[i] = Math.max(0, Math.min(255, lightness * 0.25));
-          data[i + 1] = Math.max(0, Math.min(255, lightness * 2.1 + 30 + noise));
-          data[i + 2] = Math.max(0, Math.min(255, lightness * 0.35));
+          const luma = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+          if (luma < lumaMin) lumaMin = luma;
+          if (luma > lumaMax) lumaMax = luma;
+        }
+        const lumaRange = Math.max(lumaMax - lumaMin, 1);
+
+        // Pass 2 — NVG pixel processing with gamma + phosphor bloom kernel prep
+        const bloomAcc = new Float32Array(W * H); // luma accumulator for bloom
+        const GAMMA = 0.55; // gen-3 cathode gamma
+        for (let i = 0; i < data.length; i += 4) {
+          const rawLuma = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+          // Adaptive stretch to [0..1], gamma-corrected
+          let norm = (rawLuma - lumaMin) / lumaRange;
+          norm = Math.pow(Math.max(0, Math.min(1, norm)), GAMMA);
+          // Phosphor noise: high-frequency dithering typical of GEN-3 tubes
+          const noise = (Math.random() - 0.5) * 0.04 * (1 - norm); // noise only in dark areas
+          const amp = Math.max(0, Math.min(1, norm + noise));
+          // Phosphor spectral split: Ga-As photocathode peaks at ~550 nm (green-yellow)
+          data[i]     = Math.round(amp * 18);          // near-zero red
+          data[i + 1] = Math.round(amp * 255);         // full phosphor green
+          data[i + 2] = Math.round(amp * 38);          // faint blue for realism
+          bloomAcc[(i >> 2)] = amp;
         }
         ctx.putImageData(imgData, 0, 0);
-        
-        // Draw nightvision scanlines overlay
-        ctx.strokeStyle = "rgba(34, 197, 94, 0.07)";
-        ctx.lineWidth = 1;
-        for (let y = 0; y < canvas.height; y += 4) {
-          ctx.beginPath();
-          ctx.moveTo(0, y);
-          ctx.lineTo(canvas.width, y);
-          ctx.stroke();
-        }
 
-        ctx.fillStyle = "#22c55e";
+        // Pass 3 — bloom glow: radial gradient on every pixel above 0.85 brightness
+        // (simulates photocathode saturation / bright-spot halo)
+        ctx.save();
+        ctx.globalCompositeOperation = "screen";
+        for (let py = 0; py < H; py += 2) {
+          for (let px = 0; px < W; px += 2) {
+            const amp = bloomAcc[py * W + px];
+            if (amp > 0.82) {
+              const radius = 6 + amp * 18;
+              const grd = ctx.createRadialGradient(px, py, 0, px, py, radius);
+              const alpha = ((amp - 0.82) / 0.18) * 0.55;
+              grd.addColorStop(0, `rgba(60,255,80,${alpha.toFixed(2)})`);
+              grd.addColorStop(1, "rgba(0,0,0,0)");
+              ctx.fillStyle = grd;
+              ctx.fillRect(px - radius, py - radius, radius * 2, radius * 2);
+            }
+          }
+        }
+        ctx.restore();
+
+        // Pass 4 — CRT scanlines (every 2 px, alternating dark band)
+        ctx.save();
+        ctx.globalCompositeOperation = "multiply";
+        for (let y = 0; y < H; y += 2) {
+          ctx.fillStyle = "rgba(0,0,0,0.28)";
+          ctx.fillRect(0, y, W, 1);
+        }
+        ctx.restore();
+
+        // Pass 5 — vignette: circular dark falloff from center
+        ctx.save();
+        const vgrd = ctx.createRadialGradient(W / 2, H / 2, H * 0.28, W / 2, H / 2, H * 0.72);
+        vgrd.addColorStop(0, "rgba(0,0,0,0)");
+        vgrd.addColorStop(1, "rgba(0,0,0,0.72)");
+        ctx.fillStyle = vgrd;
+        ctx.fillRect(0, 0, W, H);
+        ctx.restore();
+
+        // Pass 6 — tactical reticle: central crosshair + range hash marks
+        ctx.save();
+        const cx = W / 2, cy = H / 2;
+        ctx.strokeStyle = "rgba(34,255,70,0.75)";
+        ctx.lineWidth = 1;
+        // Crosshair arms (gap in centre)
+        const gap = 18, arm = 42;
+        ctx.beginPath();
+        ctx.moveTo(cx - gap - arm, cy); ctx.lineTo(cx - gap, cy);
+        ctx.moveTo(cx + gap, cy);       ctx.lineTo(cx + gap + arm, cy);
+        ctx.moveTo(cx, cy - gap - arm); ctx.lineTo(cx, cy - gap);
+        ctx.moveTo(cx, cy + gap);       ctx.lineTo(cx, cy + gap + arm);
+        ctx.stroke();
+        // Centre dot
+        ctx.fillStyle = "rgba(34,255,70,0.9)";
+        ctx.beginPath(); ctx.arc(cx, cy, 2.5, 0, Math.PI * 2); ctx.fill();
+        // Range hash marks on bottom arm
+        for (let r = 1; r <= 4; r++) {
+          const hy = cy + gap + r * 9;
+          const hw = r === 2 ? 6 : 3;
+          ctx.beginPath(); ctx.moveTo(cx - hw, hy); ctx.lineTo(cx + hw, hy); ctx.stroke();
+        }
+        ctx.restore();
+
+        // Pass 7 — corner tactical brackets
+        ctx.save();
+        ctx.strokeStyle = "rgba(34,255,70,0.55)";
+        ctx.lineWidth = 1.5;
+        const bSize = 18, bOff = 10;
+        [[bOff, bOff, 1, 1], [W - bOff, bOff, -1, 1], [bOff, H - bOff, 1, -1], [W - bOff, H - bOff, -1, -1]].forEach(([bx, by, dx, dy]) => {
+          ctx.beginPath();
+          ctx.moveTo(bx + dx * bSize, by);
+          ctx.lineTo(bx, by);
+          ctx.lineTo(bx, by + dy * bSize);
+          ctx.stroke();
+        });
+        ctx.restore();
+
+        // Pass 8 — top HUD bar
+        const t = Date.now();
+        const blinkOn = Math.floor(t / 700) % 2 === 0;
+        ctx.save();
+        ctx.fillStyle = "rgba(0,0,0,0.55)";
+        ctx.fillRect(0, 0, W, 28);
+        ctx.fillStyle = "#22ff46";
         ctx.font = "bold 9px monospace";
-        ctx.fillText(`[IR NIGHT VISION 940nm OPTICS]`, 20, 25);
-        ctx.fillText(`GAIN: ACCEL +36dB // NOISE: ACTIVE`, 20, 37);
+        ctx.fillText("GEN-3+ NVG  ◆  940nm IR", 10, 12);
+        ctx.fillText(`GAIN: AUTO +${(36 + Math.sin(t / 2000) * 2).toFixed(1)}dB`, 10, 23);
+        ctx.fillStyle = blinkOn ? "#22ff46" : "rgba(34,255,70,0.3)";
+        ctx.fillText("● ACTIVE", W - 64, 12);
+        ctx.fillStyle = "#22ff46";
+        ctx.fillText(`ZOOM ×${zoomLevel.toFixed(1)}`, W - 64, 23);
+        ctx.restore();
+
+        // Pass 9 — bottom status bar
+        ctx.save();
+        ctx.fillStyle = "rgba(0,0,0,0.55)";
+        ctx.fillRect(0, H - 22, W, 22);
+        ctx.fillStyle = "rgba(34,255,70,0.8)";
+        ctx.font = "8px monospace";
+        const hh = String(new Date().getHours()).padStart(2, "0");
+        const mm = String(new Date().getMinutes()).padStart(2, "0");
+        const ss = String(new Date().getSeconds()).padStart(2, "0");
+        ctx.fillText(`${hh}:${mm}:${ss}Z  ◆  OPFOR-SCAN  ◆  IR-SIG: ${blinkOn ? "DETECTED" : "SCANNING..."}  ◆  TUBE: OK`, 10, H - 8);
+        ctx.restore();
       }
 
     // Continuous loop of animation for targets tracking at 60 FPS

@@ -12,7 +12,7 @@ import HistoryLog from "./components/HistoryLog";
 import GeminiAssistant from "./components/GeminiAssistant";
 import ApkHub from "./components/ApkHub";
 import CloudSync from "./components/CloudSync";
-import { ScanEye, Cpu, Battery, Info, RefreshCw, Layers, ShieldCheck, HeartPulse, Settings, Sparkles, Mail, Key, Globe, Play } from "lucide-react";
+import { ScanEye, Cpu, Info, Settings, Sparkles, Mail, Key, Globe } from "lucide-react";
 
 export default function App() {
   const [selectedPreset, setSelectedPreset] = useState<PresetScenario | null>(PRESET_SCENARIOS[0]);
@@ -127,43 +127,6 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isSecureAuthed]);
 
-  // Interactive Connection & Workspace Simulation Engine (10 Advanced Ideas)
-  const [activeSimId, setActiveSimId] = useState<number | null>(null);
-  const [simLogs, setSimLogs] = useState<string[]>([]);
-  const [isSimulating, setIsSimulating] = useState(false);
-  const [showSimSection, setShowSimSection] = useState(false);
-
-  const runAdvancedWorkspaceScenario = (idx: number, title: string) => {
-    if (!settings.email || !settings.password) {
-      alert("⚠️ يرجى تعيين البريد الإلكتروني وكلمة المرور في لوحة إعدادات النظام للاتصال أولاً لبدء المحاكاة الأمنية المشفرة!");
-      return;
-    }
-    setIsSimulating(true);
-    setActiveSimId(idx);
-    setSimLogs([
-      `⚡ [بدء] تهيئة نظام الاستشعار الجنائي للسيناريو رقم ${idx}...`,
-      `📧 [المصادقة] محاولة التوثيق الآمن باستخدام: ${settings.email}`,
-      `🔗 [الشبكة] الاتصال بالخادم البوابة للـ API: ${settings.apiEndpoint}`,
-    ]);
-
-    setTimeout(() => {
-      setSimLogs((prev) => [
-        ...prev,
-        `🔑 [المصادقة] تم التفاوض وتوليد رمز المفتاح المؤقت للـ API عبر مصادقة SHA-256 بنجاح.`,
-        `📡 [النفاذ] استلام ترخيص قنوات الراديو النشطة ومزامنة باقات بروتوكول الكشف...`,
-      ]);
-    }, 600);
-
-    setTimeout(() => {
-      setSimLogs((prev) => [
-        ...prev,
-        `🚀 [إنهاء] تفعيل تشغيل السيناريو بنجاح: ${title}`,
-        `📬 [تقرير] تم دفع حزمة الأوامر والتقرير آلياً إلى الخادم المستهدف وإرسال نسخة تأكيد بريدية إلى البوكس الخاص بـ ${settings.email}!`,
-        "✅ [نظام] تم حفظ الأرشيف في سجلات التموضع المحلي بنجاح بنسبة ثقة %100.",
-      ]);
-      setIsSimulating(false);
-    }, 1505);
-  };
 
   // Sync state log updates to local storage
   const updateLogsCache = (newLogs: DetectedObject[]) => {
@@ -574,122 +537,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* 10 Advanced Connection Scenarios Section */}
-            <div className="border-t border-slate-800/80 pt-4 flex flex-col gap-3">
-              <button
-                type="button"
-                onClick={() => setShowSimSection(!showSimSection)}
-                className="text-xs font-extrabold text-emerald-400 font-sans tracking-wide uppercase flex items-center justify-between bg-slate-950 px-3 py-3 rounded-xl border border-slate-850 hover:bg-slate-850 transition-all cursor-pointer"
-              >
-                <span className="flex items-center gap-2">
-                  <Sparkles className="w-4 h-4 text-emerald-400 animate-pulse" />
-                  <span>🔬 اختبار وتفعيل 10 مبادرات ذكية متطورة (Mail & API Connections Scenarios)</span>
-                </span>
-                <span className="text-[9px] bg-emerald-950/80 text-emerald-400 border border-emerald-800/40 px-2 py-0.5 rounded-lg font-black font-mono">
-                  {showSimSection ? "إغلاق الواجهة ▲" : "استعراض الأفكار الـ 10 ▼"}
-                </span>
-              </button>
-
-              {showSimSection && (
-                <div className="flex flex-col gap-3 bg-slate-950/65 p-4 rounded-xl border border-slate-900">
-                  <div className="text-[11px] text-slate-300 leading-relaxed text-right mb-1">
-                    أدخل بريدك وكلمة السر ورابط الـ API بالأعلى، ثم انقر على أي مبادرة تقنية أدناه لبدء اختبار محاكاة مشفرة فورية للبروتوكول وإصدار تقرير تفصيلي:
-                  </div>
-
-                  {activeSimId !== null && (
-                    <div className="bg-slate-950 border border-emerald-500/20 p-3 rounded-lg flex flex-col gap-1 font-mono text-[10.5px] text-emerald-400 animate-pulse">
-                      <span className="font-bold text-slate-200">📊 سجل المراقبة التفاعلي التلقائي لـ [API, Mail & Auth Simulator]</span>
-                      <div className="space-y-1 mt-1.5 text-slate-300 antialiased text-left" dir="ltr">
-                        {simLogs.map((log, lidx) => (
-                          <p key={lidx} className={`${lidx === simLogs.length - 1 && isSimulating ? 'text-emerald-400 font-bold' : 'text-slate-450'}`}>
-                            {log}
-                          </p>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-96 overflow-y-auto pr-1 scrollbar-thin">
-                    {[
-                      {
-                        title: "📡 SMTP Spectral Auto-Alert (تبليغ طيفي تلقائي بالبريد)",
-                        desc: "إرسال تقرير فني فوري برمز تجسيم آمن لكل عدسة مجهرية يتم رصدها في الفحص البصري لتأمين الموقع الحساس.",
-                        btn: "إطلاق تجربة التبليغ بريدياً"
-                      },
-                      {
-                        title: "💾 Live Encrypted Database Backup (مزامنة سحابية مستمرة)",
-                        desc: "حفظ باقات تاريخ الفحص المشفرة تلقائياً كل ساعة في قواعد البيانات الترددية بدقة تفتيش فائقة.",
-                        btn: "تجربة مزامنة البيانات"
-                      },
-                      {
-                        title: "🛡️ API Token Handshake JWT (مصادقة وفحص طاقة البث)",
-                        desc: "تأسيس اتصال فحص وتوفير شهادات آمنة لضمان أمن التموضع وتفادي اختراق قنوات الرسيفر اللاسلكي.",
-                        btn: "اختبار فحص مصادقة JWT"
-                      },
-                      {
-                        title: "🛰️ Telemetry Realtime Webhook (تفريغ قنوات تتبع البث)",
-                        desc: "بث مباشر لمستويات الفولطية والموجات الملتقطة لربطها بشاشات المراقبة الجنائية الأمنية والمحللات السحابية.",
-                        btn: "تفريغ قنوات الـ Webhook"
-                      },
-                      {
-                        title: "🧠 Translation Core Load Balancer (موازنة استهلاك الموديلات)",
-                        desc: "تبديل معالجة التحليل البصري الهجين تلقائياً عند نفاذ حصة الاستخدام للملقم لتوفير الترجمات الأمنية المعتمدة.",
-                        btn: "اختبار موازن الاستدلال"
-                      },
-                      {
-                        title: "🚨 Zero-Day Micro-Sensor Database (التحقق مع السحابة العالمية)",
-                        desc: "مقارنة البصمات الإلكترونية الملتقطة محلياً مع قاعدة بيانات الأجهزة العالمية للكشف عن تفعيلات التجسس النادرة.",
-                        btn: "فحص الصفر الهجمي للمجسّ"
-                      },
-                      {
-                        title: "🔑 Panic Lockdown Wipe Protocol (بروتوكول تدمير المعطيات)",
-                        desc: "محو تفاصيل الاستكشاف وشهادات الدخول فوراً عند رصد 3 محاولات اتصال خاطئة لمنع هندسة كود المشروع العكسية.",
-                        btn: "تأمين بروتوكول الإغلاق"
-                      },
-                      {
-                        title: "📧 Executive Scheduled PDF Auto-Digest (الملخص الأسبوعي بالبريد)",
-                        desc: "صنع ملف PDF تفصيلي لكافة الأجهزة المشبوهة المرصودة وإرساله بالبريد الإلكتروني للجهات المسؤولة تلقائياً.",
-                        btn: "إرسال ملخص PDF بالبريد"
-                      },
-                      {
-                        title: "🔮 Multi-Agent LLM Model Handshake (مزامنة استدلال كيوين وجيمني)",
-                        desc: "دمج ردود الاستدلال لـ Gemini v2.5 و DeepSeek برمجياً لرفع دقة التقييم الهندسي للأجهزة المجهولة.",
-                        btn: "دمج قرارات الاستدلال بالـ API"
-                      },
-                      {
-                        title: "⚡ Multi-Node Array Geo-Sync (مزامنة الخلايا الميدانية)",
-                        desc: "شحن نقاط رصد كهرومغناطيسية متعددة لتتبع مستودع الأجهزة المخترقة جغرافياً وعبر خرائط حية للـ API.",
-                        btn: "مزامنة التموضع الجغرافي"
-                      }
-                    ].map((scen, idx) => (
-                      <div
-                        key={idx}
-                        className="p-3 bg-slate-900 border border-slate-850 rounded-xl transition flex flex-col justify-between gap-2.5 text-right w-full"
-                      >
-                        <div className="flex flex-col gap-1 w-full">
-                          <span className="text-[11px] font-black text-emerald-400 font-mono flex items-center gap-1 justify-end w-full">
-                            <span>{scen.title}</span>
-                            <span className="text-[8px] bg-emerald-950 text-emerald-400 px-1.5 py-0.2 rounded border border-emerald-900 font-mono font-black">#{idx + 1}</span>
-                          </span>
-                          <p className="text-[10px] text-slate-400 leading-relaxed w-full">
-                            {scen.desc}
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => runAdvancedWorkspaceScenario(idx + 1, scen.title)}
-                          disabled={isSimulating}
-                          className="w-full bg-slate-950 hover:bg-emerald-500 hover:text-slate-950 transition-all font-mono text-[10px] font-bold py-1.5 px-3 rounded-lg border border-slate-800 flex items-center justify-center gap-1.5 hover:cursor-pointer disabled:opacity-50"
-                        >
-                          <Play className="w-3 h-3 text-emerald-400 pointer-events-none" />
-                          <span>{scen.btn}</span>
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
           </div>
         )}
 

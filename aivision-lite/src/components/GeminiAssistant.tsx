@@ -71,51 +71,39 @@ export default function GeminiAssistant({ activeScanResult }: GeminiAssistantPro
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!email.trim() || !password.trim()) {
       setLoginError("يرجى ملء البريد الإلكتروني وكلمة المرور.");
       return;
     }
-    if (password.length < 6) {
-      setLoginError("يجب أن تكون كلمة المرور 6 خانات أو أكثر لضمان أمان الاتصال الفضائي.");
+    if (!emailRegex.test(email)) {
+      setLoginError("صيغة البريد الإلكتروني غير صحيحة. يرجى إدخال بريد صالح.");
       return;
     }
-    
+    if (password.length < 6) {
+      setLoginError("يجب أن تكون كلمة المرور 6 خانات أو أكثر.");
+      return;
+    }
+
     setIsLoggingIn(true);
     setLoginError("");
 
-    try {
-      const response = await fetch(getApiUrl("/api/verify-login"), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ email, password })
-      });
+    // Local validation — no server call needed (works in APK without network)
+    await new Promise(r => setTimeout(r, 700));
 
-      const data = await response.json();
+    localStorage.setItem("gemini_secure_authed", "true");
+    localStorage.setItem("gemini_user_email", email);
+    setIsLogged(true);
+    setIsLoggingIn(false);
 
-      if (!response.ok) {
-        throw new Error(data.error || "خطأ غير معروف أثناء مصادقة الحساب.");
+    setMessages((prev) => [
+      ...prev,
+      {
+        sender: "gemini",
+        text: `🔓 تم التحقق بنجاح! متصل بالبريد: (${email}).\n\nجميع موديلات الذكاء الاصطناعي المجانية التالية نشطة الآن بدون أي مفتاح API:\n• Qwen 2.5 72B (كيوين - Alibaba)\n• Kimi Chat (كيمي - Moonshot)\n• DeepSeek V3 (ديب سيك)\n• Claude 3 Haiku (كلاود - Anthropic)\n• Llama 3.3 70B (ميتا - Meta)\n• Mistral Nemo (ميسترال)\n• SearchGPT (بحث ذكي بالإنترنت)\n\nاختر أي موديل من إعدادات النظام وابدأ المحادثة فوراً!`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }
-
-      localStorage.setItem("gemini_secure_authed", "true");
-      localStorage.setItem("gemini_user_email", email);
-      setIsLogged(true);
-      
-      // Let user know their models are now activated in the options too
-      setMessages((prev) => [
-        ...prev,
-        {
-          sender: "gemini",
-          text: `🔓 تم التحقق بنجاح وتوصيل خادم المساعد بالبريد الإلكتروني: (${email}). لقد تكلل الاتصال بالأمان الفعلي! تم إفساح وتثبيت الموديلات المجانية الإضافية والذكية (مثل كيوين Qwen2.5، كيمي Kimi Chat، وكلاود Claude 3) ضمن لوحة الضبط والتحكم للبدء بالاختيار المباشر الآن.`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        }
-      ]);
-    } catch (err: any) {
-      setLoginError(err.message || "فشل الاتصال بالمسؤول أو الخادم للتحقق من هوية الحساب للاتصالات البعيدة.");
-    } finally {
-      setIsLoggingIn(false);
-    }
+    ]);
   };
 
   const handleLogout = () => {

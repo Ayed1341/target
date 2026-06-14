@@ -158,45 +158,6 @@ async function callGeminiWithFallback(params: any, clientToUse: GoogleGenAI, mod
   }
 }
 
-// Helper to generate a comprehensive simulated assistant response if API keys are disabled or experiencing sustained downtime
-function generateSimulatedAssistantResponse(question: string, scanContext: any, isDemandBackoff: boolean = false) {
-  const qLower = question.toLowerCase();
-  
-  let responseText = "";
-  let preface = "";
-  if (isDemandBackoff) {
-    preface = `⚠️ [ملاحظة: خوادم الذكاء الاصطناعي من قوقل تواجه ضغطاً مؤقتاً عالياً حالياً. لقد قمنا بتفعيل نظام كاشف جيمني الذكي المستقل محلياً لخدمتك فوراً دون انقطاع!] \n\n`;
-  } else {
-    preface = `⚡ [نظام المساعد الذكي المستقل النشط لـ AI Vision Lite] \n\n`;
-  }
-
-  let body = "";
-  
-  if (qLower.includes("camera") || qLower.includes("spy") || qLower.includes("كاميرا") || qLower.includes("تجسس") || qLower.includes("مخفي")) {
-    body = `[مستشار الفحص الطيفي للكشف عن الكاميرات الخفية]
-1. **الكاميرات المدمجة بالأجهزة والشواحن**:
-   - غالبية كاميرات التجسس تأتي مدمجة في أفياش الشواحن USB وساعات المحاذاة وأجهزة كشف الدخان وأجهزة التكييف المعدلة.
-   - تعتمد على عدسة زجاجية دقيقة للغاية وحرجة بقطر يقل عن 1ملم.
-2. **طريقة الكشف اليدوية والتكنولوجية**:
-   - استخدم ميزة **"الرؤية الليلية بالأشعة تحت الحمراء المتكاملة"** بالتطبيق. عند إطفاء أضواء الغرفة، ستكشف الكاميرا انعكاس وهج العدسة (عدسة الكاميرا تعكس الأحمر/البنفسجي).
-   - ابحث عن إشارات واي فاي غريبة قريبة مثل "Cam-xxxx" أو "IP-xxxxx" أو "covert".
-   - الفحص الميكانيكي: افحص أي فتحات غير مبررة في البلاستيك الخارجي للشواحن.`;
-  } else if (qLower.includes("translate") || qLower.includes("ترجم") || qLower.includes("عربي") || qLower.includes("نجليزي")) {
-    body = `[مساعد الترجمة الفوري الاحترافي]
-يمكنني مساعدة ترجمة كافة التقارير الفنية للكشاف واللوحات فوراً.
-على سبيل المثال، ترجمة العبقرية التقنية لسلامة الأجهزة:
-- "Threat scan verified. No electromagnetic anomalies or rogue signals detected in device core chips."
-- **الترجمة العربية المعتمدة**: "تم التحقق من فحص التهديدات بالكامل. لم يتم الكشف عن أي شذوذ كهرومغناطيسي أو إشارات مارقة في رقائق الأجهزة الأساسية للوريد."`;
-  } else {
-    body = `مرحبًا بك! لقد قمت بمعالجة استفسارك الذكي بنجاح.
-- يتيح لك نظام الكشف والتحليل تفقد محتويات الغرف، الأجهزة والمكيفات والشاشات، ومقتنيات الأنيمي، وفهم خصائصها بالعربية فوراً.
-- يمكنك الكشف عن الثغرات وكاميرات التجسس المخفية يدوياً وآلياً بواسطة أنظمة الذكاء الاصطناعي وبث الترددات.
-ما هي التفاصيل التقنية الأخرى التي ترغب في استعراضها؟`;
-  }
-
-  return preface + body;
-}
-
 // REST API endpoint for scanned image detection with integrated Gemini fallback
 app.post("/api/scan", async (req, res) => {
   try {
@@ -221,8 +182,7 @@ app.post("/api/scan", async (req, res) => {
     }
 
     if (isOfflineMode || !client) {
-      console.log("▲ Missing GEMINI_API_KEY. Falling back to local offline DB.");
-      return generateSimulatedResult(categoryHint, res, image);
+      return res.status(503).json({ error: "مفتاح Gemini API غير متوفر. يرجى إدخال مفتاح API في الإعدادات أو تسجيل الدخول باستخدام البريد الإلكتروني." });
     }
 
     let promptString = "";
@@ -377,221 +337,15 @@ Ensure your output is valid, compact, standard JSON without markdown enclosure b
         return res.json(enrichedResult);
       } catch (e: any) {
         console.error("▲ Complete json parsing failure:", e);
-        return generateSimulatedResult(categoryHint, res, image);
+        return res.status(500).json({ error: "فشل تحليل استجابة الذكاء الاصطناعي. يرجى المحاولة مرة أخرى." });
       }
     }
 
   } catch (err: any) {
     console.error("▲ Error during scan routine:", err);
-    return generateSimulatedResult(req.body.categoryHint, res, req.body.image);
+    return res.status(500).json({ error: "حدث خطأ أثناء المسح. يرجى التحقق من مفتاح API والمحاولة مرة أخرى." });
   }
 });
-
-// Helper to generate extremely clever simulated vision scans when key is missing or model errors out
-function generateSimulatedResult(hint: string | undefined, res: express.Response, originalImage?: string) {
-  const normHint = (hint || "").toLowerCase();
-  
-  // Default values
-  let name = "Smart Polymeric Object";
-  let category = "Objects & Tools";
-  let size = "15.0cm x 15.0cm x 8.0cm";
-  let description = "High-precision physical entity identified via automated geometric contours. Surface material shows uniform light absorption and temperature indexes.";
-  let confidence = 94.2;
-  let toolsFound = ["Structural outer casing", "Tactile mechanical joints", "Faceted base deck"];
-  let hideCameraStatus = "Threat Sweep: Passed. No electromagnetic emissions or hidden camera layouts detected.";
-  let extraDetails = [
-    { key: "Physical Structure", value: "Reinforced composite resin" },
-    { key: "Reflective Rating", value: "Low refraction (Anti-glare)" },
-    { key: "Thermal Variance", value: "±0.2°C from room ambient" },
-    { key: "RF Wave Audit", value: "Zero rogue transmitters detected" }
-  ];
-  
-  let brand = "Generic Instruments";
-  let modelNumber = "GEN-OBJ-3000";
-  let weight = "450g";
-  let estimatedPrice = "$29.99 USD";
-  let buyLink = "https://www.google.com/search?tbm=shop&q=precision+polymeric+object";
-  let translationResult = {
-    originalText: "Smart Polymeric Object",
-    targetLang: "ar",
-    translatedText: "جسم بوليمري ذكي متعدد المهام. الأبعاد: 15.0سم x 15.0سم x 8.0سم. الوزن: 450 جرام. الماركة: آلات ومعدات عامة. مادة الصنع مدعمة بالراتنج المركب، مع تشتيت ممتاز ومقاومة للوهج والانعكاسات البصرية."
-  };
-
-  // CHECK FOR AC / AIR CONDITIONER / مكيف (Highly accurate requested fallback)
-  if (normHint.includes("ac") || normHint.includes("مكيف") || normHint.includes("تكييف") || normHint.includes("سبلت") || normHint.includes("split") || normHint.includes("gree") || normHint.includes("lg") || normHint.includes("carrier")) {
-    name = "مكيف سبليت جري فيري 1.5 طن (Gree Fairy Split AC 1.5 Ton)";
-    category = "TV & Room Equipment";
-    size = "97.0cm x 30.0cm x 22.4cm";
-    description = "High-efficacy split air conditioning system with dynamic multi-speed inverter cooling. Employs advanced allergen PM2.5 medical grade dust capture and R410A eco-coolant. Runs on minimal decibels (under 28dB) with smart auto-clean features.";
-    confidence = 98.4;
-    toolsFound = ["شفرات توجيه الهواء ثنائية المحور (Dual-axis airflow swinging louvers)", "مرشح هواء صحي مضاد للغبار (Medical PM2.5 dust catching mesh)", "شاشة مؤشر الرمز الرقمية (Hidden LED status panel on glossy shell)"];
-    hideCameraStatus = "🟢 آمن كلياً: تم فحص شبكة الهواء وعادم الغبار بالليزر وبصريات الكاميرا تعطي حماية 100% لخلو الفتحات من أي عدسات ملوية.";
-    extraDetails = [
-      { key: "Cooling Compressor", value: "Inverter Rotary Speed Core" },
-      { key: "Efficiency Rating", value: "A++ Eco-Saving Standard" },
-      { key: "Thermal Variance", value: "Active cooling delta max: -12°C" },
-      { key: "RF Signal Output", value: "No active transmitters or rogue wifi modules" }
-    ];
-    brand = "Gree Electric";
-    modelNumber = "GWC18QD-K3NNA1A-FAIRY";
-    weight = "13.5 Kg";
-    estimatedPrice = "$549.00 USD (حوالي 2,058 ريال سعودي)";
-    buyLink = "https://www.google.com/search?tbm=shop&q=Gree+Fairy+Split+Air+Conditioner+1.5+Ton";
-    translationResult = {
-      originalText: "Gree Fairy Split AC 1.5 Ton",
-      targetLang: "ar",
-      translatedText: "مكيف هواء سبليت جري فيري عالي الكفاءة وموفر للطاقة بقوة 1.5 طن. يشتمل على ضاغط إنفيرتر متطور يوفر الاستهلاك بنسبة تصل لـ 40%، ونظام فلاتر ذكي ضد الغبار والميكروبات. آمن بالكامل وتم فحصه طيفياً للتأكد من خلو موجهات الهواء من أي كاميرات خفية أو وسائل تلصص."
-    };
-  }
-  // CHECK FOR SCREEN / TV / شاشة / تلفزيون (Highly accurate requested fallback)
-  else if (normHint.includes("tv") || normHint.includes("screen") || normHint.includes("شاشه") || normHint.includes("شاشة") || normHint.includes("تلفزيون") || normHint.includes("oled") || normHint.includes("qled") || normHint.includes("samsung") || normHint.includes("bravia") || normHint.includes("monitor")) {
-    name = "شاشة سامسونج كيو إل إي دي الذكية UHD بدقة 4K (Samsung Smart QLED 4K TV 65\")";
-    category = "TV & Room Equipment";
-    size = "144.9cm x 83.1cm x 2.6cm";
-    description = "Premium 65-inch smart QLED television with bezel-less glass styling and back plate structure. Features quantum processor 4K, HDR10+ dynamic range, and Tizen-based intelligent home hub interfaces. Includes physical e-Arc HDMI connections.";
-    confidence = 99.1;
-    toolsFound = ["إطار الشاشة الرفيع الفضي (Ultra Bezels Steel Frame)", "لوحة الإضاءة الخلفية المستقلة (QLED Matrix Panel array)", "منفذ الاتصال الذكي البصري (HDMI 2.1 e-Arc high speed port)"];
-    hideCameraStatus = "🟢 آمن كلياً: تم فحص حواف الشاشة والكفة السفلية تحت الفلتر الطيفي، البنية خالية تماماً من ناقلات الإشارة اللاسلكية المجهرية.";
-    extraDetails = [
-      { key: "Display Panel", value: "Quantum Dot LED 4K Screen" },
-      { key: "Sound Setup", value: "Object Tracking Sound Lite" },
-      { key: "Operating System", value: "Samsung Tizen Intelligence OS" },
-      { key: "Power Input Draw", value: "AC 110-240V 50/60Hz stable line" }
-    ];
-    brand = "Samsung Electronics";
-    modelNumber = "QA65Q60BAUXZN";
-    weight = "22.4 Kg";
-    estimatedPrice = "$820.00 USD (حوالي 3,075 ريال سعودي)";
-    buyLink = "https://www.google.com/search?tbm=shop&q=Samsung+65+QLED+4K+Smart+TV";
-    translationResult = {
-      originalText: "Samsung Smart QLED 65 Inch TV",
-      targetLang: "ar",
-      translatedText: "شاشة تلفزيون ذكي سامسونج كيو الـ اي دي فائقة الوضوح والنقاء مقاس 65 بوصة. تدعم معالج الكوانتوم المتقدم للألوان ومستشعرات تتبع الحركة التلقائية. تم فحص الإبزيم والحواف بالكامل للتأكد من السلامة التامة وخلوها من أي عدسات مدمجة أو موجات كهرومغناطيسية مريبة."
-    };
-  }
-  // ANIME FIGURINES FALLBACK
-  else if (normHint.includes("anime") || normHint.includes("collect") || normHint.includes("figure") || normHint.includes("doll")) {
-    name = "مجسم شخصية جيل زاد الأسطورية (Custom Scale Anime Figurine)";
-    category = "Anime & Collectibles" as any;
-    size = "22.5cm x 11.0cm x 11.0cm";
-    description = "Stylized collector's replica featuring vivid colors and custom contours. Visual analysis indicates an active standing action pose with high-fidelity finish.";
-    toolsFound = ["Dynamic pedestal mount", "Sculpted clothing layers", "Precipitation guard hair profile"];
-    hideCameraStatus = "Threat Sweep: Perfect. 100% solid casting. Zero void space for hidden battery recorders.";
-    extraDetails = [
-      { key: "Mold Detail", value: "Premium Grade Casting #092" },
-      { key: "Hue Composition", value: "High-contrast acrylic pigments" },
-      { key: "Chasis Resonance", value: "Damped polymer composite" },
-      { key: "Stealth Status", value: "Fully audited, certified safe item" }
-    ];
-    brand = "Bandai Spirits Co.";
-    modelNumber = "BAN-GOKU-920";
-    weight = "380g";
-    estimatedPrice = "$55.00 USD";
-    buyLink = "https://www.google.com/search?tbm=shop&q=Bandai+Spirits+anime+action+figure+scale";
-    translationResult = {
-      originalText: name,
-      targetLang: "ar",
-      translatedText: "مجسم مجسم أنيمي مجسم مخصص بمقياس رسم تفصيلي. الأبعاد: 22.5سم × 11سم × 11سم. الوزن: 380 غرام. الماركة: بانداي للألعاب. السعر التقريبي: 55 دولار أمريكي. هيكل صلب 100% خالي من التجاويف مخصص للمقتنين والهاوين وغير ناقل لأي إشارات الكترونية."
-    };
-  }
-  // DEFAULT ROOM EQUIPMENTS (like router / filter)
-  else if (normHint.includes("room") || normHint.includes("equip") || normHint.includes("router") || normHint.includes("lamp") || normHint.includes("purifier")) {
-    name = "موجه شبكة لاسلكي منزلي ذكي (Nighthawk AX12 Wi-Fi 6 Router)";
-    category = "TV & Room Equipment";
-    size = "23.5cm x 16.0cm x 18.2cm";
-    description = "Active domestic electronic utility interface. Features modular cooling grates with active LED feedback channels, presenting clean wired connections.";
-    toolsFound = ["Heat dissipation grates", "Coaxial routing terminal", "Solid state LED lights"];
-    hideCameraStatus = "Threat Sweep: Audited. Standard electronic emission profile verified. No unauthorized micro-cameras detected.";
-    extraDetails = [
-      { key: "Chasis Enclosure", value: "Insulative ABS polymer shell" },
-      { key: "Connector Standard", value: "Metallic alloy terminals" },
-      { key: "EMF Emission", value: "Complies with Class-B regulatory shields" },
-      { key: "Operating Index", value: "Clean continuous voltage" }
-    ];
-    brand = "Netgear Electronics";
-    modelNumber = "NIGHTHAWK-AX12";
-    weight = "1.2 Kg";
-    estimatedPrice = "$249.99 USD";
-    buyLink = "https://www.google.com/search?tbm=shop&q=Netgear+Nighthawk+Router+WiFi+6";
-    translationResult = {
-      originalText: name,
-      targetLang: "ar",
-      translatedText: "جهاز استقبال وتوزيع شبكة منزلي ذكي فائق السرعة وبث آمن. الأبعاد: 23.5سم × 16سم. الوزن: 1.2 كجم. الطراز: Nighthawk. السعر التقريبي: 249 دولار. معتمد بشهادة أمان فئة B لتبديد الحرارة العالية بدون انبعاثات كهرومغناطيسية ضارة."
-    };
-  }
-  // ANIMALS FALLBACK
-  else if (normHint.includes("animal") || normHint.includes("creat") || normHint.includes("cat") || normHint.includes("dog") || normHint.includes("bird")) {
-    name = "حيوان ثديي أليف سليم (Domestic Companion Mammal)";
-    category = "Animals & Creatures";
-    size = "34.0cm x 26.0cm x 52.0cm";
-    description = "Living biological animal with fluffy fur covering and responsive posture indicators. Heartbeat and visual gaze align with a relaxed state.";
-    toolsFound = ["Hypoallergenic outer coating", "Bipedal limb support", "Dynamic visual pupils"];
-    hideCameraStatus = "Threat Sweep: Living organic specimen. Standard biological thermal index. No digital trace modules.";
-    extraDetails = [
-      { key: "Thermal State", value: "38.2°C healthy body metabolic" },
-      { key: "Subspecies Match", value: "Feline / Canine companion" },
-      { key: "Interaction Class", value: "High friendliness rating" },
-      { key: "Anatomy Score", value: "100% genuine skeletal system" }
-    ];
-    brand = "Nature / Biological";
-    modelNumber = "FELIS-CATUS-DOM";
-    weight = "4.2 Kg";
-    estimatedPrice = "N/A (Priceless Companion)";
-    buyLink = "https://www.google.com/search?q=domestic+cat+breed+identifier";
-    translationResult = {
-      originalText: name,
-      targetLang: "ar",
-      translatedText: "حيوان أليف منزلي متماثل الأطراف. الأبعاد التقريبية: 34 × 26 × 52 سم. الوزن: 4.2 كجم. الفصيل المكتشف: قط أليف. الحالة البيولوجية: حرارة ممتازة ومعدل نبضات طبيعي 38.2 درجة مئوية مع معالجة حركية مرنة."
-    };
-  }
-  // HUMAN TARGETS FALLBACK
-  else if (normHint.includes("human") || normHint.includes("person") || normHint.includes("man") || normHint.includes("woman") || normHint.includes("user")) {
-    name = "هدف بشري نشط (Human Subject)";
-    category = "Humans & Action";
-    size = "176.0cm x 48.0cm x 30.0cm";
-    description = "Human subject detected within active spatial environment. Posture indicators register bipedal symmetry and responsive focus attributes.";
-    toolsFound = ["Cotton flat-weave layers", "Jointed locomotion mechanics", "Responsive focal eyes"];
-    hideCameraStatus = "Threat Sweep: Verified safe human subject. Low electromagnetic emissions, local device (handheld smartphone) checked as standard.";
-    extraDetails = [
-      { key: "Heart Pulse", value: "74 beats per minute" },
-      { key: "Locomotion Axis", value: "Symmetrical weight deployment" },
-      { key: "Active Outfit", value: "Insulating cotton/poly apparel" },
-      { key: "Pose Profile", value: "Balanced focal stance" }
-    ];
-    brand = "Homo Sapiens";
-    modelNumber = "ADULT-INDIV-01";
-    weight = "72 Kg";
-    estimatedPrice = "N/A";
-    buyLink = "https://www.google.com/search?q=human+posture+biomechanics+tutorials";
-    translationResult = {
-      originalText: name,
-      targetLang: "ar",
-      translatedText: "عنصر بشري نشط مكتشف بالتغطية الحركية للعدسة. الطول المقدر: 176 سم. الوزن التقديري: 72 كجم. دقات القلب الحيوية: 74 نبضة بالدقيقة. توازن ديناميكي ممتاز للقامة والملابس الخفيفة للحماية المستمرة."
-    };
-  }
-
-  return res.json({
-    id: "sim_" + Math.random().toString(36).substr(2, 9),
-    name,
-    category,
-    size,
-    description,
-    confidence,
-    toolsFound,
-    hideCameraStatus,
-    extraDetails,
-    weight,
-    brand,
-    modelNumber,
-    estimatedPrice,
-    buyLink,
-    translationResult,
-    scannedAt: new Date().toISOString(),
-    source: "local_db",
-    imageUrl: originalImage || "https://images.unsplash.com/photo-1546776310-eef45dd6d63c?w=400&q=80",
-    boundingBox: { x: 15, y: 15, w: 70, h: 70 }
-  });
-}
 
 // REST API endpoint to translate texts or speech queries with integrated Gemini fallback
 app.post("/api/translate", async (req, res) => {
@@ -605,20 +359,7 @@ app.post("/api/translate", async (req, res) => {
     const { client, modelToUse, isOfflineMode } = getAIClient(req);
 
     if (isOfflineMode || !client) {
-      let localized = `ترجمة فورية للنص: "${text}". تم التدقيق اللغوي بنجاح تام وبدون أخطاء كمعيار بديل.`;
-      if (text.toLowerCase().includes("tv") || text.toLowerCase().includes("screen") || text.toLowerCase().includes("television") || text.toLowerCase().includes("شاشة")) {
-        localized = "شاشة تلفزيونية ذكية فائقة الدقة والوضوح عالية التباين، مخصصة للعرض والخصوصية ومكافحة التجسس.";
-      } else if (text.toLowerCase().includes("ac") || text.toLowerCase().includes("air conditioner") || text.toLowerCase().includes("مكيف")) {
-        localized = "مكيف هواء متطور عالي التحمل ذو تقنية توزيع ذكية وانسيابية مثلى للأجواء الجافة والباردة.";
-      } else if (text.toLowerCase().includes("camera") || text.toLowerCase().includes("spy") || text.toLowerCase().includes("كاميرا")) {
-        localized = "عدسة تصوير فائقة النقاء تفحص الهياكل لكشف ومكافحة الكاميرات المخفية وحماية البيانات.";
-      }
-      return res.json({
-        originalText: text,
-        targetLang: langCode,
-        translatedText: localized,
-        method: "smart_local_solver"
-      });
+      return res.status(503).json({ error: "مفتاح Gemini API غير متوفر. يرجى إدخال مفتاح API في الإعدادات." });
     }
 
     const translationPrompt = `Translate the following text into ${langCode === "ar" ? "Arabic (العربية)" : "English"}.
@@ -638,20 +379,7 @@ Provide a clean, natural, and highly accurate translation. Do NOT provide any pr
 
   } catch (err: any) {
     console.error("▲ Translation error: ", err);
-    let localizedFallback = `ترجمة فورية للنص: "${text}". [تحذير: ضغط عالي في خادم الذكاء الاصطناعي، تم التوصيل الذاتي للمترجم المحلي المدمج]`;
-    if (text.toLowerCase().includes("tv") || text.toLowerCase().includes("screen") || text.toLowerCase().includes("television") || text.toLowerCase().includes("شاشة")) {
-      localizedFallback = "شاشة تلفزيونية ذكية فائقة الدقة والوضوح عالية التباين، مخصصة للعرض والخصوصية ومكافحة التجسس.";
-    } else if (text.toLowerCase().includes("ac") || text.toLowerCase().includes("air conditioner") || text.toLowerCase().includes("مكيف")) {
-      localizedFallback = "مكيف هواء متطور عالي التحمل ذو تقنية توزيع ذكية وانسيابية مثلى للأجواء الجافة والباردة.";
-    } else if (text.toLowerCase().includes("camera") || text.toLowerCase().includes("spy") || text.toLowerCase().includes("كاميرا")) {
-      localizedFallback = "عدسة تصوير غنية بالألوان تفحص الهياكل لكشف ومكافحة التلقيمات في اللوحات العميقة.";
-    }
-    return res.json({
-      originalText: text,
-      targetLang: targetLang || "ar",
-      translatedText: localizedFallback,
-      method: "local_survival_solver"
-    });
+    return res.status(500).json({ error: "فشل الاتصال بخدمة الترجمة. يرجى المحاولة مرة أخرى." });
   }
 });
 
@@ -695,8 +423,7 @@ app.post("/api/gemini-ask", async (req, res) => {
     const { client, modelToUse, isOfflineMode, emailAuthed } = getAIClient(req);
 
     if (isOfflineMode || !client) {
-      const responseText = generateSimulatedAssistantResponse(question, scanContext, false);
-      return res.json({ response: responseText });
+      return res.status(503).json({ error: "مفتاح Gemini API غير متوفر. يرجى إدخال مفتاح API في الإعدادات أو تسجيل الدخول باستخدام البريد الإلكتروني." });
     }
 
     let systemPrompt = `You are the core AI expert consultant, "Gemini Detection Assistant" (مساعد جيمني الذكي للفحص والكشف), integrated into 'AI Vision Lite'.
@@ -761,8 +488,7 @@ Provide deeply reasoned step-by-step logic, full specs, and technical charts usi
 
   } catch (err: any) {
     console.error("▲ Gemini Ask error:", err);
-    const responseText = generateSimulatedAssistantResponse(question, scanContext, true);
-    return res.json({ response: responseText });
+    return res.status(500).json({ error: "حدث خطأ في الاتصال بخدمة الذكاء الاصطناعي. يرجى المحاولة مرة أخرى." });
   }
 });
 
