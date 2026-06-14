@@ -6,6 +6,9 @@ on:
       - 'claude/band-scanner-android-app-wd4ne7'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build Release APK
