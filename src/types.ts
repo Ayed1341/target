@@ -135,4 +135,5 @@ export type AppTab =
   | "speed"
   | "history"
   | "export"
-  | "commands";
+  | "commands"
+  | "settings";

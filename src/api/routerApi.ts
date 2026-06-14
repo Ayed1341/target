@@ -249,6 +249,7 @@ export class HuaweiRouterAPI {
   private firmwareType: HuaweiFirmwareType = "hilink_v2";
   private ua: string;
   private consecutiveFailures = 0;
+  private hintedPasswordType = 0;
 
   constructor(ip: string, username: string, password: string) {
     this.ip = ip;
@@ -276,59 +277,126 @@ export class HuaweiRouterAPI {
     return headers;
   }
 
-  // ── IDEA 9: Multi-Step Token Acquisition with Cookie Extraction ──────────
+  // ── IDEA 9: 9-Technique Advanced Token Acquisition ──────────────────────
   private async acquireToken(): Promise<{ token: string; sessionId: string } | null> {
-    const endpoints = [
-      `/api/webserver/token`,
-      `/api/webserver/SesTokInfo`,
-      `/html/index.html`,
-    ];
+    // TECHNIQUE 1: IP Normalization — strip protocol prefix and trailing slashes
+    this.ip = this.ip
+      .replace(/^https?:\/\//i, "")
+      .replace(/\/$/, "")
+      .trim();
 
-    for (const endpoint of endpoints) {
+    // TECHNIQUE 2: Connection Pre-Check — fast HEAD probe to verify router reachable
+    let reachable = false;
+    for (const path of ["/", "/api/webserver/token"]) {
       try {
+        const probe = await fetchWithTimeout(`http://${this.ip}${path}`, { method: "HEAD" }, 5000);
+        if (probe.status < 600) { reachable = true; break; }
+      } catch { /* try next */ }
+    }
+    if (!reachable) return null;
+
+    // TECHNIQUE 3: Session Bootstrap — GET main HTML page first to establish SessionID cookie
+    // Many Huawei firmwares require a browser-like session before the token API will respond
+    let sessionId = "";
+    const bootstrapPaths = ["/html/home.html", "/", "/html/index.html"];
+    for (const path of bootstrapPaths) {
+      try {
+        const res = await fetchWithTimeout(
+          `http://${this.ip}${path}`,
+          { method: "GET", headers: { "User-Agent": this.ua, Accept: "text/html,*/*" } },
+          6000
+        );
+        // TECHNIQUE 4: Multi-Format Cookie Extraction from Set-Cookie header
+        const sc = res.headers.get("Set-Cookie") || res.headers.get("set-cookie") || "";
+        sessionId =
+          sc.match(/SessionID=([^;,\s]+)/i)?.[1] ||
+          sc.match(/session_?id=([^;,\s]+)/i)?.[1] ||
+          "";
+        if (sessionId) break;
+        // Also check if session ID is embedded in HTML
+        const html = await res.text();
+        const emb = html.match(/var\s+SessionID\s*=\s*["']([^"']+)/i)?.[1] ||
+                    html.match(/sessionID\s*=\s*["']([^"']+)/i)?.[1] || "";
+        if (emb) { sessionId = emb; break; }
+      } catch { /* try next bootstrap path */ }
+    }
+
+    // TECHNIQUE 5: Cookie-Aware CSRF Token Fetch — use SessionID cookie when calling token API
+    const tokenEndpoints = ["/api/webserver/token", "/api/webserver/SesTokInfo"];
+    for (const endpoint of tokenEndpoints) {
+      try {
+        const headers: Record<string, string> = {
+          "User-Agent": this.ua,
+          Accept: "application/xml, text/xml, */*",
+          "Cache-Control": "no-cache",
+        };
+        if (sessionId) headers["Cookie"] = `SessionID=${sessionId}`;
+
         const response = await fetchWithTimeout(
           `http://${this.ip}${endpoint}`,
-          {
-            method: "GET",
-            headers: {
-              "User-Agent": this.ua,
-              Accept: "text/html,application/xml,*/*",
-            },
-          },
+          { method: "GET", headers },
           8000
         );
-
         const text = await response.text();
 
-        // Detect firmware from response
+        // TECHNIQUE 6: Firmware Detection from Token Response
         this.firmwareType = detectHuaweiFirmware(text);
 
-        // Extract token from multiple possible formats
+        // TECHNIQUE 7: Multi-Format Token Extraction — XML, HTML input, JSON
         const token =
           xmlParse(text, "token") ||
           xmlParse(text, "TokInfo") ||
           text.match(/name="__RequestVerificationToken"[^>]*value="([^"]+)"/i)?.[1] ||
           text.match(/csrf_token\s*=\s*["']([^"']+)/i)?.[1] ||
+          text.match(/"token"\s*:\s*"([^"]+)"/i)?.[1] ||
           "";
 
-        // Extract session from Set-Cookie header
-        const setCookie = response.headers.get("Set-Cookie") || "";
-        const sessionId =
-          setCookie.match(/SessionID=([^;]+)/i)?.[1] ||
-          setCookie.match(/session=([^;]+)/i)?.[1] ||
-          xmlParse(text, "SesInfo") ||
-          "";
+        // TECHNIQUE 8: Enhanced Session Recovery — extract from token response if not yet set
+        if (!sessionId) {
+          const sc = response.headers.get("Set-Cookie") || response.headers.get("set-cookie") || "";
+          sessionId =
+            sc.match(/SessionID=([^;,\s]+)/i)?.[1] ||
+            xmlParse(text, "SesInfo") ||
+            "";
+        }
 
-        // Return if router is reachable even if no CSRF token found —
-        // some models (CPE5 H155 newer firmware) don't expose a CSRF token
-        // but still accept the login POST
+        // TECHNIQUE 9: Hint-Based Password Type — read router's preferred auth type
+        const hinted = parseInt(
+          xmlParse(text, "password_type") || xmlParse(text, "encrypt_auth_type") || "0"
+        );
+        if (hinted > 0) this.hintedPasswordType = hinted;
+
         if (response.status < 500) {
           return { token, sessionId };
         }
-      } catch {
-        // try next endpoint
-      }
+      } catch { /* try next endpoint */ }
     }
+
+    // HTML Fallback: parse CSRF token from the full login page
+    try {
+      const headers: Record<string, string> = {
+        "User-Agent": this.ua,
+        Accept: "text/html,*/*",
+      };
+      if (sessionId) headers["Cookie"] = `SessionID=${sessionId}`;
+      const res = await fetchWithTimeout(
+        `http://${this.ip}/html/index.html`,
+        { method: "GET", headers },
+        8000
+      );
+      const text = await res.text();
+      this.firmwareType = detectHuaweiFirmware(text);
+      const token =
+        text.match(/name="__RequestVerificationToken"[^>]*value="([^"]+)"/i)?.[1] ||
+        text.match(/csrf_token\s*=\s*["']([^"']+)/i)?.[1] ||
+        "";
+      if (!sessionId) {
+        const sc = res.headers.get("Set-Cookie") || "";
+        sessionId = sc.match(/SessionID=([^;,\s]+)/i)?.[1] || "";
+      }
+      if (res.status < 500) return { token, sessionId };
+    } catch { /* all methods exhausted */ }
+
     return null;
   }
 
@@ -411,13 +479,15 @@ export class HuaweiRouterAPI {
         return h;
       };
 
-      // If no CSRF token, only plain base64 (type 1) can be attempted;
-      // hash-based types (4, 3, 2) need the token as input to the hash
+      // If no CSRF token, only plain base64 (type 1) can be attempted
+      // Use router-hinted type first if detected, then try all others
       const typesToTry = !csrfToken
         ? [1]
-        : this.firmwareType === "b310_series"
-          ? [1, 4]
-          : [4, 3, 2, 1];
+        : this.hintedPasswordType > 0
+          ? [this.hintedPasswordType, 4, 3, 2, 1].filter((v, i, a) => a.indexOf(v) === i)
+          : this.firmwareType === "b310_series"
+            ? [1, 4]
+            : [4, 3, 2, 1];
 
       for (const pwType of typesToTry) {
         const payload = await this.buildLoginPayloadWithToken(pwType, csrfToken);
@@ -472,6 +542,41 @@ export class HuaweiRouterAPI {
           // try next password type
         }
       }
+
+      // Step-back retry: wait 2 seconds, get a fresh token, try type 1 once more
+      // Handles race conditions where the CSRF token expires mid-authentication
+      try {
+        await new Promise((r) => setTimeout(r, 2000));
+        const retryData = await this.acquireToken();
+        if (retryData?.token) {
+          const retryPayload = await this.buildLoginPayloadWithToken(1, retryData.token);
+          const retryHeaders: Record<string, string> = {
+            "Content-Type": "application/xml",
+            Accept: "application/xml, text/xml, */*",
+            "User-Agent": this.ua,
+            "__RequestVerificationToken": retryData.token,
+          };
+          if (retryData.sessionId) retryHeaders["Cookie"] = `SessionID=${retryData.sessionId}`;
+          const retryRes = await fetchWithTimeout(
+            `http://${this.ip}/api/user/login`,
+            { method: "POST", headers: retryHeaders, body: retryPayload },
+            10000
+          );
+          const retryText = await retryRes.text();
+          if (
+            retryText.includes("<response>OK</response>") ||
+            retryText.includes("<response>ok</response>") ||
+            retryText.trim() === "OK"
+          ) {
+            const newToken = xmlParse(retryText, "token") || retryData.token;
+            const newSessId =
+              retryRes.headers.get("Set-Cookie")?.match(/SessionID=([^;]+)/i)?.[1] ||
+              retryData.sessionId;
+            this.session.save(newToken, newSessId, 3_600_000);
+            return { success: true, token: newToken, sessionId: newSessId, authMethod: "huawei_retry_type1" };
+          }
+        }
+      } catch { /* retry failed */ }
 
       this.consecutiveFailures++;
       return {
@@ -671,6 +776,26 @@ export class HuaweiRouterAPI {
         body: payload,
       });
       return response.ok;
+    } finally {
+      this.mutex.release();
+    }
+  }
+
+  async unlockAllBands(): Promise<boolean> {
+    await this.mutex.acquire();
+    try {
+      const payload = `<?xml version="1.0" encoding="UTF-8"?>
+<request>
+  <NetworkMode>00</NetworkMode>
+  <NetworkBand>3FFFFFFF</NetworkBand>
+  <LTEBand>7FFFFFFFFFFFFFFF</LTEBand>
+</request>`;
+      const response = await this.authedFetch(`http://${this.ip}/api/net/net-mode`, {
+        method: "POST",
+        body: payload,
+      });
+      const text = await response.text();
+      return text.includes("OK") || response.ok;
     } finally {
       this.mutex.release();
     }
@@ -1139,6 +1264,24 @@ export class ZteRouterAPI {
       return response.ok;
     } finally {
       this.mutex.release();
+    }
+  }
+
+  async unlockAllBands(): Promise<boolean> {
+    try {
+      const formData = new URLSearchParams({
+        goformId: "SET_LTE_BAND_LOCK",
+        lte_band_lock: "0",
+      });
+      const response = await fetchWithRetry(
+        `http://${this.ip}/goform/goform_set_cmd_process`,
+        { method: "POST", headers: this.buildHeaders(), body: formData.toString() },
+        2
+      );
+      const data = await response.json().catch(() => ({ result: "error" }));
+      return data.result === "success" || data.result === "0";
+    } catch {
+      return false;
     }
   }
 

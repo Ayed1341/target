@@ -208,10 +208,24 @@ export default function RouterManager() {
   const handleUnlockBand = async (band: BandInfo) => {
     if (!conn.isConnected) { addLog("⚠️ اتصل بالراوتر أولاً"); return; }
     addLog(`🔓 جاري إلغاء قفل ${band.name}...`);
-    const ok = await conn.lockBand("3FFFFFFF", false);
+    const ok = await (conn as any).unlockAllBands?.() ?? await conn.lockBand("7FFFFFFFFFFFFFFF", false);
     if (ok) {
-      setLockedBands((prev) => { const s = new Set(prev); s.delete(band.hexCode); return s; });
-      addLog(`✅ تم إلغاء القفل لـ ${band.name}`);
+      setLockedBands(new Set());
+      addLog(`✅ تم إلغاء قفل جميع الترددات`);
+    } else {
+      addLog(`❌ فشل إلغاء القفل`);
+    }
+  };
+
+  const handleUnlockAllBands = async () => {
+    if (!conn.isConnected) { addLog("⚠️ اتصل بالراوتر أولاً"); return; }
+    addLog("🔓 جاري إلغاء قفل جميع الترددات...");
+    const ok = await (conn as any).unlockAllBands?.() ?? await conn.lockBand("7FFFFFFFFFFFFFFF", false);
+    if (ok) {
+      setLockedBands(new Set());
+      addLog("✅ تم إلغاء قفل جميع الترددات - الراوتر يختار تلقائياً");
+    } else {
+      addLog("❌ فشل إلغاء قفل الترددات");
     }
   };
 
@@ -538,6 +552,7 @@ export default function RouterManager() {
         <TabBtn id="history"   active={activeTab === "history"}   onClick={setActiveTab} icon={BarChart2}  label="السجل" />
         <TabBtn id="export"    active={activeTab === "export"}    onClick={setActiveTab} icon={Download}   label="تصدير" />
         <TabBtn id="commands"  active={activeTab === "commands"}  onClick={setActiveTab} icon={Terminal}   label="أوامر" />
+        <TabBtn id="settings"  active={activeTab === "settings"}  onClick={setActiveTab} icon={Settings}   label="إعدادات" />
       </div>
 
       {/* ── Tab content ── */}

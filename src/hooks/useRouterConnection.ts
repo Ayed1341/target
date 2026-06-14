@@ -258,6 +258,14 @@ export function useRouterConnection() {
     return activeBands.sort((a, b) => b.dlFreqMHz - a.dlFreqMHz)[0];
   }, [state.supportedBands, state.signalData]);
 
+  const unlockAllBands = useCallback(async (): Promise<boolean> => {
+    if (!apiRef.current) return false;
+    setPartial({ isLoading: true, error: null });
+    const result = await (apiRef.current as any).unlockAllBands?.() ?? false;
+    setPartial({ isLoading: false });
+    return result;
+  }, []);
+
   useEffect(() => {
     return () => {
       stopPolling();
@@ -277,6 +285,7 @@ export function useRouterConnection() {
     reboot,
     runSpeedTest,
     findBestBand,
+    unlockAllBands,
     startPolling,
     stopPolling,
   };
