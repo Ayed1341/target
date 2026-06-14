@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Router Manager - عايد عريبي</string>
+    <string name="title_activity_main">Router Manager</string>
+    <string name="custom_url_scheme">com.ayedoraybi.routercontrol</string>
+</resources>

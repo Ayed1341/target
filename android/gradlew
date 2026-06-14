@@ -1,0 +1,4 @@
+#!/bin/sh
+# Router Manager Gradle Wrapper - عايد عريبي (Ayed Oraybi)
+GRADLE_OPTS="${GRADLE_OPTS:-} -Dfile.encoding=UTF-8"
+exec gradle "$@"

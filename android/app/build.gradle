@@ -1,0 +1,48 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace "com.ayedoraybi.routercontrol"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.ayedoraybi.routercontrol"
+        minSdk 26
+        targetSdk 35
+        versionCode 8
+        versionName "8.0.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+            debuggable true
+        }
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+dependencies {
+    implementation project(':capacitor-android')
+    implementation project(':capacitor-cordova-android-plugins')
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.coordinatorlayout:coordinatorlayout:1.2.0'
+    implementation 'androidx.core:core:1.12.0'
+    implementation 'androidx.webkit:webkit:1.11.0'
+    implementation 'androidx.fragment:fragment:1.6.2'
+}
+
+apply from: 'capacitor.build.gradle'

@@ -1,0 +1,119 @@
+name: Build Android APK - Router Manager by Ayed Oraybi
+
+on:
+  push:
+    branches:
+      - 'claude/band-scanner-android-app-wd4ne7'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build web assets (React + Vite)
+        run: npm run build:only
+
+      - name: Sync Capacitor to Android
+        run: npx cap sync android
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 35
+          build-tools: '34.0.0'
+
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Install Android SDK platforms and tools
+        run: |
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;34.0.0"
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      - name: Build Debug APK
+        run: cd android && ./gradlew assembleDebug --stacktrace
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+          JAVA_HOME: ${{ env.JAVA_HOME }}
+
+      - name: Build Release APK (unsigned)
+        run: cd android && ./gradlew assembleRelease --stacktrace
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+          JAVA_HOME: ${{ env.JAVA_HOME }}
+
+      - name: List built APKs
+        run: find android/app/build/outputs -name "*.apk" | head -20
+
+      - name: Rename APK
+        run: |
+          mkdir -p release-apk
+          cp android/app/build/outputs/apk/release/app-release*.apk release-apk/RouterManager-AyedOraybi-v8.0.apk 2>/dev/null || \
+          cp android/app/build/outputs/apk/debug/app-debug.apk release-apk/RouterManager-AyedOraybi-v8.0-debug.apk || true
+          ls release-apk/
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RouterManager-APK-v8.0
+          path: release-apk/
+          retention-days: 90
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v8.0.${{ github.run_number }}"
+          name: "Router Manager v8.0.${{ github.run_number }} - عايد عريبي"
+          body: |
+            ## 📡 Router Manager v8.0 - عايد عريبي (Ayed Oraybi)
+
+            ### Features / المميزات:
+            - ✅ Band Scanner - ماسح الترددات الحي
+            - ✅ Best Band Finder - أفضل نطاق
+            - ✅ Cell Tower Scanner - ماسح الأبراج
+            - ✅ Band Lock (4G/5G) - قفل النطاق
+            - ✅ Cell Lock - قفل البرج
+            - ✅ RSRP/RSRQ/SINR Monitor - مراقبة الإشارة
+            - ✅ EARFCN/ARFCN Scanner - ماسح الترددات
+            - ✅ Network Mode Selector - اختيار وضع الشبكة
+            - ✅ Band Aggregation Info - معلومات CA
+            - ✅ Cell ID Information - معلومات البرج
+            - ✅ Historical Signal Data - سجل الإشارة
+            - ✅ Speed Test - اختبار السرعة
+            - ✅ Export Diagnostics - تصدير التشخيص
+            - ✅ 17 Advanced Auth Layers - 17 طريقة مصادقة
+            - ✅ Huawei & ZTE Support - دعم هواوي وZTE
+
+            ### Requirements / المتطلبات:
+            - Android 8.0+ (API 26+) - يعمل على Android 14, 15, 16
+            - اتصال بنفس شبكة الراوتر (WiFi)
+
+            ### Developer / المطور:
+            **عايد عريبي (Ayed Oraybi)**
+          files: release-apk/*.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

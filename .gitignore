@@ -1,6 +1,20 @@
-__pycache__/
-*.py[cod]
-*.pyo
-apex_output/
-*.egg-info/
+# Build artifacts
+dist/
+node_modules/
+android/app/build/
+android/.gradle/
+android/local.properties
+*.apk
+
+# Environment
 .env
+.env.local
+*.local
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Capacitor
+android/app/src/main/assets/public/

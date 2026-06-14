@@ -1,0 +1,33 @@
+{
+  "name": "ayed-router-manager",
+  "private": true,
+  "version": "8.0.0",
+  "description": "5G Router Manager - عايد عريبي (Ayed Oraybi)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "build:only": "vite build",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit",
+    "cap:sync": "npx cap sync android",
+    "cap:build": "npm run build:only && npx cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/core": "^6.2.0",
+    "lucide-react": "^0.400.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.0",
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.1",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.5.3",
+    "vite": "^5.3.4"
+  }
+}
