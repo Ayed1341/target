@@ -295,7 +295,7 @@ export class HuaweiRouterAPI {
               Accept: "text/html,application/xml,*/*",
             },
           },
-          5000
+          8000
         );
 
         const text = await response.text();
@@ -319,7 +319,10 @@ export class HuaweiRouterAPI {
           xmlParse(text, "SesInfo") ||
           "";
 
-        if (token) {
+        // Return if router is reachable even if no CSRF token found —
+        // some models (CPE5 H155 newer firmware) don't expose a CSRF token
+        // but still accept the login POST
+        if (response.status < 500) {
           return { token, sessionId };
         }
       } catch {
@@ -402,14 +405,19 @@ export class HuaweiRouterAPI {
           "Cache-Control": "no-cache, no-store",
           Connection: "keep-alive",
           "User-Agent": this.ua,
-          "__RequestVerificationToken": csrfToken,
         };
+        if (csrfToken) h["__RequestVerificationToken"] = csrfToken;
         if (initSessionId) h["Cookie"] = `SessionID=${initSessionId}`;
         return h;
       };
 
-      // Try password types: CPE5/HiLink v2 tries type 4 first, then 3, 2, 1
-      const typesToTry = this.firmwareType === "b310_series" ? [1, 4] : [4, 3, 2, 1];
+      // If no CSRF token, only plain base64 (type 1) can be attempted;
+      // hash-based types (4, 3, 2) need the token as input to the hash
+      const typesToTry = !csrfToken
+        ? [1]
+        : this.firmwareType === "b310_series"
+          ? [1, 4]
+          : [4, 3, 2, 1];
 
       for (const pwType of typesToTry) {
         const payload = await this.buildLoginPayloadWithToken(pwType, csrfToken);
@@ -987,13 +995,15 @@ export class ZteRouterAPI {
 
       const data = await response.json().catch(() => ({ result: "error" }));
 
-      if (data.result === "success" || data.result === "0" || response.ok) {
+      // ZTE returns result:"0" or result:"success" on correct login
+      // result:"false" or result:"error" on wrong password — never accept response.ok alone
+      if (data.result === "success" || data.result === "0") {
         const token = `zte_plain_${Date.now()}`;
         this.session.save(token, "", 3_600_000);
         return { success: true, token, authMethod: "zte_plain" };
       }
 
-      return { success: false, error: "فشل تسجيل الدخول - تأكد من كلمة المرور الخاصة براوتر ZTE" };
+      return { success: false, error: "كلمة المرور خاطئة لراوتر ZTE" };
     } catch (e) {
       return { success: false, error: "تعذر الاتصال براوتر ZTE - تأكد من عنوان IP والاتصال بالشبكة" };
     }
