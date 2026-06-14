@@ -1,4 +1,6 @@
 #!/bin/sh
 # Router Manager Gradle Wrapper - عايد عريبي (Ayed Oraybi)
-GRADLE_OPTS="${GRADLE_OPTS:-} -Dfile.encoding=UTF-8"
+# This script delegates to the system Gradle installed by gradle/actions/setup-gradle
+set -e
+GRADLE_OPTS="${GRADLE_OPTS:-} -Dfile.encoding=UTF-8 -Xmx2g"
 exec gradle "$@"

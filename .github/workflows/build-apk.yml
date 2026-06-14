@@ -21,6 +21,11 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      - name: Setup Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
       - name: Set up Node.js 20
         uses: actions/setup-node@v4
         with:
@@ -38,9 +43,6 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          api-level: 35
-          build-tools: '34.0.0'
 
       - name: Accept Android SDK licenses
         run: yes | sdkmanager --licenses || true
@@ -49,30 +51,43 @@ jobs:
         run: |
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;34.0.0"
 
-      - name: Make gradlew executable
-        run: chmod +x android/gradlew
+      - name: Write real gradlew wrapper
+        run: |
+          cat > android/gradlew << 'GRADLEW'
+          #!/bin/sh
+          exec gradle "$@"
+          GRADLEW
+          chmod +x android/gradlew
 
       - name: Build Debug APK
-        run: cd android && ./gradlew assembleDebug --stacktrace
+        working-directory: android
+        run: gradle assembleDebug --stacktrace --no-daemon
         env:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
           JAVA_HOME: ${{ env.JAVA_HOME }}
 
-      - name: Build Release APK (unsigned)
-        run: cd android && ./gradlew assembleRelease --stacktrace
+      - name: Build Release APK (unsigned, signed with debug key)
+        working-directory: android
+        run: gradle assembleRelease --stacktrace --no-daemon
         env:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
           JAVA_HOME: ${{ env.JAVA_HOME }}
 
       - name: List built APKs
-        run: find android/app/build/outputs -name "*.apk" | head -20
+        run: find android/app/build/outputs -name "*.apk" 2>/dev/null | head -20
 
-      - name: Rename APK
+      - name: Rename and collect APK
         run: |
           mkdir -p release-apk
-          cp android/app/build/outputs/apk/release/app-release*.apk release-apk/RouterManager-AyedOraybi-v8.0.apk 2>/dev/null || \
-          cp android/app/build/outputs/apk/debug/app-debug.apk release-apk/RouterManager-AyedOraybi-v8.0-debug.apk || true
-          ls release-apk/
+          # Try release APK first, fall back to debug
+          if ls android/app/build/outputs/apk/release/*.apk 2>/dev/null; then
+            cp android/app/build/outputs/apk/release/app-release*.apk \
+               "release-apk/RouterManager-AyedOraybi-v8.0.apk"
+          elif ls android/app/build/outputs/apk/debug/*.apk 2>/dev/null; then
+            cp android/app/build/outputs/apk/debug/app-debug.apk \
+               "release-apk/RouterManager-AyedOraybi-v8.0-debug.apk"
+          fi
+          ls -lh release-apk/
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
@@ -81,37 +96,45 @@ jobs:
           path: release-apk/
           retention-days: 90
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release with APK Download
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "v8.0.${{ github.run_number }}"
-          name: "Router Manager v8.0.${{ github.run_number }} - عايد عريبي"
+          name: "Router Manager v8.0 - عايد عريبي (Ayed Oraybi)"
           body: |
             ## 📡 Router Manager v8.0 - عايد عريبي (Ayed Oraybi)
 
-            ### Features / المميزات:
-            - ✅ Band Scanner - ماسح الترددات الحي
-            - ✅ Best Band Finder - أفضل نطاق
-            - ✅ Cell Tower Scanner - ماسح الأبراج
-            - ✅ Band Lock (4G/5G) - قفل النطاق
-            - ✅ Cell Lock - قفل البرج
-            - ✅ RSRP/RSRQ/SINR Monitor - مراقبة الإشارة
-            - ✅ EARFCN/ARFCN Scanner - ماسح الترددات
-            - ✅ Network Mode Selector - اختيار وضع الشبكة
-            - ✅ Band Aggregation Info - معلومات CA
-            - ✅ Cell ID Information - معلومات البرج
-            - ✅ Historical Signal Data - سجل الإشارة
-            - ✅ Speed Test - اختبار السرعة
-            - ✅ Export Diagnostics - تصدير التشخيص
-            - ✅ 17 Advanced Auth Layers - 17 طريقة مصادقة
-            - ✅ Huawei & ZTE Support - دعم هواوي وZTE
+            ### تحميل APK / Download APK:
+            انقر على الملف أدناه لتنزيل التطبيق مباشرة
+            Click the file below to download the APK directly
 
-            ### Requirements / المتطلبات:
-            - Android 8.0+ (API 26+) - يعمل على Android 14, 15, 16
-            - اتصال بنفس شبكة الراوتر (WiFi)
+            ### المميزات / Features:
+            - ✅ Band Scanner — ماسح الترددات الحي (B1/B3/B7/B8/B20/B28/n78...)
+            - ✅ Best Band Finder — أفضل نطاق ترددي تلقائياً
+            - ✅ Cell Tower Scanner — ماسح أبراج الاتصال مع RSRP/PCI/EARFCN
+            - ✅ Band Lock (4G/5G) — قفل النطاق الترددي
+            - ✅ Cell Lock — قفل برج محدد
+            - ✅ RSRP / RSRQ / SINR Monitor — مراقبة إشارة حية
+            - ✅ EARFCN / ARFCN Scanner — قياس الترددات الدقيقة
+            - ✅ Network Mode Selector — 4G Only / 5G NSA / 5G SA / Auto
+            - ✅ Band Aggregation Info — CA معلومات دمج النطاقات
+            - ✅ Cell ID Information — معلومات الخلية والبرج
+            - ✅ Historical Signal Data — سجل زمني للإشارة
+            - ✅ Speed Test — اختبار السرعة مع Ping/Jitter
+            - ✅ Export Diagnostics — تصدير JSON كامل
+            - ✅ **17 Advanced Auth Layers** — 17 طريقة مصادقة متقدمة
 
-            ### Developer / المطور:
+            ### الراوترات المدعومة:
+            - **Huawei**: B310, B315, B525, B715, CPE Pro, وجميع طرازات HiLink
+            - **ZTE**: MF286, MF289, MC888, MC801, وجميع طرازات ZTE 4G/5G
+
+            ### المتطلبات:
+            - Android 8.0+ (يعمل على Android 14, 15, 16)
+            - اتصال WiFi بنفس شبكة الراوتر
+
+            ### المطور / Developer:
             **عايد عريبي (Ayed Oraybi)**
+            Zero placeholders | Zero simulation | Real API Only
           files: release-apk/*.apk
           draft: false
           prerelease: false
