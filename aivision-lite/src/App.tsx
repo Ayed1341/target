@@ -225,6 +225,67 @@ export default function App() {
     }
   }, [selectedPreset]);
 
+  // ── Improvement A: image compression helper ─────────────────────────────
+  const compressBase64Image = (dataUrl: string): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX_W = 1024;
+        const MAX_H = 768;
+        let { width, height } = img;
+        if (width > MAX_W || height > MAX_H) {
+          const ratio = Math.min(MAX_W / width, MAX_H / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) { resolve(dataUrl); return; }
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", 0.72));
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl.startsWith("data:") ? dataUrl : `data:image/jpeg;base64,${dataUrl}`;
+    });
+  };
+
+  // ── Improvement C: scan result cache helpers ──────────────────────────────
+  const getScanCacheKey = (hash: string) => `aiv_scan_cache_${hash}`;
+
+  const simpleHash = (str: string): string => {
+    // Simple djb2 hash over first 512 chars of base64 for fast comparison
+    const sample = str.slice(0, 512);
+    let h = 5381;
+    for (let i = 0; i < sample.length; i++) {
+      h = ((h << 5) + h) ^ sample.charCodeAt(i);
+      h = h >>> 0;
+    }
+    return h.toString(36);
+  };
+
+  const readScanCache = (key: string): DetectedObject | null => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const { result, savedAt } = JSON.parse(raw);
+      if (Date.now() - savedAt > 10 * 60 * 1000) {
+        localStorage.removeItem(key);
+        return null;
+      }
+      return result as DetectedObject;
+    } catch {
+      return null;
+    }
+  };
+
+  const writeScanCache = (key: string, result: DetectedObject) => {
+    try {
+      localStorage.setItem(key, JSON.stringify({ result, savedAt: Date.now() }));
+    } catch {}
+  };
+
   // Handler for custom captured snapshots (camera or uploaded triggers)
   const handleImageCaptured = async (base64Image: string, nameHint: string, forensicMode?: boolean) => {
     setIsScanning(true);
@@ -233,20 +294,49 @@ export default function App() {
     // Clear active preset temporarily since they are running custom analyze
     setSelectedPreset(null);
 
-    const savedEmail = localStorage.getItem("gemini_user_email") || "";
-    const isAuthed = localStorage.getItem("gemini_secure_authed") === "true";
+    // ── Improvement A: compress image before processing ──────────────────
+    let compressedDataUrl: string;
+    try {
+      compressedDataUrl = await compressBase64Image(
+        base64Image.startsWith("data:") ? base64Image : `data:image/jpeg;base64,${base64Image}`
+      );
+    } catch {
+      compressedDataUrl = base64Image.startsWith("data:") ? base64Image : `data:image/jpeg;base64,${base64Image}`;
+    }
+
+    let mimeType = "image/jpeg";
+    let base64Data = compressedDataUrl;
+    if (compressedDataUrl.startsWith("data:")) {
+      const match = compressedDataUrl.match(/data:([^;]+);/);
+      if (match) mimeType = match[1];
+      base64Data = compressedDataUrl.split(";base64,")[1];
+    }
+
+    // ── Improvement C: check scan result cache ──────────────────────────
+    const imageHash = simpleHash(base64Data);
+    const scanCacheKey = getScanCacheKey(imageHash);
+    const cachedScan = readScanCache(scanCacheKey);
+    if (cachedScan) {
+      console.log("▲ Returning cached scan result for image hash:", imageHash);
+      playSynthesizerTone("success");
+      setActiveResult(cachedScan);
+      const updatedList = [cachedScan, ...logs];
+      updateLogsCache(updatedList);
+      setIsScanning(false);
+      return;
+    }
+
+    // ── Improvement B: category hint auto-detection ──────────────────────
+    let categoryHint = nameHint || "general object";
+    if (!nameHint) {
+      if (filterMode === "thermal") categoryHint = "heat source equipment";
+      else if (filterMode === "nightvision") categoryHint = "surveillance device";
+      else categoryHint = "general object";
+    }
 
     const scanPrompt = forensicMode
       ? `You are an Advanced Digital Forensics Analyzer. Analyze the image and return a SINGLE JSON object with fields: name, category, size, description, confidence (85-99.8), toolsFound (array of 3 strings), hideCameraStatus, extraDetails (array of 4 objects each with key and value), weight, brand, modelNumber, estimatedPrice, buyLink, translationResult (object: originalText, targetLang "ar", translatedText in Arabic). Return ONLY valid compact JSON, no markdown.`
-      : `You are the core analyzer engine of AI Vision. Analyze the provided image. Category clue: ${nameHint || "general object"}. Return a SINGLE JSON object with fields: name, category, size, description, confidence (85-99.8), toolsFound (array of 3 strings), hideCameraStatus, extraDetails (array of 4 objects each with key and value), weight, brand, modelNumber, estimatedPrice, buyLink, translationResult (object: originalText, targetLang "ar", translatedText in Arabic). Return ONLY valid compact JSON, no markdown.`;
-
-    let mimeType = "image/jpeg";
-    let base64Data = base64Image;
-    if (base64Image.startsWith("data:")) {
-      const match = base64Image.match(/data:([^;]+);/);
-      if (match) mimeType = match[1];
-      base64Data = base64Image.split(";base64,")[1];
-    }
+      : `You are the core analyzer engine of AI Vision. Analyze the provided image. Category clue: ${categoryHint}. Return a SINGLE JSON object with fields: name, category, size, description, confidence (85-99.8), toolsFound (array of 3 strings), hideCameraStatus, extraDetails (array of 4 objects each with key and value), weight, brand, modelNumber, estimatedPrice, buyLink, translationResult (object: originalText, targetLang "ar", translatedText in Arabic). Return ONLY valid compact JSON, no markdown.`;
 
     const parseRawScan = (rawText: string, sourceImg: string): DetectedObject => {
       let parsed: any = {};
@@ -275,7 +365,7 @@ export default function App() {
         try {
           console.log("▲ Using direct Gemini API for image scan...");
           const rawText = await analyzeImageWithGemini(settings.apiKey.trim(), settings.model, base64Data, mimeType, scanPrompt, true);
-          scanResult = parseRawScan(rawText, base64Image);
+          scanResult = parseRawScan(rawText, compressedDataUrl);
         } catch (geminiErr: any) {
           const msg = (geminiErr?.message || "").toLowerCase();
           const isQuotaErr = msg.includes("429") || msg.includes("quota") || msg.includes("resource_exhausted");
@@ -283,7 +373,7 @@ export default function App() {
             // Gemini quota exhausted — fall back to Pollinations vision silently
             console.log("▲ Gemini quota hit, falling back to Pollinations vision...");
             const rawText = await analyzeImageWithPollinations(base64Data, mimeType, scanPrompt);
-            scanResult = parseRawScan(rawText, base64Image);
+            scanResult = parseRawScan(rawText, compressedDataUrl);
           } else {
             throw geminiErr;
           }
@@ -292,10 +382,13 @@ export default function App() {
         // No API key — use Pollinations.ai vision (free, GPT-4o, no key required)
         console.log("▲ Using Pollinations.ai (free) for image scan...");
         const rawText = await analyzeImageWithPollinations(base64Data, mimeType, scanPrompt);
-        scanResult = parseRawScan(rawText, base64Image);
+        scanResult = parseRawScan(rawText, compressedDataUrl);
       }
 
       console.log("▲ Scan result parsed:", scanResult);
+
+      // ── Improvement C: save scan result to cache ────────────────────
+      writeScanCache(scanCacheKey, scanResult);
 
       // Successfully processed! Play sound feedback
       playSynthesizerTone("success");
