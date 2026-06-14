@@ -773,73 +773,35 @@ export class HuaweiRouterAPI {
   }
 
   async runSpeedTest(): Promise<SpeedTestResult> {
-    const t0 = performance.now();
-    const pingMs = await this.measurePing();
-    const downloadMbps = await this.measureDownload();
-    const uploadMbps = await this.measureUpload();
-    const jitterMs = await this.measureJitter();
-    return {
-      downloadMbps: Math.round(downloadMbps * 10) / 10,
-      uploadMbps: Math.round(uploadMbps * 10) / 10,
-      pingMs: Math.round(pingMs),
-      jitterMs: Math.round(jitterMs * 10) / 10,
-      timestamp: new Date(),
-    };
-  }
-
-  private async measurePing(): Promise<number> {
-    const samples: number[] = [];
+    // Measure ping/jitter via real HTTP round-trips to the router
+    const pingSamples: number[] = [];
     for (let i = 0; i < 5; i++) {
       const t0 = performance.now();
-      try {
-        await fetchWithTimeout(`http://${this.ip}/api/monitoring/status`, {}, 3000);
-      } catch { /* ignore */ }
-      samples.push(performance.now() - t0);
+      try { await fetchWithTimeout(`http://${this.ip}/api/monitoring/status`, {}, 3000); } catch { /* ok */ }
+      pingSamples.push(performance.now() - t0);
     }
-    return samples.reduce((a, b) => a + b, 0) / samples.length;
-  }
+    const pingMs = pingSamples.reduce((a, b) => a + b, 0) / pingSamples.length;
+    const jitterMs = Math.sqrt(
+      pingSamples.reduce((s, p) => s + Math.pow(p - pingMs, 2), 0) / pingSamples.length
+    );
 
-  private async measureDownload(): Promise<number> {
+    // Read REAL throughput reported by the router's own traffic counters
+    // CurrentDownloadRate / CurrentUploadRate are in bytes/sec from the LTE interface
     try {
-      const t0 = performance.now();
-      const response = await fetchWithTimeout(`http://${this.ip}/api/monitoring/traffic-statistics`, {}, 10000);
-      const blob = await response.blob();
-      const elapsed = (performance.now() - t0) / 1000;
-      const sizeKB = blob.size / 1024;
-      return (sizeKB * 8) / elapsed / 1000; // Mbps
+      const trafficRes = await this.authedFetch(`http://${this.ip}/api/monitoring/traffic-statistics`);
+      const text = await trafficRes.text();
+      const dlBps = parseInt(xmlParse(text, "CurrentDownloadRate")) || 0;
+      const ulBps = parseInt(xmlParse(text, "CurrentUploadRate")) || 0;
+      return {
+        downloadMbps: Math.round((dlBps * 8 / 1_000_000) * 10) / 10,
+        uploadMbps: Math.round((ulBps * 8 / 1_000_000) * 10) / 10,
+        pingMs: Math.round(pingMs),
+        jitterMs: Math.round(jitterMs * 10) / 10,
+        timestamp: new Date(),
+      };
     } catch {
-      return 0;
+      return { downloadMbps: 0, uploadMbps: 0, pingMs: Math.round(pingMs), jitterMs: Math.round(jitterMs * 10) / 10, timestamp: new Date() };
     }
-  }
-
-  private async measureUpload(): Promise<number> {
-    try {
-      const payload = new Uint8Array(64 * 1024); // 64KB
-      const t0 = performance.now();
-      await fetchWithTimeout(
-        `http://${this.ip}/api/monitoring/status`,
-        { method: "POST", body: payload },
-        10000
-      );
-      const elapsed = (performance.now() - t0) / 1000;
-      return (64 * 8) / elapsed / 1000;
-    } catch {
-      return 0;
-    }
-  }
-
-  private async measureJitter(): Promise<number> {
-    const pings: number[] = [];
-    for (let i = 0; i < 4; i++) {
-      const t0 = performance.now();
-      try {
-        await fetchWithTimeout(`http://${this.ip}/api/monitoring/status`, {}, 2000);
-      } catch { /* ignore */ }
-      pings.push(performance.now() - t0);
-    }
-    const avg = pings.reduce((a, b) => a + b, 0) / pings.length;
-    const variance = pings.reduce((sum, p) => sum + Math.pow(p - avg, 2), 0) / pings.length;
-    return Math.sqrt(variance);
   }
 
   async getDeviceInfo(): Promise<Record<string, string>> {
