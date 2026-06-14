@@ -285,11 +285,15 @@ export class HuaweiRouterAPI {
       .replace(/\/$/, "")
       .trim();
 
-    // TECHNIQUE 2: Connection Pre-Check — fast HEAD probe to verify router reachable
+    // TECHNIQUE 2: Connection Pre-Check — GET probe (HEAD is not reliably supported
+    // by CapacitorHttp on Android; use GET which always works)
     let reachable = false;
-    for (const path of ["/", "/api/webserver/token"]) {
+    for (const path of ["/api/webserver/token", "/"]) {
       try {
-        const probe = await fetchWithTimeout(`http://${this.ip}${path}`, { method: "HEAD" }, 5000);
+        const probe = await fetchWithTimeout(`http://${this.ip}${path}`, {
+          method: "GET",
+          headers: { "User-Agent": this.ua, Accept: "*/*" },
+        }, 6000);
         if (probe.status < 600) { reachable = true; break; }
       } catch { /* try next */ }
     }
