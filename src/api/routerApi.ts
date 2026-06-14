@@ -329,19 +329,18 @@ export class HuaweiRouterAPI {
     return null;
   }
 
-  // ── IDEA 10: Password Type Auto-detect (Type 1, 2, 4) ───────────────────
-  private async buildLoginPayload(passwordType: number): Promise<string> {
+  // ── IDEA 10: Password Type Builder (takes explicit CSRF token, never reads session) ──
+  private async buildLoginPayloadWithToken(passwordType: number, csrfToken: string): Promise<string> {
     let processedPassword = "";
 
     if (passwordType === 4) {
-      // Type 4: SHA256(username + base64(password) + token)
-      const token = this.session.getToken();
+      // Type 4: base64(SHA256(username + base64(password) + csrfToken))
       const b64pass = btoa(this.password);
-      const rawHash = await sha256Hex(this.username + b64pass + token);
+      const rawHash = await sha256Hex(this.username + b64pass + csrfToken);
       processedPassword = btoa(rawHash);
     } else if (passwordType === 3) {
-      // Type 3: HMAC-SHA256
-      processedPassword = await hmacSha256(this.password, this.session.getToken());
+      // Type 3: HMAC-SHA256(password, csrfToken)
+      processedPassword = await hmacSha256(this.password, csrfToken);
     } else if (passwordType === 2) {
       // Type 2: base64(sha256(password))
       const rawHash = await sha256Hex(this.password);
@@ -359,11 +358,11 @@ export class HuaweiRouterAPI {
 </request>`;
   }
 
-  // ── IDEA 11: Adaptive Password Type Negotiation ──────────────────────────
+  // ── IDEA 11: Strict Authentication — never accepts wrong password ────────
   async authenticate(): Promise<RouterAuthResponse> {
     await this.mutex.acquire();
     try {
-      // Check cached session
+      // Only use cached session if it was established by a REAL successful login
       if (this.session.isValid()) {
         return {
           success: true,
@@ -373,56 +372,69 @@ export class HuaweiRouterAPI {
         };
       }
 
+      // Always clear any stale/partial session before attempting login
+      this.session.clear();
+
       // Auto-discover IP if needed
-      let effectiveIp = this.ip;
       if (!this.ip || this.ip === "auto") {
         const discovered = await discoverGateway();
         if (!discovered) {
-          return { success: false, error: "تعذر اكتشاف بوابة الراوتر تلقائياً" };
+          return { success: false, error: "تعذر اكتشاف بوابة الراوتر - تأكد من الاتصال بشبكة WiFi للراوتر" };
         }
-        effectiveIp = discovered;
-        this.ip = effectiveIp;
+        this.ip = discovered;
       }
 
-      // Acquire token
+      // Get CSRF token from router — NOT saved to session (it's not an auth token)
       const tokenData = await this.acquireToken();
       if (!tokenData) {
-        return { success: false, error: "فشل استخراج مفتاح التحقق - تأكد من الاتصال بشبكة الراوتر" };
+        return { success: false, error: "تعذر الوصول للراوتر على العنوان " + this.ip + " - تأكد من الاتصال بشبكة الراوتر" };
       }
 
-      this.session.save(tokenData.token, tokenData.sessionId, 300_000);
+      const csrfToken = tokenData.token;
+      const initSessionId = tokenData.sessionId;
 
-      // Try password types in priority order
-      const typesToTry = this.firmwareType === "b310_series" ? [1, 4] : [4, 3, 1];
+      // Build login request headers with the CSRF token directly (no session yet)
+      const buildLoginHeaders = (): Record<string, string> => {
+        const h: Record<string, string> = {
+          "Content-Type": "application/xml",
+          Accept: "application/xml, text/xml, */*",
+          "Accept-Language": "ar,en;q=0.9",
+          "Cache-Control": "no-cache, no-store",
+          Connection: "keep-alive",
+          "User-Agent": this.ua,
+          "__RequestVerificationToken": csrfToken,
+        };
+        if (initSessionId) h["Cookie"] = `SessionID=${initSessionId}`;
+        return h;
+      };
+
+      // Try password types: CPE5/HiLink v2 tries type 4 first, then 3, 2, 1
+      const typesToTry = this.firmwareType === "b310_series" ? [1, 4] : [4, 3, 2, 1];
 
       for (const pwType of typesToTry) {
-        const payload = await this.buildLoginPayload(pwType);
+        const payload = await this.buildLoginPayloadWithToken(pwType, csrfToken);
 
         try {
           const loginResponse = await fetchWithTimeout(
             `http://${this.ip}/api/user/login`,
-            {
-              method: "POST",
-              headers: this.buildHeaders(),
-              body: payload,
-            },
-            8000
+            { method: "POST", headers: buildLoginHeaders(), body: payload },
+            10000
           );
 
           const loginText = await loginResponse.text();
 
-          // Check for success
+          // STRICT: only an explicit OK response from the router means success
           if (
             loginText.includes("<response>OK</response>") ||
-            loginText.includes("<response>ok</response>") ||
-            (loginResponse.ok && !loginText.includes("<error>"))
+            loginText.includes("<response>ok</response>")
           ) {
-            // Extract new token from response if present
-            const newToken = xmlParse(loginText, "token") || this.session.getToken();
+            // Extract authenticated session token (may differ from CSRF token)
+            const newToken = xmlParse(loginText, "token") || csrfToken;
             const newSessId =
               loginResponse.headers.get("Set-Cookie")?.match(/SessionID=([^;]+)/i)?.[1] ||
-              this.session.getSessionId();
+              initSessionId;
 
+            // Only NOW save the authenticated session
             this.session.save(newToken, newSessId, 3_600_000);
             this.consecutiveFailures = 0;
 
@@ -434,21 +446,30 @@ export class HuaweiRouterAPI {
             };
           }
 
-          // Check specific error codes
+          // Map specific Huawei error codes to Arabic messages
           const errCode = xmlParse(loginText, "code");
           if (errCode === "108003") {
             return { success: false, error: "الحساب مقفل مؤقتاً - انتظر دقيقة ثم أعد المحاولة" };
           }
           if (errCode === "108006") {
-            return { success: false, error: "كلمة المرور خاطئة (المحاولات المتبقية: محدودة)" };
+            return { success: false, error: "كلمة المرور خاطئة - تحقق من كلمة السر" };
+          }
+          if (errCode === "125003") {
+            return { success: false, error: "انتهت صلاحية الجلسة - أعد المحاولة" };
+          }
+          if (errCode === "108001") {
+            return { success: false, error: "اسم المستخدم خاطئ" };
           }
         } catch {
-          // try next type
+          // try next password type
         }
       }
 
       this.consecutiveFailures++;
-      return { success: false, error: "فشل التحقق من الهوية - تأكد من اسم المستخدم وكلمة المرور" };
+      return {
+        success: false,
+        error: "كلمة المرور خاطئة أو اسم المستخدم غير صحيح للراوتر " + this.ip,
+      };
     } finally {
       this.mutex.release();
     }
@@ -470,38 +491,77 @@ export class HuaweiRouterAPI {
 
   async getSignalMetrics(): Promise<SignalData | null> {
     try {
-      const [signalRes, netModeRes, trafficRes, tempRes] = await Promise.allSettled([
+      // /api/device/signal is the primary endpoint for CPE5/H155 and most HiLink devices
+      // /api/net/current-plmn is a fallback for older models
+      const [deviceSigRes, plmnRes, netModeRes, trafficRes, tempRes, statusRes] = await Promise.allSettled([
+        this.authedFetch(`http://${this.ip}/api/device/signal`),
         this.authedFetch(`http://${this.ip}/api/net/current-plmn`),
         this.authedFetch(`http://${this.ip}/api/net/net-mode`),
         this.authedFetch(`http://${this.ip}/api/monitoring/traffic-statistics`),
         this.authedFetch(`http://${this.ip}/api/device/information`),
+        this.authedFetch(`http://${this.ip}/api/monitoring/status`),
       ]);
 
-      let rsrp = -110, rsrq = -20, sinr = 0, cellId = "", pci = 0;
+      let rsrp = 0, rsrq = 0, sinr = 0, cellId = "", pci = 0;
       let earfcn = 0, band = "", mcc = "", mnc = "", lac = "", plmn = "";
       let temperature = 0, uplinkSpeed = 0, downlinkSpeed = 0;
       let networkType = "LTE", bandwidth = "20";
+      let hasRealSignal = false;
 
-      if (signalRes.status === "fulfilled") {
-        const t = await signalRes.value.text();
-        rsrp = parseInt(xmlParse(t, "rsrp") || xmlParse(t, "Rsrp")) || -110;
-        rsrq = parseInt(xmlParse(t, "rsrq") || xmlParse(t, "Rsrq")) || -20;
-        sinr = parseInt(xmlParse(t, "sinr") || xmlParse(t, "Sinr")) || 0;
-        cellId = xmlParse(t, "cell_id") || xmlParse(t, "CellID") || "0";
-        pci = parseInt(xmlParse(t, "pci") || xmlParse(t, "PhyCellId")) || 0;
-        earfcn = parseInt(xmlParse(t, "earfcn") || xmlParse(t, "Earfcn")) || 0;
-        band = xmlParse(t, "band") || xmlParse(t, "Band") || "B1";
-        mcc = xmlParse(t, "mcc") || xmlParse(t, "Mcc") || "420";
-        mnc = xmlParse(t, "mnc") || xmlParse(t, "Mnc") || "01";
+      // Primary: /api/device/signal — CPE5 H155 and most modern HiLink devices
+      if (deviceSigRes.status === "fulfilled") {
+        const t = await deviceSigRes.value.text();
+        if (t.includes("<rsrp>") || t.includes("<sinr>")) {
+          rsrp = parseInt(xmlParse(t, "rsrp")) || 0;
+          rsrq = parseInt(xmlParse(t, "rsrq")) || 0;
+          sinr = parseInt(xmlParse(t, "sinr")) || 0;
+          cellId = xmlParse(t, "cell_id") || "";
+          pci = parseInt(xmlParse(t, "pci") || xmlParse(t, "PhyCellId")) || 0;
+          earfcn = parseInt(xmlParse(t, "earfcn") || xmlParse(t, "Earfcn")) || 0;
+          band = xmlParse(t, "bands") || xmlParse(t, "band") || "";
+          bandwidth = (xmlParse(t, "lte_bandwidth") || "20").replace("MHz", "").trim();
+          uplinkSpeed = parseInt(xmlParse(t, "uplspeed")) || 0;
+          downlinkSpeed = parseInt(xmlParse(t, "dnlspeed")) || 0;
+          hasRealSignal = true;
+        }
+      }
+
+      // Fallback: /api/net/current-plmn for signal + PLMN info
+      if (plmnRes.status === "fulfilled") {
+        const t = await plmnRes.value.text();
+        if (!hasRealSignal) {
+          rsrp = parseInt(xmlParse(t, "rsrp") || xmlParse(t, "Rsrp")) || 0;
+          rsrq = parseInt(xmlParse(t, "rsrq") || xmlParse(t, "Rsrq")) || 0;
+          sinr = parseInt(xmlParse(t, "sinr") || xmlParse(t, "Sinr")) || 0;
+          cellId = xmlParse(t, "cell_id") || xmlParse(t, "CellID") || "";
+          pci = parseInt(xmlParse(t, "pci") || xmlParse(t, "PhyCellId")) || 0;
+          earfcn = parseInt(xmlParse(t, "earfcn") || xmlParse(t, "Earfcn")) || 0;
+          band = xmlParse(t, "band") || xmlParse(t, "Band") || "";
+        }
+        // Always get PLMN/MCC/MNC from this endpoint
+        mcc = xmlParse(t, "mcc") || xmlParse(t, "Mcc") || "";
+        mnc = xmlParse(t, "mnc") || xmlParse(t, "Mnc") || "";
         lac = xmlParse(t, "lac") || xmlParse(t, "Lac") || "0";
         plmn = xmlParse(t, "plmn") || `${mcc}${mnc}`;
-        networkType = xmlParse(t, "NetworkType") || "LTE";
+        if (!networkType || networkType === "LTE") {
+          networkType = xmlParse(t, "NetworkType") || xmlParse(t, "CurrentNetworkType") || "LTE";
+        }
+      }
+
+      // /api/monitoring/status for network type and band info
+      if (statusRes.status === "fulfilled") {
+        const t = await statusRes.value.text();
+        const st = xmlParse(t, "CurrentNetworkType") || xmlParse(t, "SignalIcon");
+        if (st) networkType = st;
+        if (!band) band = xmlParse(t, "CurrentBand") || "";
+        if (!mcc) mcc = xmlParse(t, "mcc") || "";
+        if (!mnc) mnc = xmlParse(t, "mnc") || "";
       }
 
       if (trafficRes.status === "fulfilled") {
         const t = await trafficRes.value.text();
-        uplinkSpeed = parseInt(xmlParse(t, "CurrentUploadRate")) || 0;
-        downlinkSpeed = parseInt(xmlParse(t, "CurrentDownloadRate")) || 0;
+        if (!uplinkSpeed) uplinkSpeed = parseInt(xmlParse(t, "CurrentUploadRate")) || 0;
+        if (!downlinkSpeed) downlinkSpeed = parseInt(xmlParse(t, "CurrentDownloadRate")) || 0;
       }
 
       if (tempRes.status === "fulfilled") {
