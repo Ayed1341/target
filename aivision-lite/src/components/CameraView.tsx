@@ -119,12 +119,44 @@ export default function CameraView({
   const motionCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastFrameDataRef = useRef<Uint8ClampedArray | null>(null);
 
+  // Advanced multi-target tracking refs (Part A)
+  interface TrackTarget {
+    id: number;
+    cx: number; cy: number;
+    w: number; h: number;
+    vx: number; vy: number;
+    trail: Array<{x: number; y: number}>;
+    dwell: number;
+    frames: number;
+    prevArea: number;
+  }
+  const trackTargetsRef = useRef<TrackTarget[]>([]);
+  const nextTrackIdRef = useRef<number>(1);
+  const heatCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Preset simulation trail ref
+  const presetTrailRef = useRef<Map<string, Array<{x: number; y: number}>>>(new Map());
+
+  // Thermal palette and frame-delta refs (Part B)
+  const thermalPaletteRef = useRef<"ironbow" | "rainbow" | "arctic" | "whiteHot">("ironbow");
+  const prevThermalLumaRef = useRef<Float32Array | null>(null);
+  const prevThermalTimeRef = useRef<number>(0);
+
+  // NVG heading ref for azimuth compass
+  const nvgHeadingRef = useRef<number>(0);
+
   useEffect(() => {
     // initialize offscreen motion canvas
     const mCan = document.createElement("canvas");
-    mCan.width = 64; 
+    mCan.width = 64;
     mCan.height = 48;
     motionCanvasRef.current = mCan;
+
+    // initialize heat accumulation canvas
+    const hCan = document.createElement("canvas");
+    hCan.width = 640;
+    hCan.height = 480;
+    heatCanvasRef.current = hCan;
   }, []);
 
   // Laser scanner line animation loop
@@ -235,60 +267,161 @@ export default function CameraView({
         
         ctx.drawImage(videoRef.current, sx, sy, sWidth, sHeight, 0, 0, canvas.width, canvas.height);
         
-        // Motion Detection Algorithm
+        // Motion Detection Algorithm — Enhanced Multi-Blob Real Tracking
         if (trackMotion && motionCanvasRef.current) {
           const mCtx = motionCanvasRef.current.getContext("2d", { willReadFrequently: true });
           if (mCtx) {
-            mCtx.drawImage(canvas, 0, 0, motionCanvasRef.current.width, motionCanvasRef.current.height);
-            const mData = mCtx.getImageData(0, 0, motionCanvasRef.current.width, motionCanvasRef.current.height);
+            const mW = motionCanvasRef.current.width;
+            const mH = motionCanvasRef.current.height;
+            mCtx.drawImage(canvas, 0, 0, mW, mH);
+            const mData = mCtx.getImageData(0, 0, mW, mH);
             const pixels = mData.data;
-            
+
             if (lastFrameDataRef.current) {
-              let minX = motionCanvasRef.current.width;
-              let minY = motionCanvasRef.current.height;
-              let maxX = 0;
-              let maxY = 0;
-              let motionCount = 0;
-              
+              // Step 1 — build motion flag map and compute global mean motion vector (camera-shake compensation)
+              const motionMap = new Uint8Array(mW * mH);
+              let globalDxSum = 0, globalDySum = 0, globalCount = 0;
+
               for (let i = 0; i < pixels.length; i += 4) {
-                 const r = pixels[i];
-                 const g = pixels[i+1];
-                 const b = pixels[i+2];
-                 const lr = lastFrameDataRef.current[i];
-                 const lg = lastFrameDataRef.current[i+1];
-                 const lb = lastFrameDataRef.current[i+2];
-                 
-                 const diff = Math.abs(r - lr) + Math.abs(g - lg) + Math.abs(b - lb);
-                 if (diff > 80) { // sensitivity threshold
-                    const pX = (i / 4) % motionCanvasRef.current.width;
-                    const pY = Math.floor((i / 4) / motionCanvasRef.current.width);
-                    minX = Math.min(minX, pX);
-                    maxX = Math.max(maxX, pX);
-                    minY = Math.min(minY, pY);
-                    maxY = Math.max(maxY, pY);
-                    motionCount++;
-                 }
+                const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
+                const lr = lastFrameDataRef.current[i], lg = lastFrameDataRef.current[i + 1], lb = lastFrameDataRef.current[i + 2];
+                const diff = Math.abs(r - lr) + Math.abs(g - lg) + Math.abs(b - lb);
+                const pi = i >> 2;
+                if (diff > 80) {
+                  motionMap[pi] = 1;
+                  globalDxSum += (r - lr);
+                  globalDySum += (g - lg);
+                  globalCount++;
+                }
               }
-              
-              if (motionCount > 15) { // noise reduction
-                 const scaleX = canvas.width / motionCanvasRef.current.width;
-                 const scaleY = canvas.height / motionCanvasRef.current.height;
-                 motionRectRef.current = {
-                   x: minX * scaleX,
-                   y: minY * scaleY,
-                   w: (maxX - minX) * scaleX,
-                   h: (maxY - minY) * scaleY,
-                   active: true
-                 };
+              const globalDx = globalCount > 0 ? globalDxSum / globalCount : 0;
+              const globalDy = globalCount > 0 ? globalDySum / globalCount : 0;
+
+              // Step 2 — simple connected-component / blob finding (up to 5 blobs)
+              const visited = new Uint8Array(mW * mH);
+              interface RawBlob { minX: number; minY: number; maxX: number; maxY: number; sumX: number; sumY: number; count: number; }
+              const blobs: RawBlob[] = [];
+
+              for (let pi = 0; pi < mW * mH; pi++) {
+                if (!motionMap[pi] || visited[pi]) continue;
+                if (blobs.length >= 5) break;
+
+                // BFS flood fill
+                const queue: number[] = [pi];
+                visited[pi] = 1;
+                let bMinX = mW, bMinY = mH, bMaxX = 0, bMaxY = 0, bSumX = 0, bSumY = 0, bCnt = 0;
+
+                while (queue.length > 0) {
+                  const cur = queue.pop()!;
+                  const cx2 = cur % mW;
+                  const cy2 = Math.floor(cur / mW);
+                  bMinX = Math.min(bMinX, cx2); bMaxX = Math.max(bMaxX, cx2);
+                  bMinY = Math.min(bMinY, cy2); bMaxY = Math.max(bMaxY, cy2);
+                  bSumX += cx2; bSumY += cy2; bCnt++;
+
+                  // check 4-neighbours (with distance tolerance of 2)
+                  const neighbours = [cur - 1, cur + 1, cur - mW, cur + mW, cur - 2, cur + 2, cur - mW * 2, cur + mW * 2];
+                  for (const nb of neighbours) {
+                    if (nb >= 0 && nb < mW * mH && motionMap[nb] && !visited[nb]) {
+                      visited[nb] = 1;
+                      queue.push(nb);
+                    }
+                  }
+                }
+
+                if (bCnt >= 8) {
+                  blobs.push({ minX: bMinX, minY: bMinY, maxX: bMaxX, maxY: bMaxY, sumX: bSumX, sumY: bSumY, count: bCnt });
+                }
+              }
+
+              // Step 3 — scale blobs to canvas coords
+              const scaleX = canvas.width / mW;
+              const scaleY = canvas.height / mH;
+
+              interface CanvasBlob { cx: number; cy: number; w: number; h: number; }
+              const canvasBlobs: CanvasBlob[] = blobs.map(b => ({
+                cx: (b.sumX / b.count) * scaleX,
+                cy: (b.sumY / b.count) * scaleY,
+                w: Math.max(8, (b.maxX - b.minX) * scaleX),
+                h: Math.max(8, (b.maxY - b.minY) * scaleY)
+              }));
+
+              // Step 4 — IoU-based matching of blobs to existing trackTargetsRef
+              const prevTargets = trackTargetsRef.current;
+              const matched = new Set<number>();
+              const usedBlobs = new Set<number>();
+
+              const iou = (a: {cx:number;cy:number;w:number;h:number}, b: CanvasBlob): number => {
+                const ax1 = a.cx - a.w/2, ay1 = a.cy - a.h/2, ax2 = a.cx + a.w/2, ay2 = a.cy + a.h/2;
+                const bx1 = b.cx - b.w/2, by1 = b.cy - b.h/2, bx2 = b.cx + b.w/2, by2 = b.cy + b.h/2;
+                const ix1 = Math.max(ax1, bx1), iy1 = Math.max(ay1, by1);
+                const ix2 = Math.min(ax2, bx2), iy2 = Math.min(ay2, by2);
+                const inter = Math.max(0, ix2 - ix1) * Math.max(0, iy2 - iy1);
+                const areaA = a.w * a.h, areaB = b.w * b.h;
+                return inter / (areaA + areaB - inter + 1e-6);
+              };
+
+              const updatedTargets: TrackTarget[] = [];
+
+              for (let ti = 0; ti < prevTargets.length; ti++) {
+                const prev = prevTargets[ti];
+                let bestIou = 0.3, bestBi = -1;
+                for (let bi = 0; bi < canvasBlobs.length; bi++) {
+                  if (usedBlobs.has(bi)) continue;
+                  const score = iou(prev, canvasBlobs[bi]);
+                  if (score > bestIou) { bestIou = score; bestBi = bi; }
+                }
+                if (bestBi >= 0) {
+                  const b = canvasBlobs[bestBi];
+                  usedBlobs.add(bestBi);
+                  matched.add(ti);
+                  // Compensate for camera shake: subtract global mean motion
+                  const rawVx = b.cx - prev.cx - globalDx * scaleX * 0.01;
+                  const rawVy = b.cy - prev.cy - globalDy * scaleY * 0.01;
+                  const newTrail = [...prev.trail, { x: prev.cx, y: prev.cy }].slice(-12);
+                  updatedTargets.push({
+                    ...prev,
+                    cx: b.cx, cy: b.cy, w: b.w, h: b.h,
+                    vx: rawVx, vy: rawVy,
+                    trail: newTrail,
+                    dwell: prev.dwell + 1,
+                    frames: prev.frames + 1,
+                    prevArea: prev.w * prev.h
+                  });
+                }
+                // else: target lost, drop it
+              }
+
+              // Step 5 — create new targets for unmatched blobs
+              for (let bi = 0; bi < canvasBlobs.length; bi++) {
+                if (usedBlobs.has(bi)) continue;
+                const b = canvasBlobs[bi];
+                updatedTargets.push({
+                  id: nextTrackIdRef.current++,
+                  cx: b.cx, cy: b.cy, w: b.w, h: b.h,
+                  vx: 0, vy: 0, trail: [],
+                  dwell: 0, frames: 1, prevArea: b.w * b.h
+                });
+              }
+
+              trackTargetsRef.current = updatedTargets;
+
+              // Update legacy motionRectRef for backwards compatibility
+              if (updatedTargets.length > 0) {
+                const t0 = updatedTargets[0];
+                motionRectRef.current = { x: t0.cx - t0.w/2, y: t0.cy - t0.h/2, w: t0.w, h: t0.h, active: true };
               } else {
-                 motionRectRef.current.active = false;
+                motionRectRef.current.active = false;
               }
+            } else {
+              motionRectRef.current.active = false;
             }
             lastFrameDataRef.current = new Uint8ClampedArray(pixels);
           }
         } else {
           motionRectRef.current.active = false;
           lastFrameDataRef.current = null;
+          if (!trackMotion) trackTargetsRef.current = [];
         }
       } else {
         // Clear with dark tech grid
@@ -917,8 +1050,215 @@ export default function CameraView({
           ctx.strokeRect(m.x - pad, m.y - pad, m.w + pad*2, m.h + pad*2);
           ctx.fillStyle = "#ef4444";
           ctx.font = "9px monospace";
-          ctx.fillText("🔴 MOTION ACCELERATION", m.x - pad, m.y - pad - 5);
+          ctx.fillText("MOTION ACCELERATION", m.x - pad, m.y - pad - 5);
           ctx.restore();
+        }
+
+        // === ADVANCED MULTI-TARGET LIVE TRACKING RENDERING ===
+        if (useLiveCamera && trackMotion) {
+          const targets = trackTargetsRef.current;
+          const cW = canvas.width;
+          const cH = canvas.height;
+          const canvasArea = cW * cH;
+          const tNow = Date.now();
+
+          // Feature 10 — Zone grid overlay (3x3)
+          ctx.save();
+          ctx.strokeStyle = "rgba(100,200,255,0.12)";
+          ctx.lineWidth = 0.8;
+          for (let zi = 1; zi < 3; zi++) {
+            ctx.beginPath();
+            ctx.moveTo(zi * cW / 3, 0);
+            ctx.lineTo(zi * cW / 3, cH);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(0, zi * cH / 3);
+            ctx.lineTo(cW, zi * cH / 3);
+            ctx.stroke();
+          }
+          ctx.restore();
+
+          // Feature 11 — Motion heat canvas compositing
+          if (heatCanvasRef.current) {
+            const hCtx = heatCanvasRef.current.getContext("2d");
+            if (hCtx) {
+              heatCanvasRef.current.width = cW;
+              heatCanvasRef.current.height = cH;
+              targets.forEach((tgt) => {
+                hCtx.fillStyle = "rgba(255,50,0,0.02)";
+                hCtx.beginPath();
+                hCtx.arc(tgt.cx, tgt.cy, Math.max(tgt.w, tgt.h) * 0.5, 0, Math.PI * 2);
+                hCtx.fill();
+              });
+              ctx.save();
+              ctx.globalAlpha = 0.35;
+              ctx.globalCompositeOperation = "screen";
+              ctx.drawImage(heatCanvasRef.current, 0, 0);
+              ctx.restore();
+            }
+          }
+
+          // Feature 13 — Total count badge (top-left HUD)
+          ctx.save();
+          ctx.fillStyle = "rgba(0,0,0,0.7)";
+          ctx.fillRect(6, 34, 110, 18);
+          ctx.fillStyle = "#00ffcc";
+          ctx.font = "bold 9px monospace";
+          ctx.fillText(`⊕ TARGETS: ${targets.length}`, 10, 47);
+          ctx.restore();
+
+          // Find most-stable target for lock-on animation
+          let lockTarget: TrackTarget | null = null;
+          for (const tgt of targets) {
+            if (!lockTarget || tgt.frames > lockTarget.frames) lockTarget = tgt;
+          }
+
+          targets.forEach((tgt) => {
+            ctx.save();
+
+            const speed = Math.sqrt(tgt.vx * tgt.vx + tgt.vy * tgt.vy);
+            const bboxArea = tgt.w * tgt.h;
+            const areaRatio = Math.min(1, bboxArea / canvasArea);
+            const distEst = Math.round(100 * (1 - areaRatio));
+            const dwellSec = (tgt.dwell / 30).toFixed(1);
+            const conf = Math.min(100, Math.round((tgt.frames / 30) * 100));
+            const prevArea = tgt.prevArea || bboxArea;
+            const areaChanging = bboxArea > prevArea * 1.05 ? "CLOSING" : (bboxArea < prevArea * 0.95 ? "RECEDING" : "STEADY");
+            const areaArrow = bboxArea > prevArea * 1.05 ? "↑" : (bboxArea < prevArea * 0.95 ? "↓" : "→");
+
+            // Threat level color
+            let threatColor = "#22c55e"; // GREEN
+            let threatLabel = "PASSIVE";
+            if (speed > 4) { threatColor = "#ef4444"; threatLabel = "THREAT"; }
+            else if (speed > 2) { threatColor = "#f59e0b"; threatLabel = "ACTIVE"; }
+
+            // Feature 4 — Trail (ghost path) drawing
+            const trail = tgt.trail;
+            for (let ti = 0; ti < trail.length; ti++) {
+              const age = (trail.length - ti) / trail.length;
+              ctx.globalAlpha = (1 - age) * 0.7;
+              ctx.fillStyle = threatColor;
+              ctx.beginPath();
+              ctx.arc(trail[ti].x, trail[ti].y, 2.5 * (1 - age * 0.5), 0, Math.PI * 2);
+              ctx.fill();
+            }
+            ctx.globalAlpha = 1;
+
+            // Feature 10 — Zone highlight
+            const zoneCol = Math.floor((tgt.cx / cW) * 3);
+            const zoneRow = Math.floor((tgt.cy / cH) * 3);
+            const zx = zoneCol * cW / 3;
+            const zy = zoneRow * cH / 3;
+            ctx.strokeStyle = threatColor;
+            ctx.globalAlpha = 0.25;
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(zx, zy, cW / 3, cH / 3);
+            ctx.globalAlpha = 1;
+
+            // Bounding box
+            const bx = tgt.cx - tgt.w / 2;
+            const by = tgt.cy - tgt.h / 2;
+            ctx.strokeStyle = threatColor;
+            ctx.lineWidth = 1.5;
+            const bl = 8;
+            // TL
+            ctx.beginPath(); ctx.moveTo(bx, by + bl); ctx.lineTo(bx, by); ctx.lineTo(bx + bl, by); ctx.stroke();
+            // TR
+            ctx.beginPath(); ctx.moveTo(bx + tgt.w - bl, by); ctx.lineTo(bx + tgt.w, by); ctx.lineTo(bx + tgt.w, by + bl); ctx.stroke();
+            // BL
+            ctx.beginPath(); ctx.moveTo(bx, by + tgt.h - bl); ctx.lineTo(bx, by + tgt.h); ctx.lineTo(bx + bl, by + tgt.h); ctx.stroke();
+            // BR
+            ctx.beginPath(); ctx.moveTo(bx + tgt.w - bl, by + tgt.h); ctx.lineTo(bx + tgt.w, by + tgt.h); ctx.lineTo(bx + tgt.w, by + tgt.h - bl); ctx.stroke();
+
+            // Feature 5 — Trajectory prediction dotted line
+            if (speed > 0.5) {
+              ctx.setLineDash([3, 4]);
+              ctx.strokeStyle = threatColor;
+              ctx.globalAlpha = 0.55;
+              ctx.lineWidth = 1;
+              ctx.beginPath();
+              ctx.moveTo(tgt.cx, tgt.cy);
+              ctx.lineTo(tgt.cx + tgt.vx * 8, tgt.cy + tgt.vy * 8);
+              ctx.stroke();
+              ctx.setLineDash([]);
+              ctx.globalAlpha = 1;
+              // Arrowhead
+              const px = tgt.cx + tgt.vx * 8;
+              const py = tgt.cy + tgt.vy * 8;
+              const ang = Math.atan2(tgt.vy, tgt.vx);
+              ctx.globalAlpha = 0.7;
+              ctx.fillStyle = threatColor;
+              ctx.beginPath();
+              ctx.moveTo(px, py);
+              ctx.lineTo(px - 6 * Math.cos(ang - 0.4), py - 6 * Math.sin(ang - 0.4));
+              ctx.lineTo(px - 6 * Math.cos(ang + 0.4), py - 6 * Math.sin(ang + 0.4));
+              ctx.closePath();
+              ctx.fill();
+              ctx.globalAlpha = 1;
+            }
+
+            // Feature 3 — Velocity vector arrow from centroid
+            if (speed > 0.3) {
+              ctx.strokeStyle = "#ffffff";
+              ctx.lineWidth = 1.2;
+              ctx.globalAlpha = 0.8;
+              ctx.beginPath();
+              ctx.moveTo(tgt.cx, tgt.cy);
+              ctx.lineTo(tgt.cx + tgt.vx * 12, tgt.cy + tgt.vy * 12);
+              ctx.stroke();
+              ctx.globalAlpha = 1;
+            }
+
+            // HUD badges (right of bbox)
+            const labX = bx + tgt.w + 5;
+            let labY = by + 10;
+            ctx.font = "bold 8px monospace";
+            ctx.fillStyle = threatColor;
+            ctx.fillText(`ID:${tgt.id} ${threatLabel}`, labX, labY); labY += 10;
+            ctx.fillStyle = "#e2e8f0";
+            ctx.font = "7px monospace";
+            // Feature 6 — dwell time badge
+            ctx.fillText(`T:${dwellSec}s`, labX, labY); labY += 9;
+            // Feature 9 — Distance estimate
+            ctx.fillText(`~${distEst}m`, labX, labY); labY += 9;
+            // Feature 8 — Size-change direction
+            ctx.fillText(`${areaArrow} ${areaChanging}`, labX, labY); labY += 9;
+            // Feature 12 — Confidence score
+            ctx.fillText(`CNF:${conf}%`, labX, labY);
+
+            ctx.restore();
+          });
+
+          // Feature 15 — Lock-on animation for most stable target
+          if (lockTarget && lockTarget.frames >= 3) {
+            const lt = lockTarget;
+            const tPulse = (tNow % 1000) / 1000;
+            const innerR = Math.max(lt.w, lt.h) * 0.6 + 6 + tPulse * 4;
+            const outerR = innerR + 10;
+            ctx.save();
+            ctx.strokeStyle = "#00ffcc";
+            ctx.lineWidth = 1.5;
+            ctx.globalAlpha = 0.85 - tPulse * 0.3;
+            ctx.beginPath(); ctx.arc(lt.cx, lt.cy, innerR, 0, Math.PI * 2); ctx.stroke();
+            ctx.beginPath(); ctx.arc(lt.cx, lt.cy, outerR, 0, Math.PI * 2); ctx.stroke();
+            // Rotating tick marks every 45°
+            ctx.globalAlpha = 0.9;
+            const rotAngle = (tNow / 2000) % (Math.PI * 2);
+            for (let ti = 0; ti < 8; ti++) {
+              const tickAng = rotAngle + ti * (Math.PI / 4);
+              ctx.beginPath();
+              ctx.moveTo(lt.cx + innerR * Math.cos(tickAng), lt.cy + innerR * Math.sin(tickAng));
+              ctx.lineTo(lt.cx + (outerR + 4) * Math.cos(tickAng), lt.cy + (outerR + 4) * Math.sin(tickAng));
+              ctx.stroke();
+            }
+            ctx.fillStyle = "#00ffcc";
+            ctx.font = "bold 9px monospace";
+            ctx.textAlign = "center";
+            ctx.fillText("LOCKED", lt.cx, lt.cy - outerR - 6);
+            ctx.textAlign = "left";
+            ctx.globalAlpha = 1;
+            ctx.restore();
+          }
         }
       }
 
