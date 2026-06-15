@@ -39,6 +39,41 @@ async function hmacSha256(key: string, data: string): Promise<string> {
     .join("");
 }
 
+// ─── SCRAM-SHA-256 Helpers (for Huawei CPE5 H155 challenge_login) ─────────
+function generateNonce(): string {
+  const arr = new Uint8Array(32);
+  crypto.getRandomValues(arr);
+  return Array.from(arr).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function sha256Bytes(data: Uint8Array): Promise<Uint8Array> {
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", data.buffer as ArrayBuffer));
+}
+
+async function hmacSha256Bytes(keyBytes: Uint8Array, dataBytes: Uint8Array): Promise<Uint8Array> {
+  const key = await crypto.subtle.importKey(
+    "raw", keyBytes.buffer as ArrayBuffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, dataBytes.buffer as ArrayBuffer));
+}
+
+async function pbkdf2Bytes(password: string, saltBytes: Uint8Array, iterations: number): Promise<Uint8Array> {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey("raw", enc.encode(password).buffer as ArrayBuffer, "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt: saltBytes.buffer as ArrayBuffer, iterations, hash: "SHA-256" },
+    keyMaterial,
+    256
+  );
+  return new Uint8Array(bits);
+}
+
+function xorBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const result = new Uint8Array(a.length);
+  for (let i = 0; i < a.length; i++) result[i] = a[i] ^ b[i];
+  return result;
+}
+
 // ─── IDEA 2: Request Mutex to Prevent Race Conditions ───────────────────────
 class RequestMutex {
   private queue: (() => void)[] = [];
@@ -416,6 +451,171 @@ export class HuaweiRouterAPI {
 </request>`;
   }
 
+  // ── SCRAM-SHA-256 Challenge Login (Huawei CPE5 H155 / New Firmware) ──────
+  // Implements the 2-step POST /api/user/challenge_login flow discovered from
+  // browser network capture of H155 at 192.168.8.1 using application/x-www-form-urlencoded
+  private async challengeLogin(csrfToken: string, sessionId: string): Promise<RouterAuthResponse | null> {
+    try {
+      const enc = new TextEncoder();
+      const clientNonce = generateNonce();
+
+      const step1Headers: Record<string, string> = {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        Accept: "*/*",
+        "Accept-Language": "ar,en;q=0.9",
+        "Cache-Control": "no-cache, no-store",
+        "User-Agent": this.ua,
+      };
+      if (csrfToken) step1Headers["__RequestVerificationToken"] = csrfToken;
+      if (sessionId) step1Headers["Cookie"] = `SessionID=${sessionId}`;
+
+      const step1Body = new URLSearchParams({
+        username: this.username,
+        firstnonce: clientNonce,
+        mode: "1",
+      }).toString();
+
+      const step1Res = await fetchWithTimeout(
+        `http://${this.ip}/api/user/challenge_login`,
+        { method: "POST", headers: step1Headers, body: step1Body },
+        10000
+      );
+
+      // 404 means this firmware doesn't support challenge_login → fall back to old API
+      if (step1Res.status === 404) return null;
+
+      const step1Text = await step1Res.text();
+
+      // Parse JSON or XML response
+      let serverNonce = "";
+      let saltBase64 = "";
+      let iterations = 1000;
+      try {
+        const parsed = JSON.parse(step1Text);
+        serverNonce = parsed.servernonce || parsed.server_nonce || parsed.ServerNonce || "";
+        saltBase64 = parsed.salt || parsed.Salt || "";
+        iterations = parseInt(parsed.iterations || parsed.Iterations || "1000") || 1000;
+      } catch {
+        serverNonce = xmlParse(step1Text, "servernonce") || xmlParse(step1Text, "ServerNonce") || "";
+        saltBase64 = xmlParse(step1Text, "salt") || xmlParse(step1Text, "Salt") || "";
+        iterations = parseInt(xmlParse(step1Text, "iterations") || "1000") || 1000;
+      }
+
+      if (!serverNonce || !saltBase64) {
+        // If we got an error code like wrong-password at step1, propagate it
+        const errCode = xmlParse(step1Text, "code") || "";
+        if (errCode === "108001" || errCode === "108006") {
+          return { success: false, error: "كلمة المرور خاطئة - تحقق من كلمة السر" };
+        }
+        return null; // Unexpected response — fall back
+      }
+
+      // Extract updated CSRF token and session from step1 response
+      const step1CsrfNew =
+        step1Res.headers.get("__RequestVerificationTokenone") ||
+        step1Res.headers.get("x-csrf-token") ||
+        csrfToken;
+      const step1SessionNew =
+        step1Res.headers.get("Set-Cookie")?.match(/SessionID=([^;,\s]+)/i)?.[1] ||
+        sessionId;
+
+      // SCRAM-SHA-256 computation
+      const saltBytes = Uint8Array.from(atob(saltBase64), (c) => c.charCodeAt(0));
+      const saltedPassword = await pbkdf2Bytes(this.password, saltBytes, iterations);
+      const clientKey = await hmacSha256Bytes(saltedPassword, enc.encode("Client Key"));
+      const storedKey = await sha256Bytes(clientKey);
+
+      // AuthMessage follows SCRAM-SHA-256 spec (RFC 5802)
+      // c=biws is base64("n,,") = channel-binding header for no channel binding
+      const clientFirstBare = `n=${this.username},r=${clientNonce}`;
+      const serverFirst = `r=${serverNonce},s=${saltBase64},i=${iterations}`;
+      const clientFinalWithoutProof = `c=biws,r=${serverNonce}`;
+      const authMessage = `${clientFirstBare},${serverFirst},${clientFinalWithoutProof}`;
+
+      const clientSignature = await hmacSha256Bytes(storedKey, enc.encode(authMessage));
+      const clientProofBytes = xorBytes(clientKey, clientSignature);
+      const clientProof = btoa(String.fromCharCode(...clientProofBytes));
+
+      const step2Headers: Record<string, string> = {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        Accept: "*/*",
+        "Accept-Language": "ar,en;q=0.9",
+        "Cache-Control": "no-cache, no-store",
+        "User-Agent": this.ua,
+      };
+      if (step1CsrfNew) step2Headers["__RequestVerificationToken"] = step1CsrfNew;
+      if (step1SessionNew) step2Headers["Cookie"] = `SessionID=${step1SessionNew}`;
+
+      const step2Body = new URLSearchParams({
+        username: this.username,
+        clientproof: clientProof,
+        servernonce: serverNonce,
+      }).toString();
+
+      const step2Res = await fetchWithTimeout(
+        `http://${this.ip}/api/user/challenge_login`,
+        { method: "POST", headers: step2Headers, body: step2Body },
+        10000
+      );
+      const step2Text = await step2Res.text();
+
+      // Check success — H155 may return JSON {err_no:0} or XML <response>OK</response>
+      let isSuccess = false;
+      try {
+        const parsed = JSON.parse(step2Text);
+        isSuccess = parsed.err_no === 0 || parsed.result === "success" || parsed.result === "ok";
+      } catch {
+        isSuccess =
+          step2Text.includes("<response>OK</response>") ||
+          step2Text.includes("<response>ok</response>") ||
+          step2Text.trim() === "OK";
+      }
+
+      if (isSuccess) {
+        let finalToken =
+          step2Res.headers.get("__RequestVerificationTokenone") ||
+          step2Res.headers.get("x-csrf-token") ||
+          step1CsrfNew;
+        try {
+          const parsed = JSON.parse(step2Text);
+          if (parsed.token) finalToken = parsed.token;
+        } catch { /* use header token */ }
+        const finalSession =
+          step2Res.headers.get("Set-Cookie")?.match(/SessionID=([^;,\s]+)/i)?.[1] ||
+          step1SessionNew;
+        this.session.save(finalToken || "", finalSession || "", 3_600_000);
+        return {
+          success: true,
+          token: finalToken || "",
+          sessionId: finalSession || "",
+          authMethod: "huawei_scram_sha256",
+        };
+      }
+
+      // Parse error codes from step2
+      let errCode = "";
+      try {
+        const parsed = JSON.parse(step2Text);
+        errCode = String(parsed.err_no || parsed.code || "");
+      } catch {
+        errCode = xmlParse(step2Text, "code");
+      }
+
+      if (errCode === "108001" || errCode === "108006") {
+        return { success: false, error: "كلمة المرور خاطئة - تحقق من كلمة السر" };
+      }
+      if (errCode === "108003") {
+        return { success: false, error: "الحساب مقفل مؤقتاً - انتظر دقيقة ثم أعد المحاولة" };
+      }
+
+      // Unknown error at step2 — fall back to old XML login
+      return null;
+    } catch {
+      // Network error or unexpected failure — fall back silently
+      return null;
+    }
+  }
+
   // ── IDEA 11: Strict Authentication — never accepts wrong password ────────
   async authenticate(): Promise<RouterAuthResponse> {
     await this.mutex.acquire();
@@ -474,6 +674,14 @@ export class HuaweiRouterAPI {
           if (initSessionId) h["Cookie"] = `SessionID=${initSessionId}`;
           return h;
         };
+
+        // ── Try SCRAM-SHA-256 challenge_login first (H155 / new firmware) ──
+        const scramResult = await this.challengeLogin(csrfToken, initSessionId);
+        if (scramResult !== null) {
+          // challengeLogin returned a definitive result (success or wrong password)
+          return scramResult;
+        }
+        // null means endpoint not found or unexpected error → fall through to old XML login
 
         // TECHNIQUE 13: Hint-Type-First Ordering
         const typesToTry = !csrfToken
