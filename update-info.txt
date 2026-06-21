@@ -1,0 +1,34 @@
+Y2JB Update v6.1 — ALL 30 FEATURES CONNECTED TO REAL DATA
+=========================================================
+by ayed oraybi
+
+Every visual element now reflects REAL exploit state:
+  1. Glassmorphism blur = exploit stability
+  2. Neon glow intensity = write speed
+  3. Gradient text = stage colors (real)
+  4. Pulse speed = feeding rate
+  5. Scanline speed = syscall throughput
+  6. Wave bars height = per-worker throughput
+  7. Flame intensity = pipe pressure
+  8. Sub-bar = real sub-stage progress
+  9. Color transitions = real stages
+ 10. Bounce = on real % change
+ 11. Corner color = retry stability
+ 12. Energy pulse = worker activity
+ 13. Milestone dots = real milestones
+ 14. Ring spin = MB/s rate
+ 15. Flash = real stage transitions
+ 16. Hex stream = REAL kernel addresses
+ 17. Orbit dots = active worker count
+ 18-19. VU/Wave = per-worker real %
+  20. Fireworks = completion (real)
+ 21. MB/s = calculated from writes
+  22. Feed rate = bytes/sec
+  23. ETA = smart weighted average
+  24. Sub-bar = queued/total
+  25. Worker dots = green/yellow/red
+  26. Pipe meter = real pressure
+  27. Success rate = ok/(ok+fail)
+  28. Timeline = real elapsed
+  29. Retry badge = real count
+  30. Speed class = real MB/s label
